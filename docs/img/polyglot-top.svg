@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" class="dg" width="1340" height="680" viewBox="0 0 1340 680" role="img" aria-label="Polyglot top level. The RP2350 host connects over SPI to the host link, which drives a 32-bit register bus to the elastic FIFO SRAM, the instruction memory and the registers. These feed four identical engines, each a PIO-compatible core with a Line Coding Unit. The engines drive the pin block, which connects through the uio, uo_out and ui_in pads to protocol devices. Eight shared IRQ flags drive HOST_IRQ back to the host.">
+<style>
+:root {
+--bg: #F7F8FA; --surface: #FFFFFF; --die: #E7EBF0; --frame: #DCE2EA;
+--ink: #18202E; --muted: #586378; --line: #B7C0CD; --accent: #2450CC;
+--lcu-fill: #E3EAFC; --lcu-wash: #EDF1FC; --pad: #A8720C;
+--sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+--mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+:root {
+--bg: #0E131B; --surface: #18202C; --die: #121922; --frame: #1B2431;
+--ink: #E2E8F0; --muted: #97A3B6; --line: #3A4659; --accent: #8AA5FF;
+--lcu-fill: #1E2A4C; --lcu-wash: #161F36; --pad: #DDAA45;
+}
+}
+.dg { font-family: var(--sans); }
+.bg { fill: var(--bg); }
+.dg text { fill: var(--ink); font-size: 12px; }
+.dg .h { font-size: 13.5px; font-weight: 600; }
+.dg .m { font-family: var(--mono); font-size: 11.5px; }
+.dg .s { fill: var(--muted); }
+.dg .acc { fill: var(--accent); }
+.dg .mid { text-anchor: middle; }
+.dg .end { text-anchor: end; }
+.dg .chip { fill: var(--die); stroke: var(--ink); stroke-width: 1.75; }
+.dg .box { fill: var(--surface); stroke: var(--ink); stroke-width: 1.25; }
+.dg .t1 { stroke: var(--muted); stroke-dasharray: 6 4; }
+.dg .lcu { fill: var(--lcu-fill); stroke: var(--accent); }
+.dg .off { fill: var(--bg); stroke: var(--muted); }
+.dg .frame { fill: var(--frame); stroke: var(--line); stroke-width: 1; }
+.dg .frame.lcuf { fill: var(--lcu-wash); stroke: var(--accent); stroke-opacity: .45; }
+.dg .w { fill: none; stroke: var(--ink); stroke-width: 1.25; }
+.dg .wa { stroke: var(--accent); }
+.dg .bus { stroke: var(--ink); stroke-width: 5; stroke-linecap: round; }
+.dg .pad { fill: var(--pad); }
+.dg .ah { fill: var(--ink); }
+.dg .aha { fill: var(--accent); }
+.dg .dot { fill: var(--accent); }
+</style>
+<rect class="bg" x="0" y="0" width="1340" height="680" rx="8"/>
+<defs>
+<marker id="f1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+</defs>
+<!-- Off-chip host -->
+<rect class="box off" x="16" y="110" width="136" height="520" rx="6"/>
+<text class="h mid" x="84" y="140">RP2350</text>
+<text class="s mid" x="84" y="160">demo-board MCU</text>
+<text class="mid" x="84" y="330">loads programs</text>
+<text class="mid" x="84" y="350">streams FIFO data</text>
+<text class="mid" x="84" y="370">reference PIO</text>
+<!-- Chip boundary -->
+<rect class="chip" x="236" y="40" width="904" height="620" rx="10"/>
+<text class="m" x="256" y="72">tt_um_aryankarnati_polyglot</text>
+<text class="s end" x="1120" y="72">8×4 tiles · 1.225 mm² · one 60 MHz clock domain</text>
+<!-- SPI host link -->
+<line class="w" x1="152" y1="158" x2="256" y2="158" marker-start="url(#f1a)" marker-end="url(#f1a)"/>
+<rect class="pad" x="232" y="154" width="8" height="8"/>
+<text class="mid" x="194" y="150">SPI</text>
+<text class="m s mid" x="194" y="176">ui_in[7:5]</text>
+<text class="m s mid" x="194" y="192">uo_out[7]</text>
+<rect class="box" x="256" y="110" width="140" height="96" rx="4"/>
+<text class="h mid" x="326" y="138">Host link</text>
+<text class="s mid" x="326" y="160">SPI target · mode 0</text>
+<text class="s mid" x="326" y="180">SCK ≤ clk / 4</text>
+<!-- Register bus -->
+<line class="bus" x1="396" y1="158" x2="832" y2="158"/>
+<text class="s" x="412" y="146">32-bit register bus</text>
+<line class="w" x1="502" y1="161" x2="502" y2="236" marker-end="url(#f1a)"/>
+<line class="w" x1="654" y1="161" x2="654" y2="236" marker-end="url(#f1a)"/>
+<line class="w" x1="832" y1="161" x2="832" y2="236" marker-end="url(#f1a)"/>
+<text class="s" x="510" y="204">TXF · RXF</text>
+<text class="s" x="662" y="204">load</text>
+<text class="s" x="840" y="204">R/W</text>
+<!-- Config row -->
+<rect class="box t1" x="440" y="236" width="124" height="76" rx="4"/>
+<text class="h mid" x="502" y="260">Elastic FIFO</text>
+<text class="s mid" x="502" y="280">SRAM 512 × 32</text>
+<text class="s mid" x="502" y="298">Tier 1 · gated</text>
+<rect class="box" x="576" y="236" width="156" height="76" rx="4"/>
+<text class="h mid" x="654" y="260">IMEM</text>
+<text class="s mid" x="654" y="280">64 × 16 flops</text>
+<text class="s mid" x="654" y="298">2 pages × 32</text>
+<rect class="box" x="744" y="236" width="176" height="76" rx="4"/>
+<text class="h mid" x="832" y="260">Registers</text>
+<text class="s mid" x="832" y="280">ctrl · IRQ · debug</text>
+<text class="s mid" x="832" y="298">per-SM + LCU config</text>
+<line class="w" x1="502" y1="312" x2="502" y2="356" marker-start="url(#f1a)" marker-end="url(#f1a)"/>
+<line class="w" x1="654" y1="312" x2="654" y2="356" marker-end="url(#f1a)"/>
+<line class="w" x1="832" y1="312" x2="832" y2="356" marker-start="url(#f1a)" marker-end="url(#f1a)"/>
+<text class="s" x="510" y="339">refill · drain</text>
+<text class="s" x="662" y="339">4 read ports</text>
+<text class="s" x="840" y="339">config · debug</text>
+<!-- Engines -->
+<rect class="frame" x="440" y="356" width="480" height="254" rx="6"/>
+<rect class="box" x="452" y="368" width="100" height="50" rx="4"/>
+<text class="h mid" x="502" y="389">FIFOs</text>
+<text class="s mid" x="502" y="407">TX 4 · RX 4</text>
+<rect class="box" x="564" y="368" width="180" height="50" rx="4"/>
+<text class="h mid" x="654" y="389">SM0</text>
+<text class="s mid" x="654" y="407">PIO core · ÷16.8</text>
+<rect class="box lcu" x="756" y="368" width="152" height="50" rx="4"/>
+<text class="h acc mid" x="832" y="389">LCU0</text>
+<text class="s mid" x="832" y="407">CRC · stuff · code</text>
+<rect class="box" x="452" y="428" width="100" height="50" rx="4"/>
+<text class="h mid" x="502" y="449">FIFOs</text>
+<text class="s mid" x="502" y="467">TX 4 · RX 4</text>
+<rect class="box" x="564" y="428" width="180" height="50" rx="4"/>
+<text class="h mid" x="654" y="449">SM1</text>
+<text class="s mid" x="654" y="467">PIO core · ÷16.8</text>
+<rect class="box lcu" x="756" y="428" width="152" height="50" rx="4"/>
+<text class="h acc mid" x="832" y="449">LCU1</text>
+<text class="s mid" x="832" y="467">CRC · stuff · code</text>
+<rect class="box" x="452" y="488" width="100" height="50" rx="4"/>
+<text class="h mid" x="502" y="509">FIFOs</text>
+<text class="s mid" x="502" y="527">TX 4 · RX 4</text>
+<rect class="box" x="564" y="488" width="180" height="50" rx="4"/>
+<text class="h mid" x="654" y="509">SM2</text>
+<text class="s mid" x="654" y="527">PIO core · ÷16.8</text>
+<rect class="box lcu" x="756" y="488" width="152" height="50" rx="4"/>
+<text class="h acc mid" x="832" y="509">LCU2</text>
+<text class="s mid" x="832" y="527">CRC · stuff · code</text>
+<rect class="box" x="452" y="548" width="100" height="50" rx="4"/>
+<text class="h mid" x="502" y="569">FIFOs</text>
+<text class="s mid" x="502" y="587">TX 4 · RX 4</text>
+<rect class="box" x="564" y="548" width="180" height="50" rx="4"/>
+<text class="h mid" x="654" y="569">SM3</text>
+<text class="s mid" x="654" y="587">PIO core · ÷16.8</text>
+<rect class="box lcu" x="756" y="548" width="152" height="50" rx="4"/>
+<text class="h acc mid" x="832" y="569">LCU3</text>
+<text class="s mid" x="832" y="587">CRC · stuff · code</text>
+<text class="s" x="440" y="634">4 identical engines · base ISA binary-compatible with RP2040 PIO</text>
+<!-- Engines to pin block -->
+<line class="w" x1="920" y1="385" x2="984" y2="385" marker-end="url(#f1a)"/>
+<line class="w" x1="984" y1="401" x2="920" y2="401" marker-end="url(#f1a)"/>
+<line class="w" x1="920" y1="445" x2="984" y2="445" marker-end="url(#f1a)"/>
+<line class="w" x1="984" y1="461" x2="920" y2="461" marker-end="url(#f1a)"/>
+<line class="w" x1="920" y1="505" x2="984" y2="505" marker-end="url(#f1a)"/>
+<line class="w" x1="984" y1="521" x2="920" y2="521" marker-end="url(#f1a)"/>
+<line class="w" x1="920" y1="565" x2="984" y2="565" marker-end="url(#f1a)"/>
+<line class="w" x1="984" y1="581" x2="920" y2="581" marker-end="url(#f1a)"/>
+<text class="s mid" x="952" y="377">out · oe</text>
+<text class="m s mid" x="952" y="598">in[31:0]</text>
+<!-- IRQ -->
+<rect class="box" x="256" y="470" width="140" height="80" rx="4"/>
+<text class="h mid" x="326" y="496">IRQ flags</text>
+<text class="s mid" x="326" y="516">8, shared</text>
+<text class="s mid" x="326" y="534">set · wait by SMs</text>
+<line class="w" x1="440" y1="510" x2="396" y2="510" marker-start="url(#f1a)" marker-end="url(#f1a)"/>
+<line class="w" x1="256" y1="510" x2="152" y2="510" marker-end="url(#f1a)"/>
+<rect class="pad" x="232" y="506" width="8" height="8"/>
+<text class="m mid" x="194" y="502">HOST_IRQ</text>
+<text class="m s mid" x="194" y="528">uo_out[6]</text>
+<!-- Clock and reset -->
+<line class="w" x1="152" y1="606" x2="256" y2="606" marker-end="url(#f1a)"/>
+<rect class="pad" x="232" y="602" width="8" height="8"/>
+<text class="mid" x="194" y="598">clk 60 MHz</text>
+<text class="m s mid" x="194" y="624">rst_n</text>
+<text class="s" x="262" y="610">to every block</text>
+<!-- Pin block -->
+<rect class="box" x="984" y="236" width="128" height="374" rx="4"/>
+<text class="h mid" x="1048" y="262">Pin block</text>
+<text class="s mid" x="1048" y="286">24 pads</text>
+<text class="s mid" x="1048" y="304">+ 8 virtual</text>
+<text class="s mid" x="1048" y="322">2-FF sync</text>
+<text class="s mid" x="1048" y="340">open-drain</text>
+<text class="s mid" x="1048" y="358">highest SM wins</text>
+<!-- Protocol pads -->
+<line class="w" x1="1112" y1="300" x2="1228" y2="300" marker-start="url(#f1a)" marker-end="url(#f1a)"/>
+<rect class="pad" x="1136" y="296" width="8" height="8"/>
+<text class="m mid" x="1184" y="292">uio[7:0]</text>
+<text class="s mid" x="1184" y="318">pins 0–7</text>
+<line class="w" x1="1112" y1="420" x2="1228" y2="420" marker-end="url(#f1a)"/>
+<rect class="pad" x="1136" y="416" width="8" height="8"/>
+<text class="m mid" x="1184" y="412">uo_out[5:0]</text>
+<text class="s mid" x="1184" y="438">pins 8–13</text>
+<line class="w" x1="1228" y1="540" x2="1112" y2="540" marker-end="url(#f1a)"/>
+<rect class="pad" x="1136" y="536" width="8" height="8"/>
+<text class="m mid" x="1184" y="532">ui_in[4:0]</text>
+<text class="s mid" x="1184" y="558">pins 16–20</text>
+<!-- Off-chip devices -->
+<rect class="box off" x="1228" y="236" width="100" height="374" rx="6"/>
+<text class="h mid" x="1278" y="262">Devices</text>
+<text class="s mid" x="1278" y="280">on Pmods</text>
+<text class="mid" x="1278" y="330">UART</text>
+<text class="mid" x="1278" y="352">SPI</text>
+<text class="mid" x="1278" y="374">I2C</text>
+<text class="mid" x="1278" y="396">WS2812</text>
+<text class="mid" x="1278" y="456">USB LS</text>
+<text class="mid" x="1278" y="478">10BASE-T</text>
+<text class="mid" x="1278" y="500">CAN</text>
+</svg>

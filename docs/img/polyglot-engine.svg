@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" class="dg" width="1300" height="404" viewBox="0 0 1300 404" role="img" aria-label="One engine and its Line Coding Unit. Transmit: the TX FIFO feeds the OSR, and a coded out pins, 1 sends one bit through stuff insertion, the line coder and the differential driver to the pins. The CRC taps the data bit before stuffing. Receive: the RX pin passes through clock recovery, NRZI decode and unstuffing into a staging register, which in lcu, n moves into the ISR and then the RX FIFO. The CRC taps after unstuffing. Status flags appear as virtual pins 24 to 27. Raw pin writes and pin reads bypass the LCU.">
+<style>
+:root {
+--bg: #F7F8FA; --surface: #FFFFFF; --die: #E7EBF0; --frame: #DCE2EA;
+--ink: #18202E; --muted: #586378; --line: #B7C0CD; --accent: #2450CC;
+--lcu-fill: #E3EAFC; --lcu-wash: #EDF1FC; --pad: #A8720C;
+--sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+--mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+:root {
+--bg: #0E131B; --surface: #18202C; --die: #121922; --frame: #1B2431;
+--ink: #E2E8F0; --muted: #97A3B6; --line: #3A4659; --accent: #8AA5FF;
+--lcu-fill: #1E2A4C; --lcu-wash: #161F36; --pad: #DDAA45;
+}
+}
+.dg { font-family: var(--sans); }
+.bg { fill: var(--bg); }
+.dg text { fill: var(--ink); font-size: 12px; }
+.dg .h { font-size: 13.5px; font-weight: 600; }
+.dg .m { font-family: var(--mono); font-size: 11.5px; }
+.dg .s { fill: var(--muted); }
+.dg .acc { fill: var(--accent); }
+.dg .mid { text-anchor: middle; }
+.dg .end { text-anchor: end; }
+.dg .chip { fill: var(--die); stroke: var(--ink); stroke-width: 1.75; }
+.dg .box { fill: var(--surface); stroke: var(--ink); stroke-width: 1.25; }
+.dg .t1 { stroke: var(--muted); stroke-dasharray: 6 4; }
+.dg .lcu { fill: var(--lcu-fill); stroke: var(--accent); }
+.dg .off { fill: var(--bg); stroke: var(--muted); }
+.dg .frame { fill: var(--frame); stroke: var(--line); stroke-width: 1; }
+.dg .frame.lcuf { fill: var(--lcu-wash); stroke: var(--accent); stroke-opacity: .45; }
+.dg .w { fill: none; stroke: var(--ink); stroke-width: 1.25; }
+.dg .wa { stroke: var(--accent); }
+.dg .bus { stroke: var(--ink); stroke-width: 5; stroke-linecap: round; }
+.dg .pad { fill: var(--pad); }
+.dg .ah { fill: var(--ink); }
+.dg .aha { fill: var(--accent); }
+.dg .dot { fill: var(--accent); }
+</style>
+<rect class="bg" x="0" y="0" width="1300" height="404" rx="8"/>
+<defs>
+<marker id="f2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+<marker id="f2b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="aha" d="M0 0L10 5L0 10z"/></marker>
+</defs>
+<!-- Frames -->
+<rect class="frame" x="16" y="50" width="364" height="342" rx="6"/>
+<rect class="frame lcuf" x="470" y="50" width="670" height="342" rx="6"/>
+<rect class="box" x="1180" y="50" width="110" height="342" rx="4"/>
+<text class="h" x="32" y="74">SMn · PIO-compatible core</text>
+<text class="h acc" x="486" y="74">LCUn · Line Coding Unit</text>
+<text class="h mid" x="1235" y="74">Pin block</text>
+<!-- IMEM into Execute -->
+<line class="w" x1="314" y1="14" x2="314" y2="86" marker-end="url(#f2a)"/>
+<text class="s" x="322" y="30">from shared IMEM</text>
+<!-- Execute -->
+<rect class="box" x="262" y="86" width="104" height="280" rx="4"/>
+<text class="h mid" x="314" y="206">Execute</text>
+<text class="m mid" x="314" y="228">IMEM[PC]</text>
+<text class="s mid" x="314" y="248">decode</text>
+<text class="s mid" x="314" y="266">÷16.8 tick</text>
+<!-- Raw writes (bypass LCU) -->
+<line class="w" x1="366" y1="96" x2="1180" y2="96" marker-end="url(#f2a)"/>
+<text class="s mid" x="860" y="88">raw writes: set pins · side-set · multi-bit out pins</text>
+<text class="m" x="1190" y="100">out · oe</text>
+<!-- TX row -->
+<rect class="box" x="32" y="112" width="90" height="48" rx="4"/>
+<text class="h mid" x="77" y="131">TX FIFO</text>
+<text class="s mid" x="77" y="150">4 × 32</text>
+<line class="w" x1="122" y1="136" x2="156" y2="136" marker-end="url(#f2a)"/>
+<text class="s mid" x="139" y="127">pull</text>
+<rect class="box" x="156" y="112" width="80" height="48" rx="4"/>
+<text class="h mid" x="196" y="131">OSR</text>
+<text class="s mid" x="196" y="150">shift out</text>
+<line class="w" x1="236" y1="136" x2="262" y2="136" marker-end="url(#f2a)"/>
+<line class="w" x1="366" y1="136" x2="530" y2="136" marker-end="url(#f2a)"/>
+<text class="m mid" x="425" y="128">out pins, 1</text>
+<circle class="dot" cx="500" cy="136" r="3"/>
+<line class="w wa" x1="500" y1="136" x2="500" y2="192" marker-end="url(#f2b)"/>
+<rect class="box lcu" x="530" y="112" width="120" height="48" rx="4"/>
+<text class="h mid" x="590" y="131">stuff insert</text>
+<text class="s mid" x="590" y="150">after N run bits</text>
+<line class="w wa" x1="650" y1="136" x2="680" y2="136" marker-end="url(#f2b)"/>
+<rect class="box lcu" x="680" y="112" width="180" height="48" rx="4"/>
+<text class="h mid" x="770" y="131">line coder</text>
+<text class="s mid" x="770" y="150">NRZ · NRZI · Manchester</text>
+<line class="w wa" x1="860" y1="136" x2="890" y2="136" marker-end="url(#f2b)"/>
+<rect class="box lcu" x="890" y="112" width="120" height="48" rx="4"/>
+<text class="h mid" x="950" y="131">diff pair</text>
+<text class="m s mid" x="950" y="150">TX_DIFF</text>
+<line class="w wa" x1="1010" y1="136" x2="1180" y2="136" marker-end="url(#f2b)"/>
+<text class="m" x="1190" y="140">OUT_BASE (+1)</text>
+<!-- Middle row -->
+<rect class="box" x="32" y="192" width="184" height="68" rx="4"/>
+<text class="h mid" x="124" y="220">X · Y</text>
+<text class="s mid" x="124" y="240">scratch · loop counters</text>
+<line class="w" x1="216" y1="226" x2="262" y2="226" marker-start="url(#f2a)" marker-end="url(#f2a)"/>
+<rect class="box lcu" x="486" y="192" width="244" height="68" rx="4"/>
+<text class="h mid" x="608" y="214">CRC LFSR</text>
+<text class="s mid" x="608" y="233">any polynomial ≤ 32 bits</text>
+<text class="s mid" x="608" y="251">TX or RX bits · CRC_DIR</text>
+<line class="w" x1="486" y1="226" x2="366" y2="226" marker-end="url(#f2a)"/>
+<text class="m mid" x="425" y="218">mov x, crc</text>
+<rect class="box lcu" x="900" y="192" width="224" height="68" rx="4"/>
+<text class="h mid" x="1012" y="220">status flags</text>
+<text class="s mid" x="1012" y="240">SE0 · BITRDY · ERR · IDLE</text>
+<line class="w wa" x1="1124" y1="226" x2="1180" y2="226" marker-end="url(#f2b)"/>
+<text class="m" x="1190" y="230">virtual 24–27</text>
+<!-- RX row -->
+<rect class="box" x="32" y="294" width="90" height="48" rx="4"/>
+<text class="h mid" x="77" y="313">RX FIFO</text>
+<text class="s mid" x="77" y="332">4 × 32</text>
+<line class="w" x1="156" y1="318" x2="122" y2="318" marker-end="url(#f2a)"/>
+<text class="s mid" x="139" y="309">push</text>
+<rect class="box" x="156" y="294" width="80" height="48" rx="4"/>
+<text class="h mid" x="196" y="313">ISR</text>
+<text class="s mid" x="196" y="332">shift in</text>
+<line class="w" x1="262" y1="318" x2="236" y2="318" marker-end="url(#f2a)"/>
+<line class="w" x1="530" y1="318" x2="366" y2="318" marker-end="url(#f2a)"/>
+<text class="m mid" x="425" y="310">in lcu, n</text>
+<rect class="box lcu" x="530" y="294" width="120" height="48" rx="4"/>
+<text class="h mid" x="590" y="313">staging</text>
+<text class="s mid" x="590" y="332">32 bits</text>
+<line class="w wa" x1="700" y1="318" x2="650" y2="318" marker-end="url(#f2b)"/>
+<circle class="dot" cx="675" cy="318" r="3"/>
+<line class="w wa" x1="675" y1="318" x2="675" y2="260" marker-end="url(#f2b)"/>
+<rect class="box lcu" x="700" y="294" width="105" height="48" rx="4"/>
+<text class="h mid" x="752" y="313">unstuff</text>
+<text class="s mid" x="752" y="332">flag ERR</text>
+<line class="w wa" x1="845" y1="318" x2="805" y2="318" marker-end="url(#f2b)"/>
+<rect class="box lcu" x="845" y="294" width="105" height="48" rx="4"/>
+<text class="h mid" x="897" y="313">NRZI decode</text>
+<text class="s mid" x="897" y="332">or NRZ</text>
+<line class="w wa" x1="990" y1="318" x2="950" y2="318" marker-end="url(#f2b)"/>
+<rect class="box lcu" x="990" y="294" width="134" height="48" rx="4"/>
+<text class="h mid" x="1057" y="313">clock recovery</text>
+<text class="s mid" x="1057" y="332">DPLL · Manchester</text>
+<line class="w wa" x1="1057" y1="294" x2="1057" y2="260" marker-end="url(#f2b)"/>
+<line class="w wa" x1="1180" y1="318" x2="1124" y2="318" marker-end="url(#f2b)"/>
+<text class="m" x="1190" y="322">RX_PIN (+1)</text>
+<!-- Pin reads (bypass LCU) -->
+<line class="w" x1="1180" y1="358" x2="366" y2="358" marker-end="url(#f2a)"/>
+<text class="s mid" x="760" y="378">pin reads: in pins · wait · jmp pin (32 bits, virtual included)</text>
+<text class="m" x="1190" y="362">in[31:0]</text>
+</svg>
