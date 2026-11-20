@@ -193,6 +193,8 @@ let pinw_create () = { lm = 0; lv = 0; dm = 0; dv = 0 }
 
 let pinw_copy w = { lm = w.lm; lv = w.lv; dm = w.dm; dv = w.dv }
 
+let pinw_to_tuple w = w.lm, w.lv, w.dm, w.dv
+
 let pinw_empty w = w.lm = 0 && w.dm = 0
 
 let add_lvl w m v =
@@ -213,8 +215,10 @@ type stall =
   | Stall_tx_empty (* blocking PULL, TX FIFO empty *)
   | Stall_rx_full (* blocking PUSH, or autopush, RX FIFO full *)
   | Stall_autopull (* OUT with OSR at its threshold (datasheet 3.5.4.2) *)
-  | Stall_wait (* WAIT on a pin or GPIO *)
-  | Stall_irq (* WAIT on an IRQ flag, or IRQ wait *)
+  | Stall_wait_gpio (* WAIT GPIO, datasheet 3.4.3 *)
+  | Stall_wait_pin (* WAIT PIN *)
+  | Stall_wait_irq (* WAIT IRQ, datasheet 3.4.3.2 *)
+  | Stall_irq_wait (* IRQ wait: flag raised, waiting for the host to clear it, 3.4.9.2 *)
 
 type latch =
   | No_latch
@@ -234,6 +238,7 @@ type sm =
   ; mutable osr_count : int
   ; mutable delay : int
   ; mutable side_done : bool (* side-set already applied to the instruction in progress *)
+  ; mutable host_side_done : bool (* same, for the forced instruction in the host latch *)
   ; mutable latch : latch
   ; mutable irq_wait : int option (* flag this SM raised and is waiting to see cleared *)
   ; mutable acc : int (* clock divider accumulator, 1/256 units *)
@@ -283,6 +288,7 @@ let create () =
       ; osr_count = 32 (* datasheet 3.2.3.3: OSR counter resets to 32 *)
       ; delay = 0
       ; side_done = false
+      ; host_side_done = false
       ; latch = No_latch
       ; irq_wait = None
       ; acc = 0
@@ -343,7 +349,6 @@ let load_program t words =
 (* Decoding helpers. Everything the model needs from an instruction goes through here. *)
 
 let delay_side_of (ins : Isa.t) = Isa.delay_side ins
-let is_legal (ins : Isa.t) = Isa.is_legal ins
 
 let side_cfg (c : Config.t) : Isa.Side.config option =
   if c.sideset_count = 0
@@ -413,9 +418,9 @@ let body sm ins ~synced ~irq_snap ~(bodyw : pinw) ~(setw : int ref) ~(clrw : int
     let pol = Bool.to_int polarity in
     (match (source : Isa.wait_source) with
      | Wsrc_gpio n ->
-       if bit synced n = pol then done_ () else Stalled Stall_wait
+       if bit synced n = pol then done_ () else Stalled Stall_wait_gpio
      | Wsrc_pin n ->
-       if bit synced ((c.in_base + n) land 31) = pol then done_ () else Stalled Stall_wait
+       if bit synced ((c.in_base + n) land 31) = pol then done_ () else Stalled Stall_wait_pin
      | Wsrc_irq { index; rel } ->
        let i = irq_index sm.index index rel in
        if bit irq_snap i = pol
@@ -423,7 +428,7 @@ let body sm ins ~synced ~irq_snap ~(bodyw : pinw) ~(setw : int ref) ~(clrw : int
          (* WAIT 1 IRQ clears the flag when the condition is met (datasheet 3.4.3.2). *)
          if pol = 1 then clrw := !clrw lor (1 lsl i);
          done_ ())
-       else Stalled Stall_irq)
+       else Stalled Stall_wait_irq)
   | Isa.In { source; bit_count = n; _ } ->
     (match (source : Isa.in_source) with
      | In_lcu -> lcu_not_modelled ()
@@ -443,7 +448,10 @@ let body sm ins ~synced ~irq_snap ~(bodyw : pinw) ~(setw : int ref) ~(clrw : int
        (* An autopush that would hit a full RX FIFO stalls before anything changes
           (datasheet 3.5.4.1). *)
        if c.autopush && new_count >= thr_push && Fifo.full sm.rx
-       then Stalled Stall_rx_full
+       then (
+        (* Blocking PUSH or autopush into a full RX FIFO sets RXSTALL (datasheet 3.4.6.2). *)
+        sm.rxstall <- true;
+        Stalled Stall_rx_full)
        else (
          let data = v land mask n in
          let isr' =
@@ -519,7 +527,10 @@ let body sm ins ~synced ~irq_snap ~(bodyw : pinw) ~(setw : int ref) ~(clrw : int
     else if Fifo.full sm.rx
     then
       if block
-      then Stalled Stall_rx_full
+      then (
+        (* Blocking PUSH or autopush into a full RX FIFO sets RXSTALL (datasheet 3.4.6.2). *)
+        sm.rxstall <- true;
+        Stalled Stall_rx_full)
       else (
         (* Non-blocking push onto a full RX FIFO: data lost, RXSTALL set, ISR cleared
            (datasheet 3.4.6.2). AMBIGUITY: the ISR count is cleared too. *)
@@ -601,7 +612,7 @@ let body sm ins ~synced ~irq_snap ~(bodyw : pinw) ~(setw : int ref) ~(clrw : int
      | Some w ->
        (* Already raised; stall until the flag is lowered (datasheet 3.4.9.2). *)
        if bit irq_snap w = 1
-       then Stalled Stall_irq
+       then Stalled Stall_irq_wait
        else (
          sm.irq_wait <- None;
          done_ ())
@@ -615,7 +626,7 @@ let body sm ins ~synced ~irq_snap ~(bodyw : pinw) ~(setw : int ref) ~(clrw : int
          if wait
          then (
            sm.irq_wait <- Some i;
-           Stalled Stall_irq)
+           Stalled Stall_irq_wait)
          else done_ ()))
   | Isa.Set { dest; data; _ } ->
     (match (dest : Isa.set_dest) with
@@ -636,23 +647,35 @@ let body sm ins ~synced ~irq_snap ~(bodyw : pinw) ~(setw : int ref) ~(clrw : int
 
 (* Execute [word] for one attempt. [src] says where it came from, which decides the PC and
    latch update. [sidew] receives the side-set writes of the first attempt. *)
+(* Where an instruction came from. Decides PC and latch handling (datasheet 3.2.2, 3.5.7). *)
 type src =
   | Imem
   | Exec
   | Host
 
+(* What one SM tick did, for the non-OUT autopull rule (datasheet 3.5.4.2). *)
+type tick_kind =
+  | Idle (* no enable tick, or a forced instruction: AMBIGUITY, see README *)
+  | Out_tick (* an OUT, executed or stalled *)
+  | Other_tick (* any other instruction, a delay cycle, or a stall *)
+
+(* Execute [word] once. [src] decides PC, delay and latch handling. Returns true if the
+   instruction is an OUT. *)
 let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
   let c = sm.cfg in
   let ins = Isa.decode word in
-  if not (is_legal ins) then sm.illegal <- true;
+  if not (Isa.is_legal ins) then sm.illegal <- true;
   let ds = delay_side_of ins in
-  let first = not sm.side_done in
+  let host = src = Host in
+  (* Side-set is tracked per instruction source, so a forced instruction does not change
+     the side-set state of the instruction it interrupted (AMBIGUITY, see README). *)
+  let first = not (if host then sm.host_side_done else sm.side_done) in
   let side, delay = split_side c ds in
-  (* Reserved words run as a NOP (DESIGN.md 9.1) but keep their delay/side-set field. *)
-  let ins_body = if is_legal ins then ins else Isa.Illegal word in
+  let ins_body = if Isa.is_legal ins then ins else Isa.Illegal word in
+  let is_out = match ins with Isa.Out _ -> true | _ -> false in
   let outcome = body sm ins_body ~synced ~irq_snap ~bodyw ~setw ~clrw in
   (* Side-set is applied on the first attempt, even if the instruction stalls
-     (datasheet 3.2.4 note, 3.5.1). *)
+     (datasheet 3.2.4 note, 3.5.1). It is written after the body, so it wins on a pin. *)
   (match side with
    | Some v when first ->
      let sbits = c.sideset_count - Bool.to_int c.side_en in
@@ -660,37 +683,61 @@ let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
      then add_dir sidew (group_mask c.sideset_base sbits) (place c.sideset_base sbits v)
      else add_lvl sidew (group_mask c.sideset_base sbits) (place c.sideset_base sbits v)
    | _ -> ());
-  match outcome with
-  | Stalled r ->
-    sm.stall <- r;
-    sm.side_done <- true
-  | Done { jump; delay_applies; exec } ->
-    sm.stall <- No_stall;
-    sm.side_done <- false;
-    (match src, jump with
-     | Imem, Some a -> sm.pc <- a
-     | Imem, None -> sm.pc <- wrap_next c sm.pc
-     | (Exec | Host), Some a -> sm.pc <- a
-     | (Exec | Host), None -> ());
-    sm.delay <- (if delay_applies then delay else 0);
-    sm.latch <-
-      (match exec with
-       | Some w -> Exec_latch w
-       | None -> No_latch)
+  let set_flag b = if host then sm.host_side_done <- b else sm.side_done <- b in
+  (match outcome with
+   | Stalled r ->
+     sm.stall <- r;
+     set_flag true
+   | Done { jump; delay_applies; exec } ->
+     sm.stall <- No_stall;
+     set_flag false;
+     (match src, jump with
+      | Imem, Some a -> sm.pc <- a
+      | Imem, None -> sm.pc <- wrap_next c sm.pc
+      | (Exec | Host), Some a -> sm.pc <- a
+      | (Exec | Host), None -> ());
+     (* A forced instruction's delay is ignored, and it leaves a pending delay alone
+        (datasheet 3.5.7: "Delay cycles are ignored on instructions written to the INSTR
+        register"). OUT EXEC's own delay is ignored too (3.4.5.2). *)
+     if not host then sm.delay <- (if delay_applies then delay else 0);
+     sm.latch
+     <- (match exec with
+         | Some w -> Exec_latch w
+         | None -> No_latch));
+  is_out
 ;;
 
 (* One SM for one system cycle. [tick] is its clock-divider enable. *)
-let run_sm t sm ~tick ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
+let run_sm t sm ~tick ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw : tick_kind =
   let attempt = attempt sm ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw in
   match sm.latch with
   | Host_latch w ->
     (* Forced instructions run at once, ignoring the divider and the enable
-       (datasheet 3.7.? SMx_INSTR and 3.5.7). *)
-    attempt ~src:Host ~word:w
-  | _ when not (sm.enabled && tick) -> ()
-  | _ when sm.delay > 0 -> sm.delay <- sm.delay - 1
-  | Exec_latch w -> attempt ~src:Exec ~word:w
-  | No_latch -> attempt ~src:Imem ~word:t.imem.(sm.pc)
+       (datasheet 3.5.7). *)
+    ignore (attempt ~src:Host ~word:w);
+    Idle
+  | _ when not (sm.enabled && tick) -> Idle
+  | _ when sm.delay > 0 ->
+    sm.delay <- sm.delay - 1;
+    Other_tick
+  | Exec_latch w -> if attempt ~src:Exec ~word:w then Out_tick else Other_tick
+  | No_latch -> if attempt ~src:Imem ~word:t.imem.(sm.pc) then Out_tick else Other_tick
+;;
+
+(* Datasheet 3.5.4.2, "On non-OUT cycles": after a non-OUT tick, an osr count at or above
+   the threshold refills the OSR from a non-empty TX FIFO (the MOV and PULL count clears
+   have already been applied by their own bodies, so the order matches the pseudocode). *)
+let autopull_after_non_out sm kind =
+  match kind with
+  | Other_tick when sm.cfg.autopull ->
+    if sm.osr_count >= sm.cfg.pull_thresh && not (Fifo.empty sm.tx)
+    then (
+      match Fifo.pop sm.tx with
+      | Some w ->
+        sm.osr <- w;
+        sm.osr_count <- 0
+      | None -> ())
+  | _ -> ()
 ;;
 
 (* Clock divider: 16.8 fixed point. One tick every divisor/256 cycles, with the fractional
@@ -712,10 +759,9 @@ let divider_tick sm =
 ;;
 
 (* ------------------------------------------------------------------------------------ *)
-(* One system clock cycle. Returns the pad levels seen during this cycle. *)
+(* One system clock cycle. Returns the pad levels seen at the start of this cycle. *)
 
 let step t =
-  (* Pads: shift the history, then record this cycle's pads. *)
   let pad = pad_now t in
   t.hist.(3) <- t.hist.(2);
   t.hist.(2) <- t.hist.(1);
@@ -731,19 +777,19 @@ let step t =
       let tick = divider_tick sm in
       let bodyw = pinw_create () in
       let sidew = pinw_create () in
-      run_sm t sm ~tick ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw;
+      let kind = run_sm t sm ~tick ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw in
+      autopull_after_non_out sm kind;
       (* OUT_STICKY keeps the last OUT/SET/MOV pin write asserted (datasheet 3.7). *)
       let eff =
         if sm.cfg.out_sticky && sm.enabled
-        then (
+        then
           if pinw_empty bodyw
           then pinw_copy sm.sticky
           else (
             sm.sticky <- pinw_copy bodyw;
-            pinw_copy bodyw))
+            pinw_copy bodyw)
         else bodyw
       in
-      (* Side-set overrides the same pin from the same SM (datasheet 3.5.6). *)
       let combine (dst : pinw) (src : pinw) =
         dst.lm <- dst.lm lor src.lm;
         dst.lv <- dst.lv land lnot src.lm lor (src.lv land src.lm);
@@ -762,8 +808,9 @@ let step t =
       t.pin_level <- t.pin_level land lnot w.lm lor (w.lv land w.lm);
       t.pin_dir <- t.pin_dir land lnot w.dm lor (w.dv land w.dm))
     pin_writes;
-  (* IRQ flags: a set and a clear of the same flag in one cycle leaves it set
-     (datasheet 3.2.7). *)
+  (* IRQ flags. A set and a clear of the same flag in one cycle leaves it set
+     (datasheet 3.2.7 and 3.4.9.3). WAIT and IRQ read the flags as they were at the start
+     of the cycle. *)
   t.irq <- irq_snap land lnot !clrw lor !setw land 0xFF;
   t.cycle <- t.cycle + 1;
   pad
@@ -786,18 +833,19 @@ let read_rx t i =
     None
 ;;
 
-(* SMx_INSTR write: the instruction runs at once, ignoring the divider (datasheet 3.2.2,
-   3.5.7). Its delay is ignored. *)
+(* SMx_INSTR write: the instruction runs at once, ignoring the divider and the enable
+   (datasheet 3.2.2, 3.5.7). Its delay is ignored, and it does not touch the side-set
+   state or the pending delay of the instruction it interrupts. *)
 let write_instr t i w =
   let sm = t.sms.(i) in
   sm.latch <- Host_latch (w land 0xFFFF);
-  sm.side_done <- false
+  sm.host_side_done <- false
 ;;
 
 let set_enabled t i b = t.sms.(i).enabled <- b
 
-(* CTRL.SM_RESTART for the SMs in [mask] (datasheet 3.7, CTRL). PC, OSR contents, X and Y
-   are not affected. *)
+(* CTRL.SM_RESTART for the SMs in [mask] (datasheet 3.7, CTRL). The PC, the OSR contents,
+   X and Y are not affected. *)
 let sm_restart t mask =
   Array.iteri
     (fun i sm ->
@@ -809,6 +857,7 @@ let sm_restart t mask =
         sm.delay <- 0;
         sm.latch <- No_latch;
         sm.side_done <- false;
+        sm.host_side_done <- false;
         sm.irq_wait <- None;
         sm.stall <- No_stall;
         sm.sticky <- pinw_create ()))
@@ -823,8 +872,16 @@ let clkdiv_restart t mask =
 (* Host write-1-to-clear on the IRQ register (datasheet 3.7, IRQ). *)
 let clear_irq t mask = t.irq <- t.irq land lnot mask land 0xFF
 
+(* Pads at the start of the cycle, before this cycle's [step]: (level, output enable).
+   Both are 32-bit masks. The level is the PIO output level where the pin is driven, and
+   the external level elsewhere. *)
+let pads t = pad_now t, t.pin_dir
+
 (* ------------------------------------------------------------------------------------ *)
 (* Debug view, for the block 2 lockstep harness. *)
+
+(* Sticky OUT_STICKY state of an SM: (level mask, level value, dir mask, dir value). *)
+type sticky_view = int * int * int * int
 
 type debug =
   { pc : int
@@ -834,14 +891,50 @@ type debug =
   ; isr_count : int
   ; osr : int
   ; osr_count : int
+  ; tx_fifo : int list (* head first *)
+  ; rx_fifo : int list
   ; tx_level : int
   ; rx_level : int
-  ; delay : int
+  ; delay : int (* remaining delay ticks *)
+  ; acc : int (* clock divider accumulator, 1/256 units *)
   ; stall : stall
+  ; stall_code : int (* DBG_CNT.stall_reason code, see [stall_code] *)
   ; enabled : bool
   ; illegal : bool
-  ; host_latched : bool
+  ; latch : latch (* pending EXEC or host instruction *)
+  ; irq_wait : int option (* flag an IRQ instruction raised and is waiting on *)
+  ; side_done : bool
+  ; host_side_done : bool
+  ; sticky : sticky_view
+  ; txstall : bool
+  ; txover : bool
+  ; rxunder : bool
+  ; rxstall : bool
   }
+
+(* DESIGN.md 7 names DBG_CNT.stall_reason but does not give its encoding. The encoding
+   used here is 3 bits, one code per stall reason, 0 for no stall. AMBIGUITY for the owner. *)
+let stall_code = function
+  | No_stall -> 0
+  | Stall_tx_empty -> 1
+  | Stall_rx_full -> 2
+  | Stall_autopull -> 3
+  | Stall_wait_gpio -> 4
+  | Stall_wait_pin -> 5
+  | Stall_wait_irq -> 6
+  | Stall_irq_wait -> 7
+;;
+
+let stall_name = function
+  | No_stall -> "none"
+  | Stall_tx_empty -> "tx_empty"
+  | Stall_rx_full -> "rx_full"
+  | Stall_autopull -> "autopull"
+  | Stall_wait_gpio -> "wait_gpio"
+  | Stall_wait_pin -> "wait_pin"
+  | Stall_wait_irq -> "wait_irq"
+  | Stall_irq_wait -> "irq_wait"
+;;
 
 let debug t i =
   let sm = t.sms.(i) in
@@ -852,21 +945,24 @@ let debug t i =
   ; isr_count = sm.isr_count
   ; osr = sm.osr
   ; osr_count = sm.osr_count
+  ; tx_fifo = sm.tx.Fifo.items
+  ; rx_fifo = sm.rx.Fifo.items
   ; tx_level = Fifo.level sm.tx
   ; rx_level = Fifo.level sm.rx
   ; delay = sm.delay
+  ; acc = sm.acc
   ; stall = sm.stall
+  ; stall_code = stall_code sm.stall
   ; enabled = sm.enabled
   ; illegal = sm.illegal
-  ; host_latched = (match sm.latch with Host_latch _ -> true | _ -> false)
+  ; latch = sm.latch
+  ; irq_wait = sm.irq_wait
+  ; side_done = sm.side_done
+  ; host_side_done = sm.host_side_done
+  ; sticky = pinw_to_tuple sm.sticky
+  ; txstall = sm.txstall
+  ; txover = sm.txover
+  ; rxunder = sm.rxunder
+  ; rxstall = sm.rxstall
   }
-;;
-
-let stall_name = function
-  | No_stall -> "none"
-  | Stall_tx_empty -> "tx_empty"
-  | Stall_rx_full -> "rx_full"
-  | Stall_autopull -> "autopull"
-  | Stall_wait -> "wait"
-  | Stall_irq -> "irq"
 ;;

@@ -21,15 +21,6 @@ let bin width v =
   String.init width (fun i -> if (v lsr (width - 1 - i)) land 1 = 1 then '1' else '0')
 ;;
 
-let stall_code = function
-  | Pgsim.No_stall -> 0
-  | Pgsim.Stall_tx_empty -> 1
-  | Pgsim.Stall_rx_full -> 2
-  | Pgsim.Stall_autopull -> 3
-  | Pgsim.Stall_wait -> 4
-  | Pgsim.Stall_irq -> 5
-;;
-
 (* [step_fn c] runs cycle [c] and returns the pad levels for that cycle. *)
 let run ~path ~cycles (t : Pgsim.t) (step_fn : int -> int) =
   let oc = open_out path in
@@ -80,7 +71,7 @@ let run ~path ~cycles (t : Pgsim.t) (step_fn : int -> int) =
         emit s.(2) d.Pgsim.y;
         emit s.(3) d.Pgsim.isr;
         emit s.(4) d.Pgsim.osr;
-        emit s.(5) (stall_code d.Pgsim.stall))
+        emit s.(5) d.Pgsim.stall_code)
       per_sm
   done;
   close_out oc

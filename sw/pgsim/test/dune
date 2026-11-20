@@ -3,7 +3,8 @@
  (modules test_pgsim)
  (inline_tests
   (deps
-   (source_tree ../../pgasm/test/corpus)))
+   (source_tree ../../pgasm/test/corpus)
+   (file ../../../silicon-ref/testdata/uart_tx_example.jsonl)))
  (libraries polyglot_pgsim polyglot_isa yojson)
  (preprocess
   (pps ppx_expect)))

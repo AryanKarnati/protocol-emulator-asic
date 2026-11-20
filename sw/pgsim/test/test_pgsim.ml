@@ -22,6 +22,10 @@ let pull ?(delay_side = 0) ?(if_empty = false) ?(block = true) () =
   enc (Isa.Pull { delay_side; if_empty; block })
 ;;
 
+let push ?(delay_side = 0) ?(if_full = false) ?(block = true) () =
+  enc (Isa.Push { delay_side; if_full; block })
+;;
+
 let mov ?(delay_side = 0) ?(op = Isa.Op_none) dest source =
   enc (Isa.Mov { delay_side; dest; op; source })
 ;;
@@ -292,7 +296,7 @@ let%expect_test "IRQ wait: stall until the host clears the flag, then continue (
   let t = make [ irq ~wait:true 2; set_pindirs 1; set_pins 1 ] in
   run t 4;
   check "flag raised" (t.Pgsim.irq land 4 = 4);
-  check "stalled on irq" ((dbg t 0).Pgsim.stall = Pgsim.Stall_irq);
+  check "stalled on irq" ((dbg t 0).Pgsim.stall = Pgsim.Stall_irq_wait);
   check "not past the wait" (t.Pgsim.pin_level land 1 = 0);
   Pgsim.clear_irq t 4;
   run t 3;
@@ -426,6 +430,8 @@ let write_silicon_trace path samples =
         , `Assoc
             [ "name", `String "squarewave"
             ; "pio_version", `Int 0
+            ; "entry", `Int 0
+            ; "init", `Assoc [ "levels", `Assoc []; "dirs", `Assoc []; "tx_words", `List [] ]
             ; "words", `List (List.map (fun w -> `String (Printf.sprintf "0x%04x" w)) [ 0xE081; 0xE101; 0xE000; 0x0001 ])
             ; ( "registers"
               , `Assoc
@@ -508,4 +514,174 @@ let%expect_test "corpus squarewave.pio.json: period 4, 50% duty (datasheet 3.2.2
   Pgsim.set_enabled t 0 true;
   let w = pin0 t 12 in
   check "squarewave from pioasm words" (w = [ 0; 0; 1; 1; 0; 0; 1; 1; 0; 0; 1; 1 ])
+;;
+
+(* ------------------------------------------------------------------------------------ *)
+(* Silicon trace loader against the capture.py fixture (silicon-ref/testdata). The samples
+   in the fixture are synthetic, so only the header, the init and the sample decoding are
+   checked here, not a waveform match. *)
+
+let fixture = "../../../silicon-ref/testdata/uart_tx_example.jsonl"
+
+let%expect_test "loader: header fields, init applied, entry, sample count and values" =
+  let l = Silicon_trace.load fixture in
+  check "program name" (l.Silicon_trace.name = "uart_tx");
+  check "entry is 0" (l.Silicon_trace.entry = 0);
+  check "capture pins" (l.Silicon_trace.pins_base = 0 && l.Silicon_trace.pins_count = 8);
+  check "sample count" (Array.length l.Silicon_trace.samples = 1280);
+  (* First word 0xd08fd1a1 gives bytes a1 d1 8f d0, LSB first (silicon-ref README). *)
+  check "sample 0..3" (Array.sub l.Silicon_trace.samples 0 4 = [| 0xa1; 0xd1; 0x8f; 0xd0 |]);
+  let m = l.Silicon_trace.model in
+  (* init.levels and init.dirs: GPIO 0 and 1 driven high. *)
+  check "init levels" (m.Pgsim.pin_level land 3 = 3);
+  check "init dirs" (m.Pgsim.pin_dir land 3 = 3);
+  (* init.tx_words: 0xa5 then 0x5a, in order. *)
+  check "tx words" ((Pgsim.debug m 0).Pgsim.tx_fifo = [ 0xa5; 0x5a ]);
+  (* RP2350 EXECCTRL 0x40003000: SIDE_EN set, wrap 3..0, STATUS fields zero. *)
+  let d = Pgsim.debug m 0 in
+  check "pc at entry before enable" (d.Pgsim.pc = 0);
+  check "sm enabled" d.Pgsim.enabled
+;;
+
+let%expect_test "loader: fixture config reaches the model as RP2040-layout registers" =
+  let l = Silicon_trace.load fixture in
+  let m = l.Silicon_trace.model in
+  (* The side-set count is the JSON size, 2 with the enable bit (pinctrl 0x40100400). *)
+  check "sideset count" (m.Pgsim.sms.(0).Pgsim.cfg.Pgsim.Config.sideset_count = 2);
+  check "side_en" m.Pgsim.sms.(0).Pgsim.cfg.Pgsim.Config.side_en;
+  check "out count" (m.Pgsim.sms.(0).Pgsim.cfg.Pgsim.Config.out_count = 1)
+;;
+
+(* RP2350 STATUS_SEL and STATUS_N differ from RP2040 (pio.h: [6:5] and [4:0]). *)
+let%expect_test "RP2350 STATUS fields convert to the RP2040 layout" =
+  let conv e = Silicon_trace.rp2350_execctrl_to_rp2040 e in
+  (* STATUS_SEL = 1 (RXLEVEL), STATUS_N = 5: RP2040 bit 4 set, N = 5. *)
+  check "rx sel" (conv (0x20 lor 5) = 0x10 lor 5);
+  (* STATUS_SEL = 0 (TXLEVEL), STATUS_N = 3. *)
+  check "tx sel" (conv 3 = 3);
+  (* RP2350-only bits must not leak into the RP2040 layout. *)
+  check "side en kept" (conv (0x4000_0000 lor 0x20) = 0x4000_0010);
+  let raised f = try ignore (f ()); false with Silicon_trace.Bad_trace _ -> true in
+  check "IRQ status rejected" (raised (fun () -> conv 0x40));
+  check "N above 15 rejected" (raised (fun () -> conv 16))
+;;
+
+(* ------------------------------------------------------------------------------------ *)
+(* Program JSON to configuration, no --config (the side-set size bug) *)
+
+(* corpus uart_tx with no register config: wrap and side-set come from the JSON only. The
+   JSON size is 2 with the enable bit, so SIDESET_COUNT is 2. With SIDESET_COUNT counted
+   wrong, the side-set delay split is wrong and the timing below moves. OUT has no pins
+   here (the JSON carries none), so the data bits do not show. The side-set alone gives:
+   high at 1..8 (pull), low at 9..80 (start bit, then no pin driven), high from 81. *)
+let%expect_test "corpus uart_tx with no config: side-set timing (datasheet 3.5.1, 3.6.3)" =
+  let prog =
+    Pioasm_json.load "../../pgasm/test/corpus/pico-examples/pio/uart_tx/uart_tx.pio.json"
+  in
+  let cfg = Pioasm_json.apply_to_config prog Pgsim.Config.reset in
+  check "sideset count from JSON size" (cfg.Pgsim.Config.sideset_count = 2);
+  check "side enable from JSON" cfg.Pgsim.Config.side_en;
+  let t = Pgsim.create () in
+  Pgsim.load_program t prog.Pioasm_json.words;
+  Pgsim.set_config t 0 cfg;
+  Pgsim.write_tx t 0 0xA5;
+  Pgsim.write_instr t 0 (set_pindirs 1);
+  ignore (Pgsim.step t);
+  Pgsim.set_enabled t 0 true;
+  let w = Array.of_list (pin0 t 90) in
+  for c = 1 to 8 do
+    check (Printf.sprintf "high at %d" c) (w.(c) = 1)
+  done;
+  for c = 9 to 80 do
+    check (Printf.sprintf "low at %d" c) (w.(c) = 0)
+  done;
+  for c = 81 to 89 do
+    check (Printf.sprintf "stop high at %d" c) (w.(c) = 1)
+  done
+;;
+
+(* 3.5.7: a forced instruction ignores its delay field and does not zero a pending delay
+   of the instruction it interrupts. *)
+let%expect_test "forced instruction: delay ignored, pending delay kept (datasheet 3.5.7)" =
+  let t = make [ set_pins ~delay:5 1; jmp 1 ] in
+  run t 1;
+  check "interrupted delay is 5" ((dbg t 0).Pgsim.delay = 5);
+  Pgsim.write_instr t 0 (set_pins ~delay:3 0);
+  ignore (Pgsim.step t);
+  check "forced instruction ran" (t.Pgsim.pin_level land 1 = 0);
+  check "pending delay untouched" ((dbg t 0).Pgsim.delay = 5)
+;;
+
+(* 3.5.4.2, "On non-OUT cycles": with autopull, a non-OUT cycle refills an empty OSR from a
+   waiting TX word, so the OUT that follows a delay does not stall. *)
+let%expect_test "autopull refills on non-OUT cycles, including delay cycles (datasheet 3.5.4.2)" =
+  let cfg = { C.reset with autopull = true; pull_thresh = 32; out_count = 5 } in
+  let t = make ~cfg [ set_x 0; out ~delay_side:0 Out_pins 5 ] in
+  (* Reset OSR count is 32, so the OSR is at threshold. The word waits in TX. *)
+  Pgsim.write_tx t 0 0xFFFF_FFFF;
+  (* Make the SET a delayed one: [3] on set x, 0. *)
+  t.Pgsim.imem.(0) <- enc (Isa.Set { delay_side = 3; dest = Set_x; data = 0 });
+  run t 1;
+  check "refilled on the set cycle" (t.Pgsim.sms.(0).Pgsim.osr_count = 0);
+  check "tx word moved to OSR" (t.Pgsim.sms.(0).Pgsim.osr = 0xFFFF_FFFF);
+  run t 4;
+  check "OUT ran without stalling" ((dbg t 0).Pgsim.stall = Pgsim.No_stall && (dbg t 0).Pgsim.pc = 2)
+;;
+
+(* 3.4.6.2: a blocking PUSH into a full RX FIFO sets RXSTALL and stalls. *)
+let%expect_test "blocking PUSH into a full RX FIFO sets RXSTALL (datasheet 3.4.6.2)" =
+  let t = make [ push () ] in
+  for i = 1 to 4 do
+    Pgsim.Fifo.push t.Pgsim.sms.(0).Pgsim.rx i
+  done;
+  run t 1;
+  let d = dbg t 0 in
+  check "stalled on rx full" (d.Pgsim.stall = Pgsim.Stall_rx_full);
+  check "rxstall set" d.Pgsim.rxstall
+;;
+
+(* 3.5.4.1 and 3.4.6.2: an autopush into a full RX FIFO stalls, and sets RXSTALL. *)
+let%expect_test "autopush into a full RX FIFO stalls and sets RXSTALL (datasheet 3.5.4.1)" =
+  let cfg = { C.reset with autopush = true; push_thresh = 8 } in
+  let t = make ~cfg [ in_ In_x 8 ] in
+  for i = 1 to 4 do
+    Pgsim.Fifo.push t.Pgsim.sms.(0).Pgsim.rx i
+  done;
+  run t 1;
+  let d = dbg t 0 in
+  check "stalled on rx full" (d.Pgsim.stall = Pgsim.Stall_rx_full);
+  check "rxstall set" d.Pgsim.rxstall;
+  check "isr not shifted while stalled" (d.Pgsim.isr_count = 0)
+;;
+
+(* Debug view: the lockstep harness needs the latch, IRQ wait, accumulator, side-set state,
+   sticky state and FIFO contents, and the pads at the start of the cycle. *)
+let%expect_test "debug view exposes latch, irq wait, FIFOs, flags and pads" =
+  let t = make [ irq ~wait:true 3; set_pindirs 1 ] in
+  Pgsim.write_tx t 0 0x11;
+  Pgsim.write_tx t 0 0x22;
+  run t 2;
+  let d = dbg t 0 in
+  check "irq wait flag" (d.Pgsim.irq_wait = Some 3);
+  check "fifo contents" (d.Pgsim.tx_fifo = [ 0x11; 0x22 ]);
+  check "stall code for irq wait" (d.Pgsim.stall_code = 7);
+  check "accumulator in range" (d.Pgsim.acc >= 0 && d.Pgsim.acc < 256);
+  Pgsim.write_instr t 0 (set_pins 1);
+  check "host latch visible" ((dbg t 0).Pgsim.latch = Pgsim.Host_latch (set_pins 1));
+  let level, oe = Pgsim.pads t in
+  check "pads show start-of-cycle state" (level land 1 = 0 && oe = 0)
+;;
+
+(* 3.4.9.2: a forced instruction during an IRQ wait does not clear the wait. The IRQ wait
+   keeps its flag and resumes after the host clears it. AMBIGUITY, see README. *)
+let%expect_test "forced instruction during IRQ wait keeps the wait (ambiguity, V1)" =
+  let t = make [ irq ~wait:true 2; set_pins 1 ] in
+  run t 3;
+  check "waiting" ((dbg t 0).Pgsim.irq_wait = Some 2);
+  Pgsim.write_instr t 0 (set_pins 0);
+  ignore (Pgsim.step t);
+  check "wait kept after forced instruction" ((dbg t 0).Pgsim.irq_wait = Some 2);
+  Pgsim.clear_irq t 4;
+  run t 2;
+  check "resumed after clear" (t.Pgsim.pin_level land 1 = 1)
 ;;

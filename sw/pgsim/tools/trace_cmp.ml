@@ -3,7 +3,8 @@
    trace_cmp --latency L TRACE.jsonl
 
    L is the calibrated input/output latency in sysclk cycles (silicon-ref README,
-   "Calibration"). It has no default. Exit 0 if every compared sample matches, 1 on the
+   "Calibration"). It has no default. Samples before L have no pgsim counterpart and are
+   printed, not skipped silently. Exit 0 if every compared sample matches, 1 on the
    first mismatch (printed with its sample index, capture pin and GPIO), 2 on error. *)
 
 let () =
@@ -17,7 +18,12 @@ let () =
   | Some f, Some l ->
     (try
        let r = Silicon_trace.compare_files ~latency:l f in
-       List.iter (fun n -> Printf.printf "note: %s\n" n) r.Silicon_trace.notes;
+       if r.Silicon_trace.skipped_head <> []
+       then
+         Printf.printf
+           "not compared: the first %d samples (before latency %d), values %s\n"
+           (List.length r.Silicon_trace.skipped_head) l
+           (String.concat " " (List.map (Printf.sprintf "%02x") r.Silicon_trace.skipped_head));
        Printf.printf "samples %d, compared %d (latency %d)\n" r.Silicon_trace.samples
          r.Silicon_trace.compared l;
        match r.Silicon_trace.first_mismatch with

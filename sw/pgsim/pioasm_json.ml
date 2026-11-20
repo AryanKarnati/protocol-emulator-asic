@@ -49,3 +49,19 @@ let load ?which path : program =
   in
   parse_program chosen
 ;;
+
+(* Apply what the program's JSON says to a configuration (wrap and side-set). pioasm's
+   "sideset.size" already includes the enable bit: `.side_set 1 opt` gives size 2, which is
+   SIDESET_COUNT (datasheet 3.5.1, pico-sdk pio_sm_config). "optional" is SIDE_EN. The JSON
+   has no OUT, SET or IN pins, so those keep the base configuration. *)
+let apply_to_config (p : program) (base : Pgsim.Config.t) : Pgsim.Config.t =
+  let c = { base with Pgsim.Config.wrap_top = p.wrap; wrap_bottom = p.wrap_target } in
+  match p.sideset with
+  | None -> c
+  | Some (size, optional, pindirs) ->
+    { c with
+      Pgsim.Config.sideset_count = size
+    ; side_en = optional
+    ; side_pindir = pindirs
+    }
+;;
