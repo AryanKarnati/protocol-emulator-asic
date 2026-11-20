@@ -1,0 +1,39 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "st7789_lcd",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 1,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 1, "optional": false, "pindirs": false},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "6001", "instruction": "out    pins, 1         side 0"},
+				{"hex": "B042", "instruction": "nop                    side 1"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "// For optimal use of DMA bandwidth we would use an autopull threshold of 32,\n// but we are using a threshold of 8 here (consume 1 byte from each FIFO entry\n// and discard the remainder) to make things easier for software on the other side\nstatic inline void st7789_lcd_program_init(PIO pio, uint sm, uint offset, uint data_pin, uint clk_pin, float clk_div) {\n    pio_gpio_init(pio, data_pin);\n    pio_gpio_init(pio, clk_pin);\n    pio_sm_set_consecutive_pindirs(pio, sm, data_pin, 1, true);\n    pio_sm_set_consecutive_pindirs(pio, sm, clk_pin, 1, true);\n    pio_sm_config c = st7789_lcd_program_get_default_config(offset);\n    sm_config_set_sideset_pins(&c, clk_pin);\n    sm_config_set_out_pins(&c, data_pin, 1);\n    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);\n    sm_config_set_clkdiv(&c, clk_div);\n    sm_config_set_out_shift(&c, false, true, 8);\n    pio_sm_init(pio, sm, offset, &c);\n    pio_sm_set_enabled(pio, sm, true);\n}\n// Making use of the narrow store replication behaviour on RP2040 to get the\n// data left-justified (as we are using shift-to-left to get MSB-first serial)\nstatic inline void st7789_lcd_put(PIO pio, uint sm, uint8_t x) {\n    while (pio_sm_is_tx_fifo_full(pio, sm))\n        ;\n    *(volatile uint8_t*)&pio->txf[sm] = x;\n}\n// SM is done when it stalls on an empty FIFO\nstatic inline void st7789_lcd_wait_idle(PIO pio, uint sm) {\n    uint32_t sm_stall_mask = 1u << (sm + PIO_FDEBUG_TXSTALL_LSB);\n    pio->fdebug = sm_stall_mask;\n    while (!(pio->fdebug & sm_stall_mask))\n        ;\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

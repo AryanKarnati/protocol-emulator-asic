@@ -1,0 +1,46 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "addition",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 8,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "80A0", "instruction": "pull   block"},
+				{"hex": "A02F", "instruction": "mov    x, ~osr"},
+				{"hex": "80A0", "instruction": "pull   block"},
+				{"hex": "A047", "instruction": "mov    y, osr"},
+				{"hex": "0006", "instruction": "jmp    6"},
+				{"hex": "0046", "instruction": "jmp    x--, 6"},
+				{"hex": "0085", "instruction": "jmp    y--, 5"},
+				{"hex": "A0C9", "instruction": "mov    isr, ~x"},
+				{"hex": "8020", "instruction": "push   block"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "static inline void addition_program_init(PIO pio, uint sm, uint offset) {\n\tpio_sm_config c = addition_program_get_default_config(offset);\n\tpio_sm_init(pio, sm, offset, &c);\n\tpio_sm_set_enabled(pio, sm, true);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

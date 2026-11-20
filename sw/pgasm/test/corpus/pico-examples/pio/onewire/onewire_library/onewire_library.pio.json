@@ -1,0 +1,56 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "onewire",
+			"pioVersion": 0,
+			"wrapTarget": 8,
+			"wrap": 16,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+				"reset_bus": 0,
+				"fetch_bit": 8
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 1, "optional": false, "pindirs": true},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "FF3C", "instruction": "set    x, 28           side 1 [15]"},
+				{"hex": "1F41", "instruction": "jmp    x--, 1          side 1 [15]"},
+				{"hex": "E628", "instruction": "set    x, 8            side 0 [6]"},
+				{"hex": "0643", "instruction": "jmp    x--, 3          side 0 [6]"},
+				{"hex": "A0C0", "instruction": "mov    isr, pins       side 0"},
+				{"hex": "8020", "instruction": "push   block           side 0"},
+				{"hex": "E738", "instruction": "set    x, 24           side 0 [7]"},
+				{"hex": "0F47", "instruction": "jmp    x--, 7          side 0 [15]"},
+				{"hex": "6021", "instruction": "out    x, 1            side 0"},
+				{"hex": "152E", "instruction": "jmp    !x, 14          side 1 [5]"},
+				{"hex": "E822", "instruction": "set    x, 2            side 0 [8]"},
+				{"hex": "4401", "instruction": "in     pins, 1         side 0 [4]"},
+				{"hex": "0F4C", "instruction": "jmp    x--, 12         side 0 [15]"},
+				{"hex": "0008", "instruction": "jmp    8               side 0"},
+				{"hex": "F522", "instruction": "set    x, 2            side 1 [5]"},
+				{"hex": "1F4F", "instruction": "jmp    x--, 15         side 1 [15]"},
+				{"hex": "4861", "instruction": "in     null, 1         side 0 [8]"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "static inline void onewire_sm_init (PIO pio, uint sm, uint offset, uint pin_num, uint bits_per_word) {\n    // create a new state machine configuration\n    pio_sm_config c = onewire_program_get_default_config (offset);\n    // Input Shift Register configuration settings\n    sm_config_set_in_shift (\n        &c,\n        true,           // shift direction: right\n        true,           // autopush: enabled\n        bits_per_word   // autopush threshold\n    );\n    // Output Shift Register configuration settings\n    sm_config_set_out_shift (\n        &c,\n        true,           // shift direction: right\n        true,           // autopull: enabled\n        bits_per_word   // autopull threshold\n    );\n    // configure the input and sideset pin groups to start at `pin_num`\n    sm_config_set_in_pins (&c, pin_num);\n    sm_config_set_sideset_pins (&c, pin_num);\n    // configure the clock divider for 1 usec per instruction\n    float div = clock_get_hz (clk_sys) * 1e-6;\n    sm_config_set_clkdiv (&c, div);\n    // apply the configuration and initialise the program counter\n    pio_sm_init (pio, sm, offset + onewire_offset_fetch_bit, &c);\n    // enable the state machine\n    pio_sm_set_enabled (pio, sm, true);\n}\nstatic inline uint onewire_reset_instr (uint offset) {\n    // encode a \"jmp reset_bus side 0\" instruction for the state machine\n    return pio_encode_jmp (offset + onewire_offset_reset_bus) | pio_encode_sideset (1, 0);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

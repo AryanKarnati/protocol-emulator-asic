@@ -1,0 +1,89 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "hub75_row",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 2,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 2, "optional": false, "pindirs": false},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "7705", "instruction": "out    pins, 5         side 2 [7]"},
+				{"hex": "7F3B", "instruction": "out    x, 27           side 3 [7]"},
+				{"hex": "0042", "instruction": "jmp    x--, 2          side 0"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "static inline void hub75_row_program_init(PIO pio, uint sm, uint offset, uint row_base_pin, uint n_row_pins, uint latch_base_pin) {\n    pio_sm_set_consecutive_pindirs(pio, sm, row_base_pin, n_row_pins, true);\n    pio_sm_set_consecutive_pindirs(pio, sm, latch_base_pin, 2, true);\n    for (uint i = row_base_pin; i < row_base_pin + n_row_pins; ++i)\n        pio_gpio_init(pio, i);\n    pio_gpio_init(pio, latch_base_pin);\n    pio_gpio_init(pio, latch_base_pin + 1);\n    pio_sm_config c = hub75_row_program_get_default_config(offset);\n    sm_config_set_out_pins(&c, row_base_pin, n_row_pins);\n    sm_config_set_sideset_pins(&c, latch_base_pin);\n    sm_config_set_out_shift(&c, true, true, 32);\n    pio_sm_init(pio, sm, offset, &c);\n    pio_sm_set_enabled(pio, sm, true);\n}\nstatic inline void hub75_wait_tx_stall(PIO pio, uint sm) {\n    uint32_t txstall_mask = 1u << (PIO_FDEBUG_TXSTALL_LSB + sm);\n    pio->fdebug = txstall_mask;\n    while (!(pio->fdebug & txstall_mask))\n        tight_loop_contents();\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		},
+		{
+			"name": "hub75_data_rgb888",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 15,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+				"entry_point": 0,
+				"shift0": 0,
+				"shift1": 7
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 1, "optional": false, "pindirs": false},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "80A0", "instruction": "pull   block           side 0"},
+				{"hex": "40E1", "instruction": "in     osr, 1          side 0"},
+				{"hex": "6068", "instruction": "out    null, 8         side 0"},
+				{"hex": "40E1", "instruction": "in     osr, 1          side 0"},
+				{"hex": "6068", "instruction": "out    null, 8         side 0"},
+				{"hex": "40E1", "instruction": "in     osr, 1          side 0"},
+				{"hex": "6060", "instruction": "out    null, 32        side 0"},
+				{"hex": "80A0", "instruction": "pull   block           side 0"},
+				{"hex": "50E1", "instruction": "in     osr, 1          side 1"},
+				{"hex": "7068", "instruction": "out    null, 8         side 1"},
+				{"hex": "50E1", "instruction": "in     osr, 1          side 1"},
+				{"hex": "7068", "instruction": "out    null, 8         side 1"},
+				{"hex": "50E1", "instruction": "in     osr, 1          side 1"},
+				{"hex": "7060", "instruction": "out    null, 32        side 1"},
+				{"hex": "507A", "instruction": "in     null, 26        side 1"},
+				{"hex": "B016", "instruction": "mov    pins, ::isr     side 1"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "static inline void hub75_data_rgb888_program_init(PIO pio, uint sm, uint offset, uint rgb_base_pin, uint clock_pin) {\n    pio_sm_set_consecutive_pindirs(pio, sm, rgb_base_pin, 6, true);\n    pio_sm_set_consecutive_pindirs(pio, sm, clock_pin, 1, true);\n    for (uint i = rgb_base_pin; i < rgb_base_pin + 6; ++i)\n        pio_gpio_init(pio, i);\n    pio_gpio_init(pio, clock_pin);\n    pio_sm_config c = hub75_data_rgb888_program_get_default_config(offset);\n    sm_config_set_out_pins(&c, rgb_base_pin, 6);\n    sm_config_set_sideset_pins(&c, clock_pin);\n    sm_config_set_out_shift(&c, true, true, 24);\n    // ISR shift to left. R0 ends up at bit 5. We push it up to MSB and then flip the register.\n    sm_config_set_in_shift(&c, false, false, 32);\n    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);\n    pio_sm_init(pio, sm, offset, &c);\n    pio_sm_exec(pio, sm, offset + hub75_data_rgb888_offset_entry_point);\n    pio_sm_set_enabled(pio, sm, true);\n}\n// Patch a data program at `offset` to preshift pixels by `shamt`\nstatic inline void hub75_data_rgb888_set_shift(PIO pio, uint sm, uint offset, uint shamt) {\n    uint16_t instr;\n    if (shamt == 0)\n        instr = pio_encode_pull(false, true); // blocking PULL\n    else\n        instr = pio_encode_out(pio_null, shamt);\n    pio->instr_mem[offset + hub75_data_rgb888_offset_shift0] = instr;\n    pio->instr_mem[offset + hub75_data_rgb888_offset_shift1] = instr;\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

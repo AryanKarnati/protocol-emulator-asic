@@ -1,0 +1,146 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "spi_cpha0",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 1,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 1, "optional": false, "pindirs": false},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "6101", "instruction": "out    pins, 1         side 0 [1]"},
+				{"hex": "5101", "instruction": "in     pins, 1         side 1 [1]"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		},
+		{
+			"name": "spi_cpha1",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 2,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 1, "optional": false, "pindirs": false},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "6021", "instruction": "out    x, 1            side 0"},
+				{"hex": "B101", "instruction": "mov    pins, x         side 1 [1]"},
+				{"hex": "4001", "instruction": "in     pins, 1         side 0"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "#include \"hardware/gpio.h\"\nstatic inline void pio_spi_init(PIO pio, uint sm, uint prog_offs, uint n_bits,\n        float clkdiv, bool cpha, bool cpol, uint pin_sck, uint pin_mosi, uint pin_miso) {\n    pio_sm_config c = cpha ? spi_cpha1_program_get_default_config(prog_offs) : spi_cpha0_program_get_default_config(prog_offs);\n    sm_config_set_out_pins(&c, pin_mosi, 1);\n    sm_config_set_in_pins(&c, pin_miso);\n    sm_config_set_sideset_pins(&c, pin_sck);\n    // Only support MSB-first in this example code (shift to left, auto push/pull, threshold=nbits)\n    sm_config_set_out_shift(&c, false, true, n_bits);\n    sm_config_set_in_shift(&c, false, true, n_bits);\n    sm_config_set_clkdiv(&c, clkdiv);\n    // MOSI, SCK output are low, MISO is input\n    pio_sm_set_pins_with_mask64(pio, sm, 0, (1ull << pin_sck) | (1ull << pin_mosi));\n    pio_sm_set_pindirs_with_mask64(pio, sm, (1ull << pin_sck) | (1ull << pin_mosi), (1ull << pin_sck) | (1ull << pin_mosi) | (1ull << pin_miso));\n    pio_gpio_init(pio, pin_mosi);\n    pio_gpio_init(pio, pin_miso);\n    pio_gpio_init(pio, pin_sck);\n    // The pin muxes can be configured to invert the output (among other things\n    // and this is a cheesy way to get CPOL=1\n    gpio_set_outover(pin_sck, cpol ? GPIO_OVERRIDE_INVERT : GPIO_OVERRIDE_NORMAL);\n    // SPI is synchronous, so bypass input synchroniser to reduce input delay.\n    pio_set_input_sync_bypass_with_mask64(pio, 1ull << pin_miso, 1ull << pin_miso);\n    pio_sm_init(pio, sm, prog_offs, &c);\n    pio_sm_set_enabled(pio, sm, true);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		},
+		{
+			"name": "spi_cpha0_cs",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 8,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+				"entry_point": 8
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 2, "optional": false, "pindirs": false},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "6101", "instruction": "out    pins, 1         side 0 [1]"},
+				{"hex": "4801", "instruction": "in     pins, 1         side 1"},
+				{"hex": "0840", "instruction": "jmp    x--, 0          side 1"},
+				{"hex": "6001", "instruction": "out    pins, 1         side 0"},
+				{"hex": "A022", "instruction": "mov    x, y            side 0"},
+				{"hex": "4801", "instruction": "in     pins, 1         side 1"},
+				{"hex": "08E0", "instruction": "jmp    !osre, 0        side 1"},
+				{"hex": "A142", "instruction": "nop                    side 0 [1]"},
+				{"hex": "91E0", "instruction": "pull   ifempty block   side 2 [1]"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		},
+		{
+			"name": "spi_cpha1_cs",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 8,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+				"entry_point": 7
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 2, "optional": false, "pindirs": false},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "6901", "instruction": "out    pins, 1         side 1 [1]"},
+				{"hex": "4001", "instruction": "in     pins, 1         side 0"},
+				{"hex": "0040", "instruction": "jmp    x--, 0          side 0"},
+				{"hex": "6801", "instruction": "out    pins, 1         side 1"},
+				{"hex": "A822", "instruction": "mov    x, y            side 1"},
+				{"hex": "4001", "instruction": "in     pins, 1         side 0"},
+				{"hex": "00E0", "instruction": "jmp    !osre, 0        side 0"},
+				{"hex": "91E0", "instruction": "pull   ifempty block   side 2 [1]"},
+				{"hex": "A142", "instruction": "nop                    side 0 [1]"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "#include \"hardware/gpio.h\"\nstatic inline void pio_spi_cs_init(PIO pio, uint sm, uint prog_offs, uint n_bits, float clkdiv, bool cpha, bool cpol,\n        uint pin_sck, uint pin_mosi, uint pin_miso) {\n    pio_sm_config c = cpha ? spi_cpha1_cs_program_get_default_config(prog_offs) : spi_cpha0_cs_program_get_default_config(prog_offs);\n    sm_config_set_out_pins(&c, pin_mosi, 1);\n    sm_config_set_in_pins(&c, pin_miso);\n    sm_config_set_sideset_pins(&c, pin_sck);\n    sm_config_set_out_shift(&c, false, true, n_bits);\n    sm_config_set_in_shift(&c, false, true, n_bits);\n    sm_config_set_clkdiv(&c, clkdiv);\n    pio_sm_set_pins_with_mask64(pio, sm, (2ull << pin_sck), (3ull << pin_sck) | (1ull << pin_mosi));\n    pio_sm_set_pindirs_with_mask64(pio, sm, (3ull << pin_sck) | (1ull << pin_mosi), (3ull << pin_sck) | (1ull << pin_mosi) | (1ull << pin_miso));\n    pio_gpio_init(pio, pin_mosi);\n    pio_gpio_init(pio, pin_miso);\n    pio_gpio_init(pio, pin_sck);\n    pio_gpio_init(pio, pin_sck + 1);\n    gpio_set_outover(pin_sck, cpol ? GPIO_OVERRIDE_INVERT : GPIO_OVERRIDE_NORMAL);\n    pio_set_input_sync_bypass_with_mask64(pio, 1ull << pin_miso, 1ull << pin_miso);\n    uint entry_point = prog_offs + (cpha ? spi_cpha1_cs_offset_entry_point : spi_cpha0_cs_offset_entry_point);\n    pio_sm_init(pio, sm, entry_point, &c);\n    pio_sm_exec(pio, sm, pio_encode_set(pio_x, n_bits - 2));\n    pio_sm_exec(pio, sm, pio_encode_set(pio_y, n_bits - 2));\n    pio_sm_set_enabled(pio, sm, true);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

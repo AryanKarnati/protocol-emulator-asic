@@ -1,0 +1,38 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "pio_serialiser",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 0,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "6001", "instruction": "out    pins, 1"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "static inline void pio_serialiser_program_init(PIO pio, uint sm, uint offset, uint data_pin, float clk_div) {\n    pio_gpio_init(pio, data_pin);\n    pio_sm_set_consecutive_pindirs(pio, sm, data_pin, 1, true);\n    pio_sm_config c = pio_serialiser_program_get_default_config(offset);\n    sm_config_set_out_pins(&c, data_pin, 1);\n    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);\n    sm_config_set_clkdiv(&c, clk_div);\n    sm_config_set_out_shift(&c, true, true, 32);\n    pio_sm_init(pio, sm, offset, &c);\n    pio_sm_set_enabled(pio, sm, true);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

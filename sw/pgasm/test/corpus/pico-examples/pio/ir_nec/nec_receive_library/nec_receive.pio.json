@@ -1,0 +1,46 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "nec_receive",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 8,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "E03E", "instruction": "set    x, 30"},
+				{"hex": "2020", "instruction": "wait   0 pin, 0"},
+				{"hex": "00C7", "instruction": "jmp    pin, 7"},
+				{"hex": "0042", "instruction": "jmp    x--, 2"},
+				{"hex": "A0C3", "instruction": "mov    isr, null"},
+				{"hex": "20A0", "instruction": "wait   1 pin, 0"},
+				{"hex": "0000", "instruction": "jmp    0"},
+				{"hex": "AE42", "instruction": "nop                           [14]"},
+				{"hex": "4001", "instruction": "in     pins, 1"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "static inline void nec_receive_program_init (PIO pio, uint sm, uint offset, uint pin) {\n    // Set the GPIO function of the pin (connect the PIO to the pad)\n    //\n    pio_gpio_init(pio, pin);\n    // Set the pin direction to `input` at the PIO\n    //\n    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, false);\n    // Create a new state machine configuration\n    //\n    pio_sm_config c = nec_receive_program_get_default_config (offset);\n    // configure the Input Shift Register\n    //\n    sm_config_set_in_shift (&c,\n                            true,       // shift right\n                            true,       // enable autopush\n                            32);        // autopush after 32 bits\n    // join the FIFOs to make a single large receive FIFO\n    //\n    sm_config_set_fifo_join (&c, PIO_FIFO_JOIN_RX);\n    // Map the IN pin group to one pin, namely the `pin`\n    // parameter to this function.\n    //\n    sm_config_set_in_pins (&c, pin);\n    // Map the JMP pin to the `pin` parameter of this function.\n    //\n    sm_config_set_jmp_pin (&c, pin);\n    // Set the clock divider to 10 ticks per 562.5us burst period\n    //\n    float div = clock_get_hz (clk_sys) / (10.0 / 562.5e-6);\n    sm_config_set_clkdiv (&c, div);\n    // Apply the configuration to the state machine\n    //\n    pio_sm_init (pio, sm, offset, &c);\n    // Set the state machine running\n    //\n    pio_sm_set_enabled (pio, sm, true);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}
