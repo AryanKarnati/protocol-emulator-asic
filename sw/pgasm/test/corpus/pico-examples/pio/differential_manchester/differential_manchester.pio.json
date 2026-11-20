@@ -1,0 +1,89 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "differential_manchester_tx",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 9,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+				"start": 0
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 2, "optional": true, "pindirs": false},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "6021", "instruction": "out    x, 1"},
+				{"hex": "1E24", "instruction": "jmp    !x, 4           side 1 [6]"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "1600", "instruction": "jmp    0               side 0 [6]"},
+				{"hex": "0705", "instruction": "jmp    5                      [7]"},
+				{"hex": "6021", "instruction": "out    x, 1"},
+				{"hex": "1629", "instruction": "jmp    !x, 9           side 0 [6]"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "1E05", "instruction": "jmp    5               side 1 [6]"},
+				{"hex": "0700", "instruction": "jmp    0                      [7]"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "static inline void differential_manchester_tx_program_init(PIO pio, uint sm, uint offset, uint pin, float div) {\n    pio_sm_set_pins_with_mask(pio, sm, 0, 1u << pin);\n    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);\n    pio_gpio_init(pio, pin);\n    pio_sm_config c = differential_manchester_tx_program_get_default_config(offset);\n    sm_config_set_sideset_pins(&c, pin);\n    sm_config_set_out_shift(&c, true, true, 32);\n    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);\n    sm_config_set_clkdiv(&c, div);\n    pio_sm_init(pio, sm, offset + differential_manchester_tx_offset_start, &c);\n    // Execute a blocking pull so that we maintain the initial line state until data is available\n    pio_sm_exec(pio, sm, pio_encode_pull(false, true));\n    pio_sm_set_enabled(pio, sm, true);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		},
+		{
+			"name": "differential_manchester_rx",
+			"pioVersion": 0,
+			"wrapTarget": 5,
+			"wrap": 9,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+				"start": 0
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "2BA0", "instruction": "wait   1 pin, 0               [11]"},
+				{"hex": "00C4", "instruction": "jmp    pin, 4"},
+				{"hex": "4021", "instruction": "in     x, 1"},
+				{"hex": "0000", "instruction": "jmp    0"},
+				{"hex": "4141", "instruction": "in     y, 1                   [1]"},
+				{"hex": "2B20", "instruction": "wait   0 pin, 0               [11]"},
+				{"hex": "00C9", "instruction": "jmp    pin, 9"},
+				{"hex": "4041", "instruction": "in     y, 1"},
+				{"hex": "0000", "instruction": "jmp    0"},
+				{"hex": "4121", "instruction": "in     x, 1                   [1]"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "static inline void differential_manchester_rx_program_init(PIO pio, uint sm, uint offset, uint pin, float div) {\n    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, false);\n    pio_gpio_init(pio, pin);\n    pio_sm_config c = differential_manchester_rx_program_get_default_config(offset);\n    sm_config_set_in_pins(&c, pin); // for WAIT\n    sm_config_set_jmp_pin(&c, pin); // for JMP\n    sm_config_set_in_shift(&c, true, true, 32);\n    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);\n    sm_config_set_clkdiv(&c, div);\n    pio_sm_init(pio, sm, offset, &c);\n    // X and Y are set to 0 and 1, to conveniently emit these to ISR/FIFO.\n    pio_sm_exec(pio, sm, pio_encode_set(pio_x, 1));\n    pio_sm_exec(pio, sm, pio_encode_set(pio_y, 0));\n    pio_sm_set_enabled(pio, sm, true);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

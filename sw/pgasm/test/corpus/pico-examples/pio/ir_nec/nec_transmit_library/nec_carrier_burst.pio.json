@@ -1,0 +1,43 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "nec_carrier_burst",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 4,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+				"TICKS_PER_LOOP": 4
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "E034", "instruction": "set    x, 20"},
+				{"hex": "20C7", "instruction": "wait   1 irq, 7"},
+				{"hex": "E001", "instruction": "set    pins, 1"},
+				{"hex": "E100", "instruction": "set    pins, 0                [1]"},
+				{"hex": "0042", "instruction": "jmp    x--, 2"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "static inline void nec_carrier_burst_program_init(PIO pio, uint sm, uint offset, uint pin, float freq) {\n    // Create a new state machine configuration\n    //\n    pio_sm_config c = nec_carrier_burst_program_get_default_config (offset);\n    // Map the SET pin group to one pin, namely the `pin`\n    // parameter to this function.\n    //\n    sm_config_set_set_pins (&c, pin, 1);\n    // Set the GPIO function of the pin (connect the PIO to the pad)\n    //\n    pio_gpio_init (pio, pin);\n    // Set the pin direction to output at the PIO\n    //\n    pio_sm_set_consecutive_pindirs (pio, sm, pin, 1, true);\n    // Set the clock divider to generate the required frequency\n    //\n    float div = clock_get_hz (clk_sys) / (freq * nec_carrier_burst_TICKS_PER_LOOP);\n    sm_config_set_clkdiv (&c, div);\n    // Apply the configuration to the state machine\n    //\n    pio_sm_init (pio, sm, offset, &c);\n    // Set the state machine running\n    //\n    pio_sm_set_enabled (pio, sm, true);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

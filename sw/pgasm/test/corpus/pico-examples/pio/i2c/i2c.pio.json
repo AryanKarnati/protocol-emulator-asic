@@ -1,0 +1,90 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "i2c",
+			"pioVersion": 0,
+			"wrapTarget": 12,
+			"wrap": 17,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+				"entry_point": 12
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 2, "optional": true, "pindirs": true},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "008C", "instruction": "jmp    y--, 12"},
+				{"hex": "C030", "instruction": "irq    wait 0 rel"},
+				{"hex": "E027", "instruction": "set    x, 7"},
+				{"hex": "6781", "instruction": "out    pindirs, 1             [7]"},
+				{"hex": "BA42", "instruction": "nop                    side 1 [2]"},
+				{"hex": "24A1", "instruction": "wait   1 pin, 1               [4]"},
+				{"hex": "4701", "instruction": "in     pins, 1                [7]"},
+				{"hex": "1743", "instruction": "jmp    x--, 3          side 0 [7]"},
+				{"hex": "6781", "instruction": "out    pindirs, 1             [7]"},
+				{"hex": "BF42", "instruction": "nop                    side 1 [7]"},
+				{"hex": "27A1", "instruction": "wait   1 pin, 1               [7]"},
+				{"hex": "12C0", "instruction": "jmp    pin, 0          side 0 [2]"},
+				{"hex": "6026", "instruction": "out    x, 6"},
+				{"hex": "6041", "instruction": "out    y, 1"},
+				{"hex": "0022", "instruction": "jmp    !x, 2"},
+				{"hex": "6060", "instruction": "out    null, 32"},
+				{"hex": "60F0", "instruction": "out    exec, 16"},
+				{"hex": "0050", "instruction": "jmp    x--, 16"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "#include \"hardware/clocks.h\"\n#include \"hardware/gpio.h\"\nstatic inline void i2c_program_init(PIO pio, uint sm, uint offset, uint pin_sda, uint pin_scl) {\n    assert(pin_scl == pin_sda + 1);\n    pio_sm_config c = i2c_program_get_default_config(offset);\n    // IO mapping\n    sm_config_set_out_pins(&c, pin_sda, 1);\n    sm_config_set_set_pins(&c, pin_sda, 1);\n    sm_config_set_in_pins(&c, pin_sda);\n    sm_config_set_sideset_pins(&c, pin_scl);\n    sm_config_set_jmp_pin(&c, pin_sda);\n    sm_config_set_out_shift(&c, false, true, 16);\n    sm_config_set_in_shift(&c, false, true, 8);\n    float div = (float)clock_get_hz(clk_sys) / (32 * 100000);\n    sm_config_set_clkdiv(&c, div);\n    // Try to avoid glitching the bus while connecting the IOs. Get things set\n    // up so that pin is driven down when PIO asserts OE low, and pulled up\n    // otherwise.\n    gpio_pull_up(pin_scl);\n    gpio_pull_up(pin_sda);\n    uint32_t both_pins = (1u << pin_sda) | (1u << pin_scl);\n    pio_sm_set_pins_with_mask(pio, sm, both_pins, both_pins);\n    pio_sm_set_pindirs_with_mask(pio, sm, both_pins, both_pins);\n    pio_gpio_init(pio, pin_sda);\n    gpio_set_oeover(pin_sda, GPIO_OVERRIDE_INVERT);\n    pio_gpio_init(pio, pin_scl);\n    gpio_set_oeover(pin_scl, GPIO_OVERRIDE_INVERT);\n    pio_sm_set_pins_with_mask(pio, sm, 0, both_pins);\n    // Clear IRQ flag before starting, and make sure flag doesn't actually\n    // assert a system-level interrupt (we're using it as a status flag)\n    pio_set_irq0_source_enabled(pio, (enum pio_interrupt_source) ((uint) pis_interrupt0 + sm), false);\n    pio_set_irq1_source_enabled(pio, (enum pio_interrupt_source) ((uint) pis_interrupt0 + sm), false);\n    pio_interrupt_clear(pio, sm);\n    // Configure and start SM\n    pio_sm_init(pio, sm, offset + i2c_offset_entry_point, &c);\n    pio_sm_set_enabled(pio, sm, true);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		},
+		{
+			"name": "set_scl_sda",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 3,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 2, "optional": true, "pindirs": false},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "F780", "instruction": "set    pindirs, 0      side 0 [7]"},
+				{"hex": "F781", "instruction": "set    pindirs, 1      side 0 [7]"},
+				{"hex": "FF80", "instruction": "set    pindirs, 0      side 1 [7]"},
+				{"hex": "FF81", "instruction": "set    pindirs, 1      side 1 [7]"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "// Define order of our instruction table\nenum {\n    I2C_SC0_SD0 = 0,\n    I2C_SC0_SD1,\n    I2C_SC1_SD0,\n    I2C_SC1_SD1\n};\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

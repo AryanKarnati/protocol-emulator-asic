@@ -1,0 +1,44 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "pwm",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 6,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 2, "optional": true, "pindirs": false},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "9080", "instruction": "pull   noblock         side 0"},
+				{"hex": "A027", "instruction": "mov    x, osr"},
+				{"hex": "A046", "instruction": "mov    y, isr"},
+				{"hex": "00A5", "instruction": "jmp    x != y, 5"},
+				{"hex": "1806", "instruction": "jmp    6               side 1"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "0083", "instruction": "jmp    y--, 3"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "static inline void pwm_program_init(PIO pio, uint sm, uint offset, uint pin) {\n   pio_gpio_init(pio, pin);\n   pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);\n   pio_sm_config c = pwm_program_get_default_config(offset);\n   sm_config_set_sideset_pins(&c, pin);\n   pio_sm_init(pio, sm, offset, &c);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}
