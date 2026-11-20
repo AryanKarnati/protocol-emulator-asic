@@ -1,47 +1,55 @@
-# Sample testbench for a Tiny Tapeout project
+# Polyglot tests
 
-This is a sample testbench for a Tiny Tapeout project. It uses [cocotb](https://docs.cocotb.org/en/stable/) to drive the DUT and check the outputs.
-See below to get started or for more information, check the [website](https://tinytapeout.com/hdl/testing/).
+The cocotb testbench for the Tiny Tapeout project. `tb.v` instantiates `tt_um_aryankarnati_polyglot` (in `src/project.v`). The RTL simulation also compiles `src/polyglot.v`, which is generated from `hw/`.
 
-## Setting up
+`test.py` tests the block 1 gate design, as specified in [docs/gate.md](../docs/gate.md). It is not the final test suite; block 3 replaces it with the real host link.
 
-1. Edit [Makefile](Makefile) and modify `PROJECT_SOURCES` to point to your Verilog files.
-2. Edit [tb.v](tb.v) and replace `tt_um_example` with your module name.
+## Setup
 
-## How to run
+Install the Python packages:
 
-To run the RTL simulation:
+```sh
+pip install -r requirements.txt
+```
+
+Install Icarus Verilog. If you use the OSS CAD Suite, put its `bin` directory on `PATH`.
+
+For local runs on this machine, put `~/.local/polyglot-bin` (iverilog and vvp launchers that don't break cocotb's Python) and `~/.local/venvs/cocotb/bin` on `PATH`.
+
+## RTL simulation
 
 ```sh
 make -B
 ```
 
-To run gatelevel simulation, first harden your project and copy `../runs/wokwi/results/final/verilog/gl/{your_module_name}.v` to `gate_level_netlist.v`.
+This writes `results.xml` and `tb.fst`. Check the results with:
 
-Then run:
+```sh
+python -m cocotb_tools.check_results results.xml
+```
+
+## Gate-level simulation
+
+First harden the design. Copy the post-PnR netlist `runs/wokwi/results/final/verilog/gl/tt_um_aryankarnati_polyglot.v` to `test/gate_level_netlist.v`, then run:
 
 ```sh
 make -B GATES=yes
 ```
 
-If you wish to save the waveform in VCD format instead of FST format, edit tb.v to use `$dumpfile("tb.vcd");` and then run:
+The `PDK_ROOT` variable must point at the PDK install. CI copies the netlist from the GDS job itself.
 
-```sh
-make -B FST=
-```
+## Waveforms
 
-This will generate `tb.vcd` instead of `tb.fst`.
-
-## How to view the waveform file
-
-Using GTKWave
+The simulation writes `tb.fst`. View it with GTKWave:
 
 ```sh
 gtkwave tb.fst tb.gtkw
 ```
 
-Using Surfer
+Or with Surfer:
 
 ```sh
 surfer tb.fst
 ```
+
+To write VCD instead of FST, run `make -B FST=` and change `$dumpfile` in `tb.v` to `tb.vcd`.
