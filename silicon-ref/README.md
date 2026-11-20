@@ -239,7 +239,7 @@ afterwards. The version of MicroPython on the board must be recorded with the tr
 
 ```
 python3 silicon-ref/test_trace.py          # 11 tests, plain Python, no dependencies
-python3 silicon-ref/test_capture_mock.py   # 9 tests, plain Python, mocked MicroPython
+python3 silicon-ref/test_capture_mock.py   # 11 tests, plain Python, mocked MicroPython
 python3 -m pytest silicon-ref/             # the same tests under pytest, if installed
 ```
 
@@ -247,13 +247,18 @@ python3 -m pytest silicon-ref/             # the same tests under pytest, if ins
 round trip; pin levels; the warning path; and rejection of a missing or reordered word block, a
 missing footer, a word count mismatch, an unknown format or version, and an incomplete capture.
 
-`test_capture_mock.py` covers: the exact register write sequence for the ws2812 program; the single
-enable write coming straight after the restart; configuration and PC writes before the restart;
-ISO and OD cleared and IE set on the pads; the FJOIN_RX flush before the DMA is armed; a repeated
-run issuing the same writes; PIO0 and DMA taken out of reset; the DMA closed and both SMs stopped
-on timeout; and `tx_words` rejected before any write. The expected values are derived from the
-header bit positions and are [verify on hardware]. The mock models the reset alias and
-write-1-to-clear of FDEBUG, but not the real pad reset values, so it does not show that the pad
-bits are preserved on silicon.
+`test_capture_mock.py` covers: the exact register write sequence for the ws2812 program (51 writes);
+the single enable write coming straight after the restart; configuration and PC writes before the
+restart; the pads, which start at the reset value 0x116 (`pads_bank0.h`), having ISO and OD cleared
+(0x116 to 0x016) and IE added (0x056), so the other reset bits are kept; the FJOIN_RX flush before
+the DMA is armed; a repeated run issuing the same writes; PIO0 and DMA taken out of reset; the DMA
+closed and both SMs stopped on timeout; `tx_words` rejected before any write; and the override
+path. The override path is a second program run (`tx_words=[1, 2]`, `init_dirs={0:1}`,
+`init_levels={0:1,1:0,3:1}`, `fifo_join="tx"`, `out_shift_right=False`, `autopull=True`,
+`pull_thresh=24`, `clkdiv=(2,128)`). Its key register values are checked explicitly, and its full
+write sequence (59 writes) is frozen. The expected values are derived from the header bit positions
+and are [verify on hardware]. The mock models the reset alias, write-1-to-clear of FDEBUG and the
+pad reset value. It does not model the reset values of other registers, and it does not show on
+silicon that the pad bits are preserved.
 
 Neither test file covers silicon behaviour, which needs the calibration run.

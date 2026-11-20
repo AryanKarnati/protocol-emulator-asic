@@ -35,6 +35,11 @@ RESETS_RESET_DONE = RESETS_BASE + 0x008
 ALIAS_SET = 0x2000
 ALIAS_CLR = 0x3000
 PADS_BANK0_BASE = 0x40038000
+PAD_RESET = 0x116                 # pads_bank0.h PADS_BANK0_GPIO0_RESET
+PAD_ISO = 1 << 8                  # pads_bank0.h PADS_BANK0_GPIO0_ISO_BITS
+PAD_OD = 1 << 7                   # PADS_BANK0_GPIO0_OD_BITS
+PAD_IE = 1 << 6                   # PADS_BANK0_GPIO0_IE_BITS
+PAD_OTHER = 0x16                  # reset bits that must survive: DRIVE, PDE, SCHMITT
 RESET_DMA = 1 << 2
 RESET_PIO0 = 1 << 11
 SM_RESTART_BITS = 0x0F0           # CTRL[7:4], self-clearing
@@ -55,6 +60,10 @@ class FakeMem:
 
     def __init__(self, resets_held=0):
         self.values = {RESETS_RESET: resets_held}
+        # Pads start at their reset value (pads_bank0.h PADS_BANK0_GPIO0_RESET = 0x116:
+        # ISO 0x100 = 1, DRIVE 0x10 = 1, PDE 0x4 = 1, SCHMITT 0x2 = 1, others 0).
+        for n in range(30):
+            self.values[PADS_BANK0_BASE + 4 + 4 * n] = PAD_RESET
         self.log = []                 # (addr, value) for every write, in order
 
     def __getitem__(self, addr):
@@ -188,20 +197,20 @@ EXPECTED_LOG = [
     # FIFO flush: FJOIN_RX (bit 31) toggled, then restored, on SM0 then SM1
     (0x502000d0, 0x800c0000), (0x502000d0, 0x000c0000),
     (0x502000e8, 0x800d0000), (0x502000e8, 0x000d0000),
-    # pads 0..7: FUNCSEL = PIO0 (6), then ISO and OD cleared (mock pads start at 0)
-    (0x40028004, 0x00000006), (0x40038004, 0x00000000),
-    (0x4002800c, 0x00000006), (0x40038008, 0x00000000),
-    (0x40028014, 0x00000006), (0x4003800c, 0x00000000),
-    (0x4002801c, 0x00000006), (0x40038010, 0x00000000),
-    (0x40028024, 0x00000006), (0x40038014, 0x00000000),
-    (0x4002802c, 0x00000006), (0x40038018, 0x00000000),
-    (0x40028034, 0x00000006), (0x4003801c, 0x00000000),
-    (0x4002803c, 0x00000006), (0x40038020, 0x00000000),
-    # sampled pads: input enable (bit 6) set
-    (0x40038004, 0x00000040), (0x40038008, 0x00000040),
-    (0x4003800c, 0x00000040), (0x40038010, 0x00000040),
-    (0x40038014, 0x00000040), (0x40038018, 0x00000040),
-    (0x4003801c, 0x00000040), (0x40038020, 0x00000040),
+    # pads 0..7: FUNCSEL = PIO0 (6); the pad write clears ISO and OD (0x116 -> 0x016)
+    (0x40028004, 0x00000006), (0x40038004, 0x00000016),
+    (0x4002800c, 0x00000006), (0x40038008, 0x00000016),
+    (0x40028014, 0x00000006), (0x4003800c, 0x00000016),
+    (0x4002801c, 0x00000006), (0x40038010, 0x00000016),
+    (0x40028024, 0x00000006), (0x40038014, 0x00000016),
+    (0x4002802c, 0x00000006), (0x40038018, 0x00000016),
+    (0x40028034, 0x00000006), (0x4003801c, 0x00000016),
+    (0x4002803c, 0x00000006), (0x40038020, 0x00000016),
+    # sampled pads: input enable (bit 6) added (0x016 -> 0x056)
+    (0x40038004, 0x00000056), (0x40038008, 0x00000056),
+    (0x4003800c, 0x00000056), (0x40038010, 0x00000056),
+    (0x40038014, 0x00000056), (0x40038018, 0x00000056),
+    (0x4003801c, 0x00000056), (0x40038020, 0x00000056),
     # SM0 PINCTRL restored, PCs set by jmp via SMn_INSTR (SM0 -> 0, SM1 -> 4)
     (0x502000dc, 0x34100000), (0x502000d8, 0x00000000), (0x502000f0, 0x00000004),
     # restart of both SMs and clock dividers (both disabled), then the single enable
@@ -238,13 +247,21 @@ def test_config_and_pc_writes_all_before_restart():
 
 
 def test_iso_and_od_cleared_on_driven_and_sampled_pins():
+    """The pad starts at PAD_RESET (ISO = 1). The first pad write must clear ISO and OD and
+    keep the other reset bits, and the IE write must set only bit 6 on top of that."""
     _, mem = _run_ws2812()
+    assert PAD_RESET & PAD_ISO, "reset value must have ISO set, or this test proves nothing"
     for pin in range(0, 8):
         pad = PADS_BANK0_BASE + 4 + 4 * pin
-        last = _writes_to(mem, pad)[-1]
-        assert last & (1 << 8) == 0, "ISO must be cleared on GPIO %d" % pin
-        assert last & (1 << 7) == 0, "OD must be cleared on GPIO %d" % pin
-        assert last & (1 << 6), "IE must be set on sampled GPIO %d" % pin
+        writes = _writes_to(mem, pad)
+        assert len(writes) == 2, "GPIO %d: one ISO/OD clear, one IE write" % pin
+        cleared, enabled = writes
+        assert cleared & PAD_ISO == 0, "ISO must be cleared on GPIO %d" % pin
+        assert cleared & PAD_OD == 0, "OD must be cleared on GPIO %d" % pin
+        assert cleared & 0xFF == PAD_OTHER, "other reset bits must survive on GPIO %d" % pin
+        assert enabled & PAD_IE, "IE must be set on sampled GPIO %d" % pin
+        assert enabled & PAD_ISO == 0 and enabled & PAD_OD == 0
+        assert enabled == (PAD_OTHER | PAD_IE), "GPIO %d: only IE added to the cleared pad" % pin
 
 
 def test_fifos_flushed_by_fjoin_rx_toggle_before_dma_arm():
@@ -300,6 +317,119 @@ def test_tx_words_limit_checked_before_any_write():
     else:
         raise AssertionError("5 TX words must be rejected without fifo_join='tx'")
     assert mem.log == [], "validation must fail before any register write"
+
+
+OVERRIDE_ARGS = dict(
+    tx_words=[1, 2],
+    init_dirs={0: 1},
+    init_levels={0: 1, 1: 0, 3: 1},
+    fifo_join="tx",
+    out_shift_right=False,
+    autopull=True,
+    pull_thresh=24,
+    clkdiv=(2, 128),
+)
+
+# Full write log for the ws2812 program with OVERRIDE_ARGS. Frozen from the first review run,
+# after the explicit value checks in test_override_path_values pass. [verify on hardware]
+EXPECTED_OVERRIDE_LOG = [
+    # OVERRIDE_ARGS: clkdiv 2.128, SHIFTCTRL TX join, out left, autopull, pull 24, set pindirs,
+    # set pins, 2 TX words, pads with ISO cleared (0x016) and IE (0x056)
+    (0x50200000, 0x00000000),
+    (0x50200008, 0x0f0f0f0f),
+    (0x50200048, 0x00006321),
+    (0x5020004c, 0x00001223),
+    (0x50200050, 0x00001200),
+    (0x50200054, 0x0000a242),
+    (0x50200058, 0x00004008),
+    (0x502000c8, 0x00028000),
+    (0x502000cc, 0x00003000),
+    (0x502000d0, 0x70060000),
+    (0x502000dc, 0x34100000),
+    (0x502000e0, 0x00010000),
+    (0x502000e4, 0x00004200),
+    (0x502000e8, 0x000d0000),
+    (0x502000f4, 0x00000000),
+    (0x502000d0, 0xf0060000),
+    (0x502000d0, 0x70060000),
+    (0x502000e8, 0x800d0000),
+    (0x502000e8, 0x000d0000),
+    (0x40028004, 0x00000006),
+    (0x40038004, 0x00000016),
+    (0x4002800c, 0x00000006),
+    (0x40038008, 0x00000016),
+    (0x40028014, 0x00000006),
+    (0x4003800c, 0x00000016),
+    (0x4002801c, 0x00000006),
+    (0x40038010, 0x00000016),
+    (0x40028024, 0x00000006),
+    (0x40038014, 0x00000016),
+    (0x4002802c, 0x00000006),
+    (0x40038018, 0x00000016),
+    (0x40028034, 0x00000006),
+    (0x4003801c, 0x00000016),
+    (0x4002803c, 0x00000006),
+    (0x40038020, 0x00000016),
+    (0x40038004, 0x00000056),
+    (0x40038008, 0x00000056),
+    (0x4003800c, 0x00000056),
+    (0x40038010, 0x00000056),
+    (0x40038014, 0x00000056),
+    (0x40038018, 0x00000056),
+    (0x4003801c, 0x00000056),
+    (0x40038020, 0x00000056),
+    (0x502000dc, 0x04000000),
+    (0x502000d8, 0x0000e081),
+    (0x502000dc, 0x08000000),
+    (0x502000d8, 0x0000e001),
+    (0x502000dc, 0x04000060),
+    (0x502000d8, 0x0000e001),
+    (0x502000dc, 0x34100000),
+    (0x50200010, 0x00000001),
+    (0x50200010, 0x00000002),
+    (0x502000d8, 0x00000000),
+    (0x502000f0, 0x00000004),
+    (0x50200000, 0x00000330),
+    (0x50200000, 0x00000003),
+    (0x50200000, 0x00000000),
+    (0x50200000, 0x00000000),
+    (0x50200008, 0x00000000),
+]
+
+
+def test_override_path_values():
+    """Each argument reaches its register as the header bit positions in capture.py say."""
+    _, mem = _run_ws2812(**OVERRIDE_ARGS)
+    last = lambda addr: _writes_to(mem, addr)[-1]  # noqa: E731
+    # clkdiv (2, 128): INT [31:16] = 2, FRAC [15:8] = 128
+    assert last(sm_reg(0, "clkdiv")) == 0x00028000
+    # SHIFTCTRL: FJOIN_TX [30] | PULL_THRESH 24 [29:25] | IN right [18] | AUTOPULL [17]
+    # OUT right is off, so bit 19 is clear. The FJOIN_RX flush keeps FJOIN_TX set.
+    assert last(sm_reg(0, "shiftctrl")) == 0x70060000
+    # FIFO preload: two words pushed to TXF0 (a FIFO port, so the same address each time)
+    txf = [v for a, v in mem.log if a == PIO_TXF0]
+    assert txf == [1, 2]
+    # set pindirs (0xE080 | value) on group [0]; set pins on groups [0,1] and [3]
+    # PINCTRL SET_COUNT [28:26] and SET_BASE [9:5] are written before each set
+    instr = [(i, v) for i, (a, v) in enumerate(mem.log) if a == sm_reg(0, "instr")]
+    pinctrl = [v for a, v in mem.log if a == sm_reg(0, "pinctrl")]
+    assert [v for _, v in instr][:3] == [0xE081, 0xE001, 0xE001], "set instructions"
+    assert pinctrl[1:4] == [0x04000000, 0x08000000, 0x04000060], \
+        "PINCTRL for each set group, after the config write"
+    # PINCTRL restored after the sets, before the PCs are set
+    assert pinctrl[4] == 0x34100000
+    # all TX preload and set writes happen before the restart
+    restart = mem.log.index((PIO_CTRL, RESTART_WRITE))
+    assert max(i for i, (a, _) in enumerate(mem.log) if a == PIO_TXF0) < restart
+    if EXPECTED_OVERRIDE_LOG is None:
+        raise AssertionError("EXPECTED_OVERRIDE_LOG not set; actual log:\n" + "\n".join(
+            "(0x%08x, 0x%08x)" % w for w in mem.log))
+
+
+def test_override_path_write_sequence_is_exact():
+    _, mem = _run_ws2812(**OVERRIDE_ARGS)
+    assert EXPECTED_OVERRIDE_LOG is not None, "EXPECTED_OVERRIDE_LOG not frozen yet"
+    assert mem.log == EXPECTED_OVERRIDE_LOG, "override write sequence differs"
 
 
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
