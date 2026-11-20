@@ -17,15 +17,16 @@ let test_exhaustive () =
   let illegal = ref 0 in
   for w = 0 to 0xFFFF do
     let t = Isa.decode w in
-    (match t with
-     | Isa.Illegal _ -> Int.incr illegal
-     | _ -> ());
+    if not (Isa.is_legal t) then Int.incr illegal;
     if Isa.encode t <> w
     then (
       incr failures;
       printf "FAIL: encode (decode 0x%04x) = 0x%04x\n" w (Isa.encode t))
   done;
-  printf "exhaustive: 65536 words round-trip; %d illegal in version 0\n" !illegal
+  (* 23040 Illegal words, plus the 1024 words with IN source 101 (in status), which are
+     decoded to In_status but are not legal in version 0 (see Isa.is_legal). *)
+  check "illegal count is 23040 + 1024" (!illegal = 23040 + 1024);
+  printf "exhaustive: 65536 words round-trip; %d not legal in version 0\n" !illegal
 ;;
 
 (* 2. Hand-checked encodings. Each word comes from the pioasm 2.3.1 assembler (oracle) for
@@ -56,6 +57,12 @@ let known =
   ; 0xE083, Set { delay_side = 0; dest = Set_pindirs; data = 3 } (* set pindirs, 3 *)
   ; 0x008C, Jmp { delay_side = 0; cond = Y_dec; addr = 12 } (* jmp y--, 12 *)
   ; 0x0003, Jmp { delay_side = 0; cond = Always; addr = 3 } (* jmp 3 *)
+  (* Polyglot extensions (DESIGN.md 9.2). pioasm does not assemble these; the words follow the
+     encoding table in DESIGN.md 9.1, and to_string is checked in test_to_string. *)
+  ; 0x4088, In { delay_side = 0; source = In_lcu; bit_count = 8 } (* in lcu, 8 *)
+  ; 0xA024, Mov { delay_side = 0; dest = Mov_x; op = Op_none; source = Ms_crc } (* mov x, crc *)
+  ; 0xA02C, Mov { delay_side = 0; dest = Mov_x; op = Op_invert; source = Ms_crc } (* mov x, ~crc *)
+  ; 0xE070, Set { delay_side = 0; dest = Set_lcu; data = 16 } (* set lcu, 16 *)
   ]
 ;;
 
@@ -84,8 +91,22 @@ let test_reserved () =
   check "irq prev (bit 3, v1) is illegal" (illegal 0xC009);
   check "push with bits 4:0 set (mov rxfifo, v1) is illegal" (illegal 0x8010);
   check "in src 100 is LCU, not illegal" (not (illegal 0x4080));
+  (* IN source 101: pioasm assembles `in status`, DESIGN.md 9.1 says reserved. The decoded
+     form stays In_status so it can be printed, but the legality predicate says reserved. *)
+  check "in src 101 decodes to In_status" (Isa.equal (Isa.decode 0x40A5) (Isa.In { delay_side = 0; source = Isa.In_status; bit_count = 5 }));
+  check "in src 101 is not legal in v0" (not (Isa.is_legal (Isa.decode 0x40A5)));
+  check "in status prints as pioasm does" (String.equal (Isa.to_string (Isa.decode 0x40A5)) "in     status, 5");
+  check "in lcu is legal" (Isa.is_legal (Isa.decode 0x4080));
+  check "reserved mov dst 011 is not legal" (not (Isa.is_legal (Isa.decode 0xA061)));
   check "mov src 100 is CRC, not illegal" (not (illegal 0xA024));
-  check "set dst 011 is LCU, not illegal" (not (illegal 0xE060))
+  check "set dst 011 is LCU, not illegal" (not (illegal 0xE060));
+  (* Complete reserved set, version 0 (see the comment on Isa.decode). One word per class. *)
+  check "WAIT irq with index bit 3 (prev/next, beyond 9.1) is illegal" (illegal 0x20C8);
+  check "MOV op 11 is illegal" (illegal 0xA018);
+  check "SET dst 110 is illegal" (illegal 0xE0C0);
+  check "SET dst 111 is illegal" (illegal 0xE0E0);
+  check "IRQ bit 7 (beyond 9.1, pending V1) is illegal" (illegal 0xC087);
+  check "IRQ index bit 3 (beyond 9.1, pending V1) is illegal" (illegal 0xC009)
 ;;
 
 (* 3. Side-set and delay split/join. *)
@@ -155,11 +176,10 @@ let test_corpus () =
         let word = Int.of_string ("0x" ^ (ins |> member "hex" |> to_string)) in
         let text = ins |> member "instruction" |> to_string in
         let t = Isa.decode word in
-        (match t with
-         | Isa.Illegal _ ->
-           incr failures;
-           printf "FAIL: %s: 0x%04x decodes to illegal\n" file word
-         | _ -> ());
+        if not (Isa.is_legal t)
+        then (
+          incr failures;
+          printf "FAIL: %s: 0x%04x is not legal in v0\n" file word);
         if Isa.encode t <> word
         then (
           incr failures;
@@ -170,11 +190,97 @@ let test_corpus () =
         else (
           incr failures;
           printf "FAIL: %s: text %S, pioasm %S\n" file got text))));
+  check "corpus has 26 .pio files" (List.length files = 26);
+  check "corpus has 36 programs" (!n_prog = 36);
+  check "corpus has 280 instructions" (!n_instr = 280);
   printf
     "corpus: %d programs, %d instructions; text matches pioasm for %d\n"
     !n_prog
     !n_instr
     !n_text_ok
+;;
+
+(* 4b. Disassembly text for the extensions and for reserved words. *)
+let test_to_string () =
+  let cases =
+    [ 0x4088, "in     lcu, 8"
+    ; 0xA024, "mov    x, crc"
+    ; 0xA02C, "mov    x, ~crc"
+    ; 0xE070, "set    lcu, 16"
+    ; 0x40A5, "in     status, 5"
+    ; 0xC007, "irq    nowait 7" (* pioasm prints IRQ set as nowait *)
+    ; 0xFFFF, ".word 0xffff"
+    ]
+  in
+  List.iter cases ~f:(fun (w, expected) ->
+    let got = Isa.to_string (Isa.decode w) in
+    check (sprintf "to_string 0x%04x = %S (got %S)" w expected got) (String.equal got expected))
+;;
+
+(* 4c. is_legal: false exactly for reserved words and for IN source 101. *)
+let test_is_legal () =
+  check "legal: mov x, y" (Isa.is_legal (Isa.decode 0xA021));
+  check "legal: in lcu" (Isa.is_legal (Isa.decode 0x4088));
+  check "legal: mov x, crc" (Isa.is_legal (Isa.decode 0xA024));
+  check "legal: set lcu" (Isa.is_legal (Isa.decode 0xE070));
+  check "not legal: in status (IN 101)" (not (Isa.is_legal (Isa.decode 0x40A5)));
+  check "not legal: reserved SET 101" (not (Isa.is_legal (Isa.decode 0xE0A0)));
+  check "not legal: Illegal 0xFFFF" (not (Isa.is_legal (Isa.Illegal 0xFFFF)));
+  check
+    "in status decodes to In_status, not Illegal"
+    (match Isa.decode 0x40A5 with
+     | Isa.In { source = Isa.In_status; _ } -> true
+     | _ -> false)
+;;
+
+(* 4d. Accessors agree with the raw field for all 65536 words and all 32 delay values. *)
+let test_accessors () =
+  for w = 0 to 0xFFFF do
+    let t = Isa.decode w in
+    let ds = (w lsr 8) land 31 in
+    if Isa.delay_side t <> ds
+    then (
+      incr failures;
+      printf "FAIL: delay_side 0x%04x\n" w);
+    for d = 0 to 31 do
+      let changed = Isa.with_delay_side t d in
+      let expected = (w land lnot (31 lsl 8)) lor (d lsl 8) in
+      if Isa.encode changed <> expected || Isa.delay_side changed <> d
+      then (
+        incr failures;
+        printf "FAIL: with_delay_side 0x%04x %d\n" w d)
+    done
+  done;
+  printf "accessors: 65536 words x 32 delay values\n"
+;;
+
+(* 4e. Encoding Illegal is only allowed for reserved words; decode refuses out-of-range
+   words. *)
+let raises f =
+  match f () with
+  | _ -> false
+  | exception _ -> true
+;;
+
+let test_guards () =
+  check "encode (Illegal 0x4088) raises: not reserved" (raises (fun () -> Isa.encode (Isa.Illegal 0x4088)));
+  check "encode (Illegal 0xE0A0) ok" (Isa.encode (Isa.Illegal 0xE0A0) = 0xE0A0);
+  check "decode 0x10000 raises" (raises (fun () -> Isa.decode 0x10000));
+  check "decode -1 raises" (raises (fun () -> Isa.decode (-1)))
+;;
+
+(* 4f. Quickcheck: every 16-bit word round-trips through decode and encode. *)
+let test_quickcheck_words () =
+  Quickcheck.test
+    (Int.gen_incl 0 0xFFFF)
+    ~trials:65_536
+    ~sexp_of:Int.sexp_of_t
+    ~f:(fun w ->
+      if Isa.encode (Isa.decode w) <> w
+      then (
+        incr failures;
+        printf "FAIL: encode (decode 0x%04x)\n" w));
+  printf "quickcheck: random words round-trip through decode and encode\n"
 ;;
 
 (* 5. Quickcheck: random well-formed instructions round-trip. *)
@@ -249,6 +355,11 @@ let () =
   test_reserved ();
   test_side ();
   test_corpus ();
+  test_to_string ();
+  test_is_legal ();
+  test_accessors ();
+  test_guards ();
+  test_quickcheck_words ();
   test_quickcheck ();
   if !failures > 0
   then (
