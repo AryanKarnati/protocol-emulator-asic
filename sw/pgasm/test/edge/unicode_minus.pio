@@ -1,0 +1,5 @@
+.program um
+    jmp x−−, end
+    jmp y−−, end
+end:
+    nop

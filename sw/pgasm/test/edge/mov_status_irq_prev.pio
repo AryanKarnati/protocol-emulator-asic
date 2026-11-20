@@ -1,0 +1,3 @@
+.program ms5
+.mov_status irq prev set 6
+    nop

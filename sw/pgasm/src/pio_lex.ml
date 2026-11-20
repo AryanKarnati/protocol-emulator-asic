@@ -68,20 +68,56 @@ let is_id_char c = Char.is_alphanum c || Char.equal c '_'
 let int_of_literal ~loc s =
   let fail what = raise (Error (loc, sprintf "%s is out of range: %s" what s)) in
   let check n = if n >= 0 && n <= 0x7FFF_FFFF then n else fail "integer" in
-  if String.is_prefix s ~prefix:"0x"
+  (* pioasm's lexer is case-insensitive, so 0X1F and 0B101 are valid *)
+  let lw = String.lowercase s in
+  if String.is_prefix lw ~prefix:"0x"
   then (
-    match Int.of_string_opt s with
+    match Int.of_string_opt ("0x" ^ String.drop_prefix lw 2) with
     | Some n when n >= 0 && n <= 0x7FFF_FFFF -> n
     | _ -> fail "hex")
-  else if String.is_prefix s ~prefix:"0b"
+  else if String.is_prefix lw ~prefix:"0b"
   then (
-    match Int.of_string_opt s with
+    match Int.of_string_opt ("0b" ^ String.drop_prefix lw 2) with
     | Some n when n >= 0 && n <= 0x7FFF_FFFF -> n
     | _ -> fail "binary")
   else (
     match Int.of_string_opt s with
     | Some n -> check n
     | None -> fail "integer")
+;;
+
+(* Replace block comments with spaces, so that the rest of the line keeps its columns.
+   [in_comment] carries "inside a /* ... */" across lines, as pioasm's c_comment state does.
+   A ';' or "//" ends the scan of the line, as in pioasm. *)
+let blank_block_comments ~(in_comment : bool ref) (text : string) : string =
+  let n = String.length text in
+  let b = Bytes.of_string text in
+  let i = ref 0 in
+  let stop = ref false in
+  while (not !stop) && !i < n do
+    if !in_comment
+    then (
+      if !i + 1 < n && Char.equal text.[!i] '*' && Char.equal text.[!i + 1] '/'
+      then (
+        Bytes.set b !i ' ';
+        Bytes.set b (!i + 1) ' ';
+        in_comment := false;
+        i := !i + 2)
+      else (
+        if not (Char.equal text.[!i] '\r') then Bytes.set b !i ' ';
+        incr i))
+    else if Char.equal text.[!i] ';'
+            || (Char.equal text.[!i] '/' && !i + 1 < n && Char.equal text.[!i + 1] '/')
+    then stop := true
+    else if Char.equal text.[!i] '/' && !i + 1 < n && Char.equal text.[!i + 1] '*'
+    then (
+      Bytes.set b !i ' ';
+      Bytes.set b (!i + 1) ' ';
+      in_comment := true;
+      i := !i + 2)
+    else incr i
+  done;
+  Bytes.to_string b
 ;;
 
 (* Lex one source line (no newline) that is not inside a code block. *)
@@ -125,12 +161,12 @@ let lex_line ~file ~lineno (text : string) : token array =
         let w = String.sub text ~pos:!i ~len:(!j - !i) in
         let is_dec = String.for_all w ~f:is_digit in
         let is_hex_lit =
-          String.is_prefix w ~prefix:"0x"
+          String.is_prefix (String.lowercase w) ~prefix:"0x"
           && String.length w > 2
           && String.for_all (String.drop_prefix w 2) ~f:is_hex
         in
         let is_bin_lit =
-          String.is_prefix w ~prefix:"0b"
+          String.is_prefix (String.lowercase w) ~prefix:"0b"
           && String.length w > 2
           && String.for_all (String.drop_prefix w 2) ~f:is_bin
         in
@@ -140,8 +176,6 @@ let lex_line ~file ~lineno (text : string) : token array =
         i := !j))
     else if Char.equal c ';' || (Char.equal c '/' && !i + 1 < n && Char.equal text.[!i + 1] '/')
     then stop := true
-    else if Char.equal c '/' && !i + 1 < n && Char.equal text.[!i + 1] '*'
-    then raise (Error (loc col, "block comments (/* */) are not supported by pgasm"))
     else if is_id_start c
     then (
       let j = ref !i in
@@ -184,14 +218,14 @@ let lex_line ~file ~lineno (text : string) : token array =
     then (
       let start = !i in
       let j = ref !i in
-      if Char.equal c '0' && !i + 1 < n && Char.equal text.[!i + 1] 'x'
+      if Char.equal c '0' && !i + 1 < n && String.contains "xX" text.[!i + 1]
       then (
         j := !i + 2;
         while !j < n && is_hex text.[!j] do
           incr j
         done;
         push (Int (int_of_literal ~loc:(loc col) (String.sub text ~pos:start ~len:(!j - start)))) col)
-      else if Char.equal c '0' && !i + 1 < n && Char.equal text.[!i + 1] 'b'
+      else if Char.equal c '0' && !i + 1 < n && String.contains "bB" text.[!i + 1]
       then (
         j := !i + 2;
         while !j < n && is_bin text.[!j] do
@@ -211,6 +245,11 @@ let lex_line ~file ~lineno (text : string) : token array =
           push (Float (Float.of_string (String.sub text ~pos:start ~len:(!j - start)))) col)
         else push (Int (int_of_literal ~loc:(loc col) (String.sub text ~pos:start ~len:(!j - start)))) col);
       i := !j)
+    else if !i + 6 <= n && String.equal (String.sub text ~pos:!i ~len:6) "\xE2\x88\x92\xE2\x88\x92"
+    then (
+      (* U+2212 U+2212, the Unicode spelling of "--" *)
+      push (Op "--") col;
+      i := !i + 6)
     else (
       let two = if !i + 1 < n then String.sub text ~pos:!i ~len:2 else "" in
       if List.mem [ "::"; "--"; "!="; "<<"; ">>" ] two ~equal:String.equal

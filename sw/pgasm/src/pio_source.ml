@@ -24,6 +24,19 @@ let iter_events ~file (text : string) ~(f : event -> unit) =
   let lines = Array.of_list (String.split text ~on:'\n') in
   let n = Array.length lines in
   let idx = ref 0 in
+  (* state of a /* ... */ comment that is still open at the start of the current line *)
+  let in_comment = ref false in
+  (* A /* comment still open at the end of a line does not end the statement: pioasm's
+     lexer emits no newline token inside a comment, so the next line continues it. *)
+  let pending : string option ref = ref None in
+  let pending_line = ref 0 in
+  let flush () =
+    match !pending with
+    | None -> ()
+    | Some text ->
+      pending := None;
+      f (Line (!pending_line, Pio_parse.parse_line ~file ~lineno:!pending_line text))
+  in
   while !idx < n do
     let lineno = !idx + 1 in
     let raw = lines.(!idx) in
@@ -34,7 +47,7 @@ let iter_events ~file (text : string) ~(f : event -> unit) =
       done;
       !k
     in
-    if first < String.length raw && Char.equal raw.[first] '%'
+    if (not !in_comment) && first < String.length raw && Char.equal raw.[first] '%'
     then (
       let loc = { file; line = lineno; col = first + 1 } in
       let brace =
@@ -70,7 +83,27 @@ let iter_events ~file (text : string) ~(f : event -> unit) =
       then raise (Error (loc, "code block is not terminated by '%}'"));
       f (Code (loc, lang, Buffer.contents buf)))
     else (
-      f (Line (lineno, Pio_parse.parse_line ~file ~lineno raw));
+      (* .lang_opt lines are lexed in their own mode, where /* is not a comment *)
+      let in_lang_opt =
+        String.is_prefix (String.lowercase (String.lstrip raw)) ~prefix:".lang_opt"
+      in
+      let cleaned =
+        if in_lang_opt then raw else Pio_lex.blank_block_comments ~in_comment raw
+      in
+      if !in_comment && not in_lang_opt
+      then (
+        (match !pending with
+         | None ->
+           pending := Some (cleaned ^ " ");
+           pending_line := lineno
+         | Some p -> pending := Some (p ^ cleaned ^ " "))
+      )
+      else (
+        (match !pending with
+         | None -> pending_line := lineno; pending := Some cleaned
+         | Some p -> pending := Some (p ^ cleaned));
+        flush ());
       incr idx)
-  done
+  done;
+  flush ()
 ;;

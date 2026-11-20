@@ -2,66 +2,80 @@
    to pioasm 2.3.1 for the programs in the golden corpus.
 
    Usage: pgasm [-o json|hex] [--program NAME] INPUT [OUTPUT]
-   OUTPUT defaults to stdout. -o hex needs a single program, or --program NAME. *)
+   INPUT and OUTPUT may be "-" for stdin and stdout. OUTPUT defaults to stdout.
+   -o hex needs a single program, or --program NAME. *)
 
 open Core
 open Pgasm_lib
 
-let usage () =
+let fail msg =
+  Stdlib.prerr_endline ("pgasm: " ^ msg);
   Stdlib.prerr_endline "usage: pgasm [-o json|hex] [--program NAME] INPUT [OUTPUT]";
   Stdlib.exit 2
 ;;
 
+type args =
+  { fmt : string
+  ; prog : string option
+  ; input : string
+  ; output : string option
+  }
+
+let parse_args (argv : string list) : args =
+  let rec go fmt prog positional = function
+    | [] -> fmt, prog, List.rev positional
+    | "-o" :: [] | "--program" :: [] -> fail "option needs a value"
+    | "-o" :: f :: rest -> go f prog positional rest
+    | "--program" :: n :: rest -> go fmt (Some n) positional rest
+    | "-" :: rest -> go fmt prog ("-" :: positional) rest
+    | x :: _ when String.is_prefix x ~prefix:"-" -> fail ("unknown option: " ^ x)
+    | x :: rest -> go fmt prog (x :: positional) rest
+  in
+  let fmt, prog, positional = go "json" None [] argv in
+  match positional with
+  | [ input ] -> { fmt; prog; input; output = None }
+  | [ input; output ] -> { fmt; prog; input; output = Some output }
+  | [] -> fail "missing INPUT"
+  | _ -> fail "too many arguments"
+;;
+
 let () =
-  let args = List.tl_exn (Array.to_list (Sys.get_argv ())) in
-  let fmt = ref "json" in
-  let prog = ref None in
-  let rec parse acc = function
-    | "-o" :: f :: rest ->
-      fmt := f;
-      parse acc rest
-    | "--program" :: n :: rest ->
-      prog := Some n;
-      parse acc rest
-    | x :: rest -> parse (x :: acc) rest
-    | [] -> List.rev acc
+  let a = parse_args (List.tl_exn (Array.to_list (Sys.get_argv ()))) in
+  let text =
+    if String.equal a.input "-"
+    then In_channel.input_all In_channel.stdin
+    else In_channel.read_all a.input
   in
-  let positional = parse [] args in
-  let input, output =
-    match positional with
-    | [ i ] -> i, None
-    | [ i; o ] -> i, Some o
-    | _ -> usage ()
-  in
-  let text = In_channel.read_all input in
   let emit s =
-    match output with
-    | None -> Out_channel.output_string Out_channel.stdout s
+    match a.output with
+    | None | Some "-" -> Out_channel.output_string Out_channel.stdout s
     | Some o -> Out_channel.write_all o ~data:s
   in
-  match Pio_asm.assemble ~file:input text with
+  let file = if String.equal a.input "-" then "<stdin>" else a.input in
+  match Pio_asm.assemble ~file text with
   | exception Pio_lex.Error (loc, msg) ->
     Stdlib.prerr_endline (Pio_lex.loc_to_string loc ^ ": " ^ msg);
     Stdlib.exit 1
   | progs, global_syms ->
-    (match !fmt with
+    (match a.fmt with
      | "json" -> emit (Pio_out.to_json progs global_syms)
      | "hex" ->
        let chosen =
-         match !prog, progs with
+         match a.prog, progs with
          | Some n, _ ->
            (match List.find progs ~f:(fun (p : Pio_asm.out_prog) -> String.equal p.name n) with
             | Some p -> p
             | None ->
-              Stdlib.prerr_endline ("no program " ^ n);
+              Stdlib.prerr_endline ("pgasm: no program " ^ n);
               Stdlib.exit 1)
          | None, [ p ] -> p
          | None, _ ->
-           Stdlib.prerr_endline "hex output needs a single program, or --program NAME";
+           Stdlib.prerr_endline "pgasm: hex output needs a single program, or --program NAME";
            Stdlib.exit 1
        in
        emit (Pio_out.to_hex chosen)
      | f ->
-       Stdlib.prerr_endline ("unsupported output format: " ^ f ^ " (pgasm supports json and hex)");
+       Stdlib.prerr_endline
+         ("pgasm: unsupported output format: " ^ f ^ " (supported: json, hex)");
        Stdlib.exit 1)
 ;;

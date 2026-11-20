@@ -59,6 +59,8 @@ type prog =
   ; mutable sideset_bits : int (** specified bits plus the enable bit when optional *)
   ; mutable sideset_max : int
   ; mutable delay_max : int
+  ; mutable mov_status : (int * expr * int * loc) option (** kind, n, param, location *)
+  ; mutable mov_final : (int * int) option (** kind, final_n: set by finalize *)
   }
 
 type st =
@@ -92,6 +94,8 @@ let new_prog ~name ~loc ~version =
   ; sideset_bits = 0
   ; sideset_max = 0
   ; delay_max = 31
+  ; mov_status = None
+  ; mov_final = None
   }
 ;;
 
@@ -324,7 +328,9 @@ let process_dir st (d : dir) =
      | "putget" -> need_v1 p l "putget"
      | _ -> ());
     p.fifo <- name
-  | D_mov_status l -> err l "'.mov_status' is not supported by pgasm"
+  | D_mov_status (l, ms) ->
+    let p = current_prog st l ".mov_status" ~before:true ~disallow_global:true in
+    p.mov_status <- Some (ms.ms_kind, ms.ms_n, ms.ms_param, l)
 ;;
 
 (* ---------- Source statements ---------- *)
@@ -343,7 +349,7 @@ let dir_loc = function
   | D_lang_opt (l, _, _, _)
   | D_clock_div (l, _)
   | D_fifo (l, _)
-  | D_mov_status l -> l
+  | D_mov_status (l, _) -> l
 ;;
 
 let process_line st (line : line) =
@@ -377,6 +383,17 @@ let process_code st (loc : loc) (lang : string) (contents : string) =
 (* ---------- Finalisation (pioasm program::finalize) ---------- *)
 
 let finalize st (p : prog) =
+  (match p.mov_status with
+   | None -> ()
+   | Some (kind, e, param, l) ->
+     let n = eval st p e in
+     if kind = 2
+     then (
+       if n > 7 then err l "irq number should be >= 0 and <= 7";
+       p.mov_final <- Some (kind, (param * 8) + n))
+     else (
+       if n > 31 then err l "fido depth should be >= 0 and <= 31";
+       p.mov_final <- Some (kind, n)));
   if p.pio_version = 1
   then
     err
@@ -632,6 +649,7 @@ type out_prog =
   ; out_ : (int * bool * bool * int) option
   ; set_count : int option
   ; sideset : (int * bool * bool) option
+  ; mov_status : (int * int) option (** kind, final_n *)
   ; fifo : string option
   ; clock : (int * int) option
   ; words : int list
@@ -699,20 +717,17 @@ let compile_prog st (p : prog) : out_prog =
       (match p.sideset with
        | None -> None
        | Some _ -> Some (p.sideset_bits, p.sideset_opt, p.sideset_pindirs))
+  ; mov_status = p.mov_final
   ; fifo = (if String.equal p.fifo "txrx" then None else Some p.fifo)
   ; clock = (if p.clk_int <> 1 || p.clk_frac <> 0 then Some (p.clk_int, p.clk_frac) else None)
   ; words
   ; texts =
+      (* pioasm's disassembler: side-set bits are 0 when no .side_set was given *)
       List.map words ~f:(fun w ->
-        match Polyglot_isa.Isa.decode w with
-        | Polyglot_isa.Isa.Illegal _ -> "reserved" (* pioasm's disassembler text for reserved words *)
-        | t ->
-          Polyglot_isa.Isa.to_string
-            ~side:
-              (if Option.is_none p.sideset
-               then Polyglot_isa.Isa.Side.none
-               else { Polyglot_isa.Isa.Side.count = p.sideset_bits; enable = p.sideset_opt })
-            t)
+        Pio_disasm.disassemble
+          w
+          ~sideset_bits:(if Option.is_none p.sideset then 0 else p.sideset_bits)
+          ~sideset_opt:p.sideset_opt)
   ; code = group_sorted code
   ; lang_opts =
       group_sorted lang_opts

@@ -88,7 +88,16 @@ let program_block b (p : out_prog) =
           (bool_s opt)
           (bool_s pd))
    | None -> Buffer.add_string b (sprintf "%s\"sideset\": null,\n" t));
-  Buffer.add_string b (sprintf "%s\"movStatus\": null,\n" t);
+  (match p.mov_status with
+   | Some (kind, n) ->
+     let name =
+       match kind with
+       | 0 -> "STATUS_TX_LESSTHAN"
+       | 1 -> "STATUS_RX_LESSTHAN"
+       | _ -> "STATUS_IRQ_SET"
+     in
+     Buffer.add_string b (sprintf "%s\"movStatus\": {\"type\": \"%s\", \"n\": %d},\n" t name n)
+   | None -> Buffer.add_string b (sprintf "%s\"movStatus\": null,\n" t));
   (match p.fifo with
    | Some f ->
      let name =

@@ -1,0 +1,6 @@
+.program hx
+    set x, 0X1f
+    set y, 0B101
+    set x, 0X1E
+    set y, 0b1
+    in x, 0X10

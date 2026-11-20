@@ -1,0 +1,7 @@
+.program bc1
+/* multi
+line */
+    nop /* in */ [2]
+    set x, 1 ; trailing /* not a start
+    set y, 2 /* spans
+  lines */ side 0

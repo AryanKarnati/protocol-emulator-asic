@@ -1,0 +1,2 @@
+.program lw
+lab: .word 0x1234

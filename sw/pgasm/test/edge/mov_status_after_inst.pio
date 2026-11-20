@@ -1,0 +1,3 @@
+.program ms8
+    nop
+.mov_status txfifo < 1

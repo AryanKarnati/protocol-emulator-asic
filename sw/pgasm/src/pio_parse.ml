@@ -137,7 +137,11 @@ type dir =
   | D_lang_opt of loc * string * string * string
   | D_clock_div of loc * float
   | D_fifo of loc * string (** "txrx" | "tx" | "rx" | "txput" | "txget" | "putget" *)
-  | D_mov_status of loc
+  | D_mov_status of loc * mov_status
+
+(** .mov_status: kind 0 tx_lessthan, 1 rx_lessthan, 2 irq_set; [param] is the PREV/NEXT
+    offset for irq_set (0 plain, 1 prev, 2 next), as pioasm's set_mov_status records it. *)
+and mov_status = { ms_kind : int; ms_n : expr; ms_param : int }
 
 type body =
   | B_none
@@ -696,7 +700,27 @@ let parse_dir c (name : string) : dir =
     in
     expect_end c;
     D_fifo (l, v)
-  | "mov_status" -> D_mov_status l
+  | "mov_status" ->
+    let ms =
+      match peek c with
+      | Some (Kw "txfifo") ->
+        advance c;
+        expect_op c "<";
+        { ms_kind = 0; ms_n = parse_value c; ms_param = 0 }
+      | Some (Kw "rxfifo") ->
+        advance c;
+        expect_op c "<";
+        { ms_kind = 1; ms_n = parse_value c; ms_param = 0 }
+      | Some (Kw "irq") ->
+        advance c;
+        let param = if accept_kw c "next" then 2 else if accept_kw c "prev" then 1 else 0 in
+        if not (accept_kw c "set") then syntax_error c;
+        { ms_kind = 2; ms_n = parse_value c; ms_param = param }
+      | _ ->
+        raise (Error (l, "expected 'txfifo < N', 'rxfifo < N' or 'irq set N'"))
+    in
+    expect_end c;
+    D_mov_status (l, ms)
   | _ -> raise (Error (l, "unknown directive ." ^ name))
 ;;
 
@@ -732,7 +756,9 @@ let parse_line ~file ~lineno (text : string) : line =
     match peek c with
     | None -> { label; body = B_none }
     | Some (Dir "word") ->
-      (* .word is an instruction in pioasm (WORD value), so it can carry a label *)
+      (* pioasm's grammar has no "label_decl WORD value" rule, so a label on the same
+         line as .word is a syntax error. A label on its own line before it is fine. *)
+      if Option.is_some label then syntax_error c;
       let iloc = here c in
       advance c;
       let v = parse_value c in
