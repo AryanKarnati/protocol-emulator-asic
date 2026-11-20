@@ -1,0 +1,95 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "ws2812",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 3,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+				"T1": 3,
+				"T2": 3,
+				"T3": 4
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 1, "optional": false, "pindirs": false},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "6321", "instruction": "out    x, 1            side 0 [3]"},
+				{"hex": "1223", "instruction": "jmp    !x, 3           side 1 [2]"},
+				{"hex": "1200", "instruction": "jmp    0               side 1 [2]"},
+				{"hex": "A242", "instruction": "nop                    side 0 [2]"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "#include \"hardware/clocks.h\"\nstatic inline void ws2812_program_init(PIO pio, uint sm, uint offset, uint pin, float freq, bool rgbw) {\n    pio_gpio_init(pio, pin);\n    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);\n    pio_sm_config c = ws2812_program_get_default_config(offset);\n    sm_config_set_sideset_pins(&c, pin);\n    sm_config_set_out_shift(&c, false, true, rgbw ? 32 : 24);\n    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);\n    int cycles_per_bit = ws2812_T1 + ws2812_T2 + ws2812_T3;\n    float div = clock_get_hz(clk_sys) / (freq * cycles_per_bit);\n    sm_config_set_clkdiv(&c, div);\n    pio_sm_init(pio, sm, offset, &c);\n    pio_sm_set_enabled(pio, sm, true);\n}\n"
+				}
+			],
+			"langOpts": [
+				{
+					"lang": "python",
+					"name": "sideset_init",
+					"value": "pico.PIO.OUT_HIGH"
+				},
+				{
+					"lang": "python",
+					"name": "out_init",
+					"value": "pico.PIO.OUT_HIGH"
+				},
+				{
+					"lang": "python",
+					"name": "out_shiftdir",
+					"value": "1"
+				}
+			]
+		},
+		{
+			"name": "ws2812_parallel",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 3,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+				"T1": 3,
+				"T2": 3,
+				"T3": 4
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "6020", "instruction": "out    x, 32"},
+				{"hex": "A20B", "instruction": "mov    pins, ~null            [2]"},
+				{"hex": "A201", "instruction": "mov    pins, x                [2]"},
+				{"hex": "A203", "instruction": "mov    pins, null             [2]"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "#include \"hardware/clocks.h\"\nstatic inline void ws2812_parallel_program_init(PIO pio, uint sm, uint offset, uint pin_base, uint pin_count, float freq) {\n    for(uint i=pin_base; i<pin_base+pin_count; i++) {\n        pio_gpio_init(pio, i);\n    }\n    pio_sm_set_consecutive_pindirs(pio, sm, pin_base, pin_count, true);\n    pio_sm_config c = ws2812_parallel_program_get_default_config(offset);\n    sm_config_set_out_shift(&c, true, true, 32);\n    sm_config_set_out_pins(&c, pin_base, pin_count);\n    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);\n    int cycles_per_bit = ws2812_parallel_T1 + ws2812_parallel_T2 + ws2812_parallel_T3;\n    float div = clock_get_hz(clk_sys) / (freq * cycles_per_bit);\n    sm_config_set_clkdiv(&c, div);\n    pio_sm_init(pio, sm, offset, &c);\n    pio_sm_set_enabled(pio, sm, true);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

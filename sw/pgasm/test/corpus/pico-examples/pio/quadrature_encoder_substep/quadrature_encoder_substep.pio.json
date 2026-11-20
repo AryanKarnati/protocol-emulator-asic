@@ -1,0 +1,69 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "quadrature_encoder_substep",
+			"pioVersion": 0,
+			"wrapTarget": 9,
+			"wrap": 14,
+			"origin": 0,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "4020", "instruction": "in     x, 32"},
+				{"hex": "4040", "instruction": "in     y, 32"},
+				{"hex": "60C2", "instruction": "out    isr, 2"},
+				{"hex": "4002", "instruction": "in     pins, 2"},
+				{"hex": "A0EE", "instruction": "mov    osr, ~isr"},
+				{"hex": "A0A7", "instruction": "mov    pc, osr"},
+				{"hex": "0087", "instruction": "jmp    y--, 7"},
+				{"hex": "E021", "instruction": "set    x, 1"},
+				{"hex": "A031", "instruction": "mov    x, ::x"},
+				{"hex": "004A", "instruction": "jmp    x--, 10"},
+				{"hex": "A0AD", "instruction": "mov    pc, ~status"},
+				{"hex": "A04A", "instruction": "mov    y, ~y"},
+				{"hex": "008D", "instruction": "jmp    y--, 13"},
+				{"hex": "A04A", "instruction": "mov    y, ~y"},
+				{"hex": "E020", "instruction": "set    x, 0"},
+				{"hex": "0002", "instruction": "jmp    2"},
+				{"hex": "000F", "instruction": "jmp    15"},
+				{"hex": "000B", "instruction": "jmp    11"},
+				{"hex": "0106", "instruction": "jmp    6                      [1]"},
+				{"hex": "0409", "instruction": "jmp    9                      [4]"},
+				{"hex": "0106", "instruction": "jmp    6                      [1]"},
+				{"hex": "000F", "instruction": "jmp    15"},
+				{"hex": "0409", "instruction": "jmp    9                      [4]"},
+				{"hex": "000B", "instruction": "jmp    11"},
+				{"hex": "000B", "instruction": "jmp    11"},
+				{"hex": "0409", "instruction": "jmp    9                      [4]"},
+				{"hex": "000F", "instruction": "jmp    15"},
+				{"hex": "0106", "instruction": "jmp    6                      [1]"},
+				{"hex": "0409", "instruction": "jmp    9                      [4]"},
+				{"hex": "0106", "instruction": "jmp    6                      [1]"},
+				{"hex": "000B", "instruction": "jmp    11"},
+				{"hex": "0102", "instruction": "jmp    2                      [1]"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "#include \"hardware/clocks.h\"\n#include \"hardware/gpio.h\"\n#include \"hardware/sync.h\"\n// \"substep\" version low-level interface\n//\n// note: user code should use the high level functions in quadrature_encoder.c\n// and not call these directly\n// initialize the PIO state and the substep_state_t structure that keeps track\n// of the encoder state\nstatic inline void quadrature_encoder_substep_program_init(PIO pio, uint sm, uint pin_A)\n{\n\tuint pin_state, position, ints;\n\tpio_gpio_init(pio, pin_A);\n\tpio_gpio_init(pio, pin_A + 1);\n\tpio_sm_set_consecutive_pindirs(pio, sm, pin_A, 2, false);\n\tgpio_pull_up(pin_A);\n\tgpio_pull_up(pin_A + 1);\n\tpio_sm_config c = quadrature_encoder_substep_program_get_default_config(0);\n\tsm_config_set_in_pins(&c, pin_A); // for WAIT, IN\n\t// shift to left, auto-push at 32 bits\n\tsm_config_set_in_shift(&c, false, true, 32);\n\tsm_config_set_out_shift(&c, true, false, 32);\n\t// don't join FIFO's\n\tsm_config_set_fifo_join(&c, PIO_FIFO_JOIN_NONE);\n\t// always run at sysclk, to have the maximum possible time resolution\n\tsm_config_set_clkdiv(&c, 1.0);\n\tpio_sm_init(pio, sm, 0, &c);\n\t// set up status to be rx_fifo < 1\n\tpio->sm[sm].execctrl = ((pio->sm[sm].execctrl & 0xFFFFFF80) | 0x12);\n\t// init the state machine according to the current phase. Since we are\n\t// setting the state running PIO instructions from C state, the encoder may\n\t// step during this initialization. This should not be a problem though,\n\t// because as long as it is just one step, the state machine will update\n\t// correctly when it starts. We disable interrupts anyway, to be safe\n\tints = save_and_disable_interrupts();\n\tpin_state = (gpio_get_all() >> pin_A) & 3;\n\t// to setup the state machine, we need to set the lower 2 bits of OSR to be\n\t// the negated pin state\n\tpio_sm_exec(pio, sm, pio_encode_set(pio_y, ~pin_state));\n\tpio_sm_exec(pio, sm, pio_encode_mov(pio_osr, pio_y));\n\t// also set the Y (current step) so that the lower 2 bits of Y have a 1:1\n\t// mapping to the current phase (input pin state). That simplifies the code\n\t// to compensate for differences in encoder phase sizes:\n\tswitch (pin_state) {\n\t\tcase 0: position = 0; break;\n\t\tcase 1: position = 3; break;\n\t\tcase 2: position = 1; break;\n\t\tcase 3: position = 2; break;\n\t} \n\tpio_sm_exec(pio, sm, pio_encode_set(pio_y, position));\n\tpio_sm_set_enabled(pio, sm, true);\n\trestore_interrupts(ints);\n}\nstatic inline void quadrature_encoder_substep_get_counts(PIO pio, uint sm, uint *step, int *cycles, uint *us)\n{\n\tint i, pairs;\n\tuint ints;\n\tpairs = pio_sm_get_rx_fifo_level(pio, sm) >> 1;\n\t// read all data with interrupts disabled, so that there can not be a\n\t// big time gap between reading the PIO data and the current us\n\tints = save_and_disable_interrupts();\n\tfor (i = 0; i < pairs + 1; i++) {\n\t\t*cycles = pio_sm_get_blocking(pio, sm);\n\t\t*step = pio_sm_get_blocking(pio, sm);\n\t}\n\t*us = time_us_32();\n\trestore_interrupts(ints);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

@@ -1,0 +1,48 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "nec_carrier_control",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 10,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "80A0", "instruction": "pull   block"},
+				{"hex": "E02F", "instruction": "set    x, 15"},
+				{"hex": "C007", "instruction": "irq    nowait 7"},
+				{"hex": "0042", "instruction": "jmp    x--, 2"},
+				{"hex": "AF42", "instruction": "nop                           [15]"},
+				{"hex": "C107", "instruction": "irq    nowait 7               [1]"},
+				{"hex": "6021", "instruction": "out    x, 1"},
+				{"hex": "0029", "instruction": "jmp    !x, 9"},
+				{"hex": "A342", "instruction": "nop                           [3]"},
+				{"hex": "C007", "instruction": "irq    nowait 7"},
+				{"hex": "00E6", "instruction": "jmp    !osre, 6"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "static inline void nec_carrier_control_program_init (PIO pio, uint sm, uint offset, float tick_rate, int bits_per_frame) {\n    // create a new state machine configuration\n    //\n    pio_sm_config c = nec_carrier_control_program_get_default_config(offset);\n    // configure the output shift register\n    //\n    sm_config_set_out_shift (&c,\n                             true,       // shift right\n                             false,      // disable autopull\n                             bits_per_frame);\n    // join the FIFOs to make a single large transmit FIFO\n    //\n    sm_config_set_fifo_join (&c, PIO_FIFO_JOIN_TX);\n    // configure the clock divider\n    //\n    float div = clock_get_hz (clk_sys) / tick_rate;\n    sm_config_set_clkdiv (&c, div);\n    // apply the configuration to the state machine\n    //\n    pio_sm_init(pio, sm, offset, &c);\n    // set the state machine running\n    //\n    pio_sm_set_enabled(pio, sm, true);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

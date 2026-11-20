@@ -1,0 +1,45 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "blink",
+			"pioVersion": 0,
+			"wrapTarget": 2,
+			"wrap": 7,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "80A0", "instruction": "pull   block"},
+				{"hex": "6040", "instruction": "out    y, 32"},
+				{"hex": "A022", "instruction": "mov    x, y"},
+				{"hex": "E001", "instruction": "set    pins, 1"},
+				{"hex": "0044", "instruction": "jmp    x--, 4"},
+				{"hex": "A022", "instruction": "mov    x, y"},
+				{"hex": "E000", "instruction": "set    pins, 0"},
+				{"hex": "0047", "instruction": "jmp    x--, 7"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "// this is a raw helper function for use by the user which sets up the GPIO output, and configures the SM to output on a particular pin\nvoid blink_program_init(PIO pio, uint sm, uint offset, uint pin) {\n   pio_gpio_init(pio, pin);\n   pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);\n   pio_sm_config c = blink_program_get_default_config(offset);\n   sm_config_set_set_pins(&c, pin, 1);\n   pio_sm_init(pio, sm, offset, &c);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

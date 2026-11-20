@@ -1,0 +1,38 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "resistor_dac_5bit",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 0,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "6005", "instruction": "out    pins, 5"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "#include \"hardware/clocks.h\"\nstatic inline void resistor_dac_5bit_program_init(PIO pio, uint sm, uint offset,\n        uint sample_rate_hz, uint pin_base) {\n    pio_sm_set_pins_with_mask(pio, sm, 0, 0x1fu << pin_base);\n    pio_sm_set_pindirs_with_mask(pio, sm, ~0u, 0x1fu << pin_base);\n    for (int i = 0; i < 5; ++i)\n        pio_gpio_init(pio, pin_base + i);\n    pio_sm_config c = resistor_dac_5bit_program_get_default_config(offset);\n    sm_config_set_out_pins(&c, pin_base, 5);\n    // Shift to right, autopull threshold 5\n    sm_config_set_out_shift(&c, true, true, 5);\n    // Deeper FIFO as we're not doing any RX\n    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);\n    float div = (float)clock_get_hz(clk_sys) / sample_rate_hz;\n    sm_config_set_clkdiv(&c, div);\n    pio_sm_init(pio, sm, offset, &c);\n    pio_sm_set_enabled(pio, sm, true);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

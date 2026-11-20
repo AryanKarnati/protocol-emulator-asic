@@ -1,0 +1,83 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "apa102_mini",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 1,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 1, "optional": false, "pindirs": false},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "6001", "instruction": "out    pins, 1         side 0"},
+				{"hex": "B042", "instruction": "nop                    side 1"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "#include \"hardware/clocks.h\"\nstatic inline void apa102_mini_program_init(PIO pio, uint sm, uint offset,\n        uint baud, uint pin_clk, uint pin_din) {\n    pio_sm_set_pins_with_mask(pio, sm, 0, (1u << pin_clk) | (1u << pin_din));\n    pio_sm_set_pindirs_with_mask(pio, sm, ~0u, (1u << pin_clk) | (1u << pin_din));\n    pio_gpio_init(pio, pin_clk);\n    pio_gpio_init(pio, pin_din);\n    pio_sm_config c = apa102_mini_program_get_default_config(offset);\n    sm_config_set_out_pins(&c, pin_din, 1);\n    sm_config_set_sideset_pins(&c, pin_clk);\n    // Shift to right, autopull with threshold 32\n    sm_config_set_out_shift(&c, false, true, 32);\n    // Deeper FIFO as we're not doing any RX\n    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);\n    // We transmit 1 bit every 2 execution cycles\n    float div = (float)clock_get_hz(clk_sys) / (2 * baud);\n    sm_config_set_clkdiv(&c, div);\n    pio_sm_init(pio, sm, offset, &c);\n    pio_sm_set_enabled(pio, sm, true);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		},
+		{
+			"name": "apa102_rgb555",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 14,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+				"pixel_out": 0,
+				"bit_run": 9
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "80E0", "instruction": "pull   ifempty block"},
+				{"hex": "E022", "instruction": "set    x, 2"},
+				{"hex": "40E5", "instruction": "in     osr, 5"},
+				{"hex": "6065", "instruction": "out    null, 5"},
+				{"hex": "4063", "instruction": "in     null, 3"},
+				{"hex": "0042", "instruction": "jmp    x--, 2"},
+				{"hex": "4048", "instruction": "in     y, 8"},
+				{"hex": "A0D6", "instruction": "mov    isr, ::isr"},
+				{"hex": "6061", "instruction": "out    null, 1"},
+				{"hex": "E03F", "instruction": "set    x, 31"},
+				{"hex": "E000", "instruction": "set    pins, 0"},
+				{"hex": "A606", "instruction": "mov    pins, isr              [6]"},
+				{"hex": "E001", "instruction": "set    pins, 1"},
+				{"hex": "46C1", "instruction": "in     isr, 1                 [6]"},
+				{"hex": "004A", "instruction": "jmp    x--, 10"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}
