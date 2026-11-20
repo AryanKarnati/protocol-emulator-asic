@@ -62,7 +62,14 @@ all 36 programs in `sw/pgasm/test/corpus` (pioasm 2.3.1): `in`, `out`, `setCount
 | Instructions, wrap, wrap target | yes (`instructions`, `wrap`, `wrapTarget`) | no | n/a | |
 | Entry point | `publicLabels.entry_point` if present | no | instruction 0 | |
 | PIO version | `pioVersion` must be 0 | no | error if not 0 | |
-| Side-set size, optional, pindirs | `sideset` (null = no side-set) | only to override | 0 bits | `sideset_size`, `sideset_optional`, `sideset_pindirs` |
+| Side-set size, optional, pindirs | `sideset` (null = no side-set). `size` is the bits **including** the enable bit when `optional` (pioasm `json_output.cpp:159-162`, `sideset_bits_including_opt`) | only to override | 0 bits | `sideset_size`, `sideset_optional`, `sideset_pindirs` |
+
+Side-set convention, used in both the JSON and the arguments: `sideset_size` is the JSON `size`.
+It includes the enable bit when `sideset_optional` is true. SIDESET_COUNT in PINCTRL is this
+value (`pio.h` `PIO_SM0_PINCTRL_SIDESET_COUNT`, "inclusive of the enable bit"). The data pins are
+`size - 1` when optional, and they start at `sideset_base`. `.side_set 1 opt` gives size 2, one data
+pin. `.side_set 1` gives size 1, one data pin. The trace header records `sideset_size` and
+`sideset_data_pins`.
 | Shift direction (IN, OUT) | `in.right`, `out.right`, only if the source has `.in`/`.out` | to override | right | `in_shift_right`, `out_shift_right` |
 | Autopush, autopull | `in.autopush`, `out.autopull` (same condition) | to override | off | `autopush`, `autopull` |
 | Push and pull thresholds | `in.threshold`, `out.threshold` (same condition) | to override | 32 | `push_thresh`, `pull_thresh` |
@@ -189,6 +196,28 @@ the ISR.
 
 Sample `k` is read on sysclk cycle `k` after the start write. Time = `k / sysclk_hz`.
 
+### Format contract fixture (for pgsim's trace loader)
+
+`testdata/uart_tx_example.jsonl` is the format contract for pgsim's trace loader. The loader should
+read this file and get the same header fields, sample count and sample values. The file is:
+
+- **Header**: built by `capture.run()` itself, run under the mock (`test_capture_mock.py`), so its
+  fields and key order are the real ones. The program is corpus `uart_tx` (`.side_set 1 opt`):
+  `sideset_size` 2 (enable bit included), `sideset_data_pins` 1, `registers` as the
+  capture code computes them (PINCTRL `0x40100400`). `program.init` is non-empty:
+  `tx_words` `["0x000000a5", "0x0000005a"]`, `levels` `{"0": 1, "1": 1}`, `dirs` `{"0": 1, "1": 1}`.
+  `program.entry` is `0`, because uart_tx has no `entry_point` label.
+- **Samples**: 1280 samples (320 words) of deterministic synthetic RX data, written by
+  `trace.write_trace`. These are not captured from a pin. They exist to test the format.
+- **Footer**: `complete: true`, `words_total` 320, `samples_total` 1280.
+- **`program.source`** is rewritten to the repo-relative corpus path, not the workstation path.
+  That is the only edit to the header.
+
+The fixture is generated and checked by the mock suite. `test_fixture_is_current_and_has_init_and_entry`
+regenerates it and compares it byte for byte with the committed file. If `capture.py`'s header
+changes, regenerate with `python3 silicon-ref/test_capture_mock.py --write-fixture`, and review the
+diff. A pgsim loader that does not read this file correctly does not match the format.
+
 ## Calibration (do this first, on the board)
 
 Before any comparison with `pgsim`, measure the input latency:
@@ -239,7 +268,8 @@ afterwards. The version of MicroPython on the board must be recorded with the tr
 
 ```
 python3 silicon-ref/test_trace.py          # 11 tests, plain Python, no dependencies
-python3 silicon-ref/test_capture_mock.py   # 11 tests, plain Python, mocked MicroPython
+python3 silicon-ref/test_capture_mock.py   # 13 tests, plain Python, mocked MicroPython
+python3 silicon-ref/test_capture_mock.py --write-fixture   # regenerate testdata/ (review the diff)
 python3 -m pytest silicon-ref/             # the same tests under pytest, if installed
 ```
 
@@ -260,5 +290,10 @@ write sequence (59 writes) is frozen. The expected values are derived from the h
 and are [verify on hardware]. The mock models the reset alias, write-1-to-clear of FDEBUG and the
 pad reset value. It does not model the reset values of other registers, and it does not show on
 silicon that the pad bits are preserved.
+
+The optional side-set test (`uart_tx`, `.side_set 1 opt`) checks that the enable bit is counted once:
+SIDESET_COUNT is 2, the side-set span is one data pin, and only that pin is routed. The fixture test
+checks that `testdata/uart_tx_example.jsonl` is still what `capture.py` and `trace.write_trace`
+produce, and that `trace.read_trace` loads it with `program.init` and `program.entry` present.
 
 Neither test file covers silicon behaviour, which needs the calibration run.
