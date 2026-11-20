@@ -668,7 +668,7 @@ sw/pgasm/  sw/pgsim/      # OCaml assembler and golden model
 sw/host/                  # MicroPython host library
 programs/                 # protocol programs + expected traces
 silicon-ref/              # RP2350 PIO trace capture for V1/V8 (MicroPython)
-docs/                     # info.md, architecture, ISA, verification write-up, ai-usage.md
+docs/                     # PLAN.md, info.md, architecture, ISA, verification write-up, ai-usage.md
 ```
 
 ### 19. Schedule and scope tiers
@@ -681,10 +681,10 @@ docs/                     # info.md, architecture, ISA, verification write-up, a
 
 | Week | Dates | Deliverables |
 | --- | --- | --- |
-| 1 | Nov 19–25 | <ul><li>Merge the IHP template and set 8x4, the name and 60 MHz.</li><li>Set up the OCaml project with Hardcaml pinned. Get a trivial Hardcaml design green through GDS, precheck and GL (**Hardcaml gate**, below).</li><li>Write the `isa/` types, `pgsim` for the base ISA, and `pgasm` matching pioasm byte for byte.</li><li>First RP2350 trace capture (V1).</li><li>Human tasks: sign up, order a Pico 2, and email the organisers (§20 open questions).</li></ul> |
-| 2 | Nov 26–Dec 2 | SM plus FIFOs and clkdiv in Hardcaml. Lockstep harness against `pgsim` and the Quickcheck program generator. V1 passing on pico-examples. |
+| 1 | Nov 19–25 | <ul><li>Merge the IHP template and set 8x4, the name and 60 MHz.</li><li>Set up the OCaml project with Hardcaml pinned. Write the clock divider and FIFO in Hardcaml and get them green through GDS, precheck and GL (**Hardcaml gate**, below).</li><li>Write the `isa/` types, `pgsim` for the base ISA, and `pgasm` matching pioasm byte for byte.</li><li>First RP2350 trace capture (V1).</li><li>Human tasks: sign up, order a Pico 2, and email the organisers (§20 open questions).</li></ul> |
+| 2 | Nov 26–Dec 2 | SM in Hardcaml, integrated with the FIFOs and clkdiv. Lockstep harness against `pgsim` and the Quickcheck program generator. V1 passing on pico-examples. Formal on FIFO and clkdiv. |
 | 3 | Dec 3–9 | Host link, registers, IMEM, pins, 4-SM top. **First full hardening: area and timing gate. SRAM gate.** |
-| 4 | Dec 10–16 | UART, SPI and I2C programs passing against cocotbext models. Formal on FIFO, clkdiv and host link. GL regression in CI. First mutation-testing run. |
+| 4 | Dec 10–16 | UART, SPI and I2C programs passing against cocotbext models. Formal on the host link, with all proofs running in CI. GL regression in CI. First mutation-testing run. |
 | 5 | Dec 17–23 | LCU RTL, model and formal properties. Elastic FIFO if it passed the gate. |
 | 6 | Dec 24–30 | USB LS and 10BASE-T TX programs in simulation. Coverage push. (Holiday buffer.) |
 | 7 | Dec 31–Jan 6 | **Feature freeze.** Timing closure at all corners. Mutation testing. Full GL regression. |
@@ -695,6 +695,8 @@ docs/                     # info.md, architecture, ISA, verification write-up, a
 
 - The OCaml ISA, assembler, model and tests stay.
 - The lockstep harness drives the Verilog through Verilator instead of Cyclesim.
+
+[docs/PLAN.md](docs/PLAN.md) breaks this schedule into parallel lanes, one per AI session plus one for the person directing, with the handoffs between them and the check that ends each week.
 
 ### 20. Risks and open questions
 

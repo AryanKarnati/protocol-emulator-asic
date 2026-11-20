@@ -6,5 +6,6 @@
 
 - [COMPETITION.md](COMPETITION.md): rules, deadline and judging.
 - [DESIGN.md](DESIGN.md): the three architectures considered, and the full Polyglot specification.
+- [docs/PLAN.md](docs/PLAN.md): the build plan, in eight blocks with parallel work lanes.
 
-Status: design baseline v0.2. No RTL yet.
+Status: design baseline v0.2 and build plan. No RTL yet.
