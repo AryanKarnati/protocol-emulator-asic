@@ -1,0 +1,41 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "uart_tx",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 3,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 2, "optional": true, "pindirs": false},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "9FA0", "instruction": "pull   block           side 1 [7]"},
+				{"hex": "F727", "instruction": "set    x, 7            side 0 [7]"},
+				{"hex": "6001", "instruction": "out    pins, 1"},
+				{"hex": "0642", "instruction": "jmp    x--, 2                 [6]"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "#include \"hardware/clocks.h\"\nstatic inline void uart_tx_program_init(PIO pio, uint sm, uint offset, uint pin_tx, uint baud) {\n    // Tell PIO to initially drive output-high on the selected pin, then map PIO\n    // onto that pin with the IO muxes.\n    pio_sm_set_pins_with_mask64(pio, sm, 1ull << pin_tx, 1ull << pin_tx);\n    pio_sm_set_pindirs_with_mask64(pio, sm, 1ull << pin_tx, 1ull << pin_tx);\n    pio_gpio_init(pio, pin_tx);\n    pio_sm_config c = uart_tx_program_get_default_config(offset);\n    // OUT shifts to right, no autopull\n    sm_config_set_out_shift(&c, true, false, 32);\n    // We are mapping both OUT and side-set to the same pin, because sometimes\n    // we need to assert user data onto the pin (with OUT) and sometimes\n    // assert constant values (start/stop bit)\n    sm_config_set_out_pins(&c, pin_tx, 1);\n    sm_config_set_sideset_pins(&c, pin_tx);\n    // We only need TX, so get an 8-deep FIFO!\n    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);\n    // SM transmits 1 bit per 8 execution cycles.\n    float div = (float)clock_get_hz(clk_sys) / (8 * baud);\n    sm_config_set_clkdiv(&c, div);\n    pio_sm_init(pio, sm, offset, &c);\n    pio_sm_set_enabled(pio, sm, true);\n}\nstatic inline void uart_tx_program_putc(PIO pio, uint sm, char c) {\n    pio_sm_put_blocking(pio, sm, (uint32_t)c);\n}\nstatic inline void uart_tx_program_puts(PIO pio, uint sm, const char *s) {\n    while (*s)\n        uart_tx_program_putc(pio, sm, *s++);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

@@ -1,0 +1,40 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "hello",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 2,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "80A0", "instruction": "pull   block"},
+				{"hex": "6001", "instruction": "out    pins, 1"},
+				{"hex": "0000", "instruction": "jmp    0"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "static inline void hello_program_init(PIO pio, uint sm, uint offset, uint pin) {\n    pio_sm_config c = hello_program_get_default_config(offset);\n    // Map the state machine's OUT pin group to one pin, namely the `pin`\n    // parameter to this function.\n    sm_config_set_out_pins(&c, pin, 1);\n    // Set this pin's GPIO function (connect PIO to the pad)\n    pio_gpio_init(pio, pin);\n    // Set the pin direction to output at the PIO\n    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);\n    // Load our configuration, and jump to the start of the program\n    pio_sm_init(pio, sm, offset, &c);\n    // Set the state machine running\n    pio_sm_set_enabled(pio, sm, true);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

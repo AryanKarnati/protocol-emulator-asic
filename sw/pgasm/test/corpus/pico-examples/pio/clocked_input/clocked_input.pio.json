@@ -1,0 +1,40 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "clocked_input",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 2,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "2021", "instruction": "wait   0 pin, 1"},
+				{"hex": "20A1", "instruction": "wait   1 pin, 1"},
+				{"hex": "4001", "instruction": "in     pins, 1"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "static inline void clocked_input_program_init(PIO pio, uint sm, uint offset, uint pin) {\n    pio_sm_config c = clocked_input_program_get_default_config(offset);\n    // Set the IN base pin to the provided `pin` parameter. This is the data\n    // pin, and the next-numbered GPIO is used as the clock pin.\n    sm_config_set_in_pins(&c, pin);\n    // Set the pin directions to input at the PIO\n    pio_sm_set_consecutive_pindirs(pio, sm, pin, 2, false);\n    // Connect these GPIOs to this PIO block\n    pio_gpio_init(pio, pin);\n    pio_gpio_init(pio, pin + 1);\n    // Shifting to left matches the customary MSB-first ordering of SPI.\n    sm_config_set_in_shift(\n        &c,\n        false, // Shift-to-right = false (i.e. shift to left)\n        true,  // Autopush enabled\n        8      // Autopush threshold = 8\n    );\n    // We only receive, so disable the TX FIFO to make the RX FIFO deeper.\n    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);\n    // Load our configuration, and start the program from the beginning\n    pio_sm_init(pio, sm, offset, &c);\n    pio_sm_set_enabled(pio, sm, true);\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

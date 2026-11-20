@@ -1,0 +1,61 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "quadrature_encoder",
+			"pioVersion": 0,
+			"wrapTarget": 15,
+			"wrap": 23,
+			"origin": 0,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "000F", "instruction": "jmp    15"},
+				{"hex": "000E", "instruction": "jmp    14"},
+				{"hex": "0015", "instruction": "jmp    21"},
+				{"hex": "000F", "instruction": "jmp    15"},
+				{"hex": "0015", "instruction": "jmp    21"},
+				{"hex": "000F", "instruction": "jmp    15"},
+				{"hex": "000F", "instruction": "jmp    15"},
+				{"hex": "000E", "instruction": "jmp    14"},
+				{"hex": "000E", "instruction": "jmp    14"},
+				{"hex": "000F", "instruction": "jmp    15"},
+				{"hex": "000F", "instruction": "jmp    15"},
+				{"hex": "0015", "instruction": "jmp    21"},
+				{"hex": "000F", "instruction": "jmp    15"},
+				{"hex": "0015", "instruction": "jmp    21"},
+				{"hex": "008F", "instruction": "jmp    y--, 15"},
+				{"hex": "A0C2", "instruction": "mov    isr, y"},
+				{"hex": "8000", "instruction": "push   noblock"},
+				{"hex": "60C2", "instruction": "out    isr, 2"},
+				{"hex": "4002", "instruction": "in     pins, 2"},
+				{"hex": "A0E6", "instruction": "mov    osr, isr"},
+				{"hex": "A0A6", "instruction": "mov    pc, isr"},
+				{"hex": "A04A", "instruction": "mov    y, ~y"},
+				{"hex": "0097", "instruction": "jmp    y--, 23"},
+				{"hex": "A04A", "instruction": "mov    y, ~y"}
+			],
+			"codeBlocks": [
+				{
+					"lang": "c-sdk",
+					"contents": "#include \"hardware/clocks.h\"\n#include \"hardware/gpio.h\"\n// max_step_rate is used to lower the clock of the state machine to save power\n// if the application doesn't require a very high sampling rate. Passing zero\n// will set the clock to the maximum\nstatic inline void quadrature_encoder_program_init(PIO pio, uint sm, uint pin, int max_step_rate)\n{\n    pio_sm_set_consecutive_pindirs(pio, sm, pin, 2, false);\n    pio_gpio_init(pio, pin);\n    pio_gpio_init(pio, pin + 1);\n    gpio_pull_up(pin);\n    gpio_pull_up(pin + 1);\n    pio_sm_config c = quadrature_encoder_program_get_default_config(0);\n    sm_config_set_in_pins(&c, pin); // for WAIT, IN\n    sm_config_set_jmp_pin(&c, pin); // for JMP\n    // shift to left, autopull disabled\n    sm_config_set_in_shift(&c, false, false, 32);\n    // don't join FIFO's\n    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_NONE);\n    // passing \"0\" as the sample frequency,\n    if (max_step_rate == 0) {\n        sm_config_set_clkdiv(&c, 1.0);\n    } else {\n        // one state machine loop takes at most 10 cycles\n        float div = (float)clock_get_hz(clk_sys) / (10 * max_step_rate);\n        sm_config_set_clkdiv(&c, div);\n    }\n    pio_sm_init(pio, sm, 0, &c);\n    pio_sm_set_enabled(pio, sm, true);\n}\nstatic inline int32_t quadrature_encoder_get_count(PIO pio, uint sm)\n{\n    uint ret;\n    int n;\n    // if the FIFO has N entries, we fetch them to drain the FIFO,\n    // plus one entry which will be guaranteed to not be stale\n    n = pio_sm_get_rx_fifo_level(pio, sm) + 1;\n    while (n > 0) {\n        ret = pio_sm_get_blocking(pio, sm);\n        n--;\n    }\n    return ret;\n}\n"
+				}
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}
