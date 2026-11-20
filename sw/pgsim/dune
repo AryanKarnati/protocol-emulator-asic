@@ -1,0 +1,5 @@
+(library
+ (name polyglot_pgsim)
+ (wrapped false)
+ (modules pgsim pioasm_json vcd silicon_trace)
+ (libraries polyglot_isa yojson))

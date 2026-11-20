@@ -1,0 +1,4 @@
+(executable
+ (name trace_cmp)
+ (modules trace_cmp)
+ (libraries polyglot_pgsim))

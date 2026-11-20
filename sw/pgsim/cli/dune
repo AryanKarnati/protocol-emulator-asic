@@ -1,0 +1,4 @@
+(executable
+ (name pgsim_cli)
+ (modules pgsim_cli)
+ (libraries polyglot_pgsim yojson))

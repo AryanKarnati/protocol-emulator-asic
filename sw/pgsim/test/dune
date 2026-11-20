@@ -1,0 +1,9 @@
+(library
+ (name pgsim_tests)
+ (modules test_pgsim)
+ (inline_tests
+  (deps
+   (source_tree ../../pgasm/test/corpus)))
+ (libraries polyglot_pgsim polyglot_isa yojson)
+ (preprocess
+  (pps ppx_expect)))
