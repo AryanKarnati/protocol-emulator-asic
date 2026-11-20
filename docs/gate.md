@@ -30,6 +30,13 @@ The RTL lane builds the design from this file. The Model & tests lane writes the
 - `ena` is ignored.
 - `BYTE_SEL` = 0 selects bits 7:0, 1 selects 15:8, 2 selects 23:16, 3 selects 31:24.
 
+## Timing
+
+- `CMD` and `DATA` act only at rising edges. A command sampled at rising edge N is visible on `uo_out` from just after edge N.
+- `VIEW` and `BYTE_SEL` only select what `uo_out` shows. They act combinationally: `uo_out` follows them within the same cycle, with no clock edge needed.
+- Apart from that selection, `uo_out` depends only on registered state. There is no other path from an input to an output.
+- Tests run the clock at 16.666 ns (60.002 MHz), because cocotb needs an even period in picoseconds.
+
 ## Commands
 
 | `CMD` | Name | Effect at the rising edge |
@@ -63,6 +70,10 @@ Writing `INT` or `FRAC` does not restart the divider. Tests load the divisor, th
 - the FIFO is empty and both flags are 0;
 - the divider is `INT` = 1, `FRAC` = 0, so `TICK` is 1 in every cycle.
 
+While `rst_n` is low, the outputs already show this reset state: `STATUS` reads `0x84` (`TICK` and `EMPTY`), and the head byte reads `0x00`.
+
+After `rst_n` rises, commands are ignored at the first two rising edges and executed from the third. Tests send only `NOP` for at least the first three rising edges after release.
+
 ## Clock divider behaviour
 
 Let the divisor be D = `INT` + `FRAC`/256. `INT` = 0 means 65536, and `FRAC` must then be 0, as on the RP2040.
@@ -73,4 +84,10 @@ Tests may rely on these properties, which match the formal property in DESIGN.md
 2. With `FRAC` ≠ 0, the gap between consecutive ticks is always `INT` or `INT` + 1 cycles.
 3. After `DIV_RESTART`, any 256 consecutive gaps add up to exactly 256 × `INT` + `FRAC` cycles.
 
-The cycle on which the first tick appears after `DIV_RESTART` is not specified, and tests must not depend on it. Exact phase matching with RP2040 silicon is checked later, by V1.
+A "gap" is the number of cycles between two consecutive ticks that both come after the `DIV_RESTART`. The time from the restart to the first tick is not a gap. It is at most `INT` + 1 cycles, and its exact value is not specified, so tests must not depend on it. Exact phase matching with RP2040 silicon is checked later, by V1.
+
+Property 1 holds at all times, including straight after a `DIV_RESTART` or a write to `INT` or `FRAC`: with `INT` = 1 and `FRAC` = 0, `TICK` is 1 in every cycle.
+
+Between a write to `INT` or `FRAC` and the next `DIV_RESTART`, tick spacing is not specified, except for the rule in the paragraph above.
+
+`INT` = 0 with `FRAC` ≠ 0 is not specified and is not tested.
