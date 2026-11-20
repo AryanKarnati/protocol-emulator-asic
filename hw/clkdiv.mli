@@ -4,8 +4,14 @@
     [tick] is high in every cycle in which the divided clock would have a rising edge.
 
     [restart] (synchronous, sampled at the rising edge) restarts the phase. The first
-    tick comes at most INT + 1 cycles after the restart edge. Writes to [int_] and [frac]
-    take effect without a restart; they do not restart the phase.
+    tick comes at most INT + 1 cycles after the restart edge.
+
+    Writes to [int_] and [frac] do not reset the phase. Between such a write and the next
+    restart, tick spacing is not specified, except that INT = 1 with FRAC = 0 still gives
+    a tick every cycle. After the divisor is lowered, the phase may be above the new
+    divisor, so ticks can come every cycle until the phase drains. The host must send a
+    restart to get a clean start. Whether to clamp the phase on a write is a block 2
+    decision and is not implemented here.
 
     Reset is asynchronous and active low ([rst_n]). [tick] is a combinational function of
     registered state only. *)

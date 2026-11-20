@@ -25,11 +25,12 @@ let phase_bits = 25
 let create (_scope : Scope.t) (i : _ I.t) =
   let divisor =
     (* INT = 0 means 65536, i.e. 2^24 in these units. *)
-    let is_zero = i.int_ ==: zero 16 in
+    let is_zero = (i.int_ ==: zero 16) -- "int_is_zero" in
     mux2
       is_zero
       (of_int ~width:phase_bits (1 lsl 24))
       (uresize (concat_msb [ i.int_; i.frac ]) phase_bits)
+    -- "divisor"
   in
   let spec =
     Reg_spec.override
@@ -38,12 +39,13 @@ let create (_scope : Scope.t) (i : _ I.t) =
       ~reset_edge:Edge.Falling
       ~reset_to:(zero phase_bits)
   in
-  let phase = wire phase_bits -- "phase" in
-  let sum = phase +: of_int ~width:phase_bits 256 -- "phase_plus_step" in
-  let tick = sum >=: divisor -- "tick_int" in
+  let phase = wire phase_bits in
+  let sum = (phase +: of_int ~width:phase_bits 256) -- "phase_sum" in
+  let tick = (sum >=: divisor) -- "tick_now" in
   let next = mux2 tick (sum -: divisor) sum in
   let next = mux2 i.restart (zero phase_bits) next in
-  phase <== reg spec next;
+  let phase_q = reg spec next -- "phase_q" in
+  phase <== phase_q;
   { O.tick }
 ;;
 

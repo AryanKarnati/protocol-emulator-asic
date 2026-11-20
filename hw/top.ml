@@ -3,6 +3,7 @@
 (* Alias our own FIFO before opening Hardcaml, whose Fifo module would shadow it. *)
 module Fifo_hw = Fifo.Make (struct
     let width = 32
+    let depth = 4
   end)
 
 open Hardcaml
@@ -60,7 +61,7 @@ let create (scope : Scope.t) (i : _ I.t) =
   let cmd = select i.ui_in 2 0 -- "cmd" in
   let byte_sel = select i.ui_in 4 3 -- "byte_sel" in
   let view = select i.ui_in 5 5 -- "view" in
-  let is_cmd code = core_rst_n &: (cmd ==: of_int ~width:3 code) in
+  let is_cmd code = (core_rst_n &: (cmd ==: of_int ~width:3 code)) in
   let do_push = is_cmd cmd_push -- "do_push" in
   let do_pop = is_cmd cmd_pop -- "do_pop" in
   let wr_int_lo = is_cmd cmd_int_lo -- "wr_int_lo" in
@@ -68,11 +69,14 @@ let create (scope : Scope.t) (i : _ I.t) =
   let wr_frac = is_cmd cmd_frac -- "wr_frac" in
   let div_restart = is_cmd cmd_div_restart -- "div_restart" in
   let clear_flags = is_cmd cmd_clear_flags -- "clear_flags" in
-  (* FIFO *)
-  let push_word = concat_msb [ i.uio_in; i.uio_in; i.uio_in; i.uio_in ] ^: of_int ~width:32 0x0123_4567 -- "push_word" in
+  (* FIFO push word: {DATA x4} XOR 0x0123_4567 *)
+  let push_word =
+    (concat_msb [ i.uio_in; i.uio_in; i.uio_in; i.uio_in ]
+     ^: of_int ~width:32 0x0123_4567)
+    -- "push_word"
+  in
   let fifo =
     Fifo_hw.hierarchical
-      ~depth:4
       scope
       { Fifo_hw.I.clk = i.clk
       ; rst_n = core_rst_n
@@ -82,35 +86,49 @@ let create (scope : Scope.t) (i : _ I.t) =
       }
   in
   (* Divider configuration: INT resets to 1, FRAC to 0. Writes do not restart. *)
-  let int_lo =
-    reg (core_spec ~reset_to:(of_int ~width:8 1)) ~enable:wr_int_lo i.uio_in -- "div_int_lo"
+  let int_lo_q =
+    reg (core_spec ~reset_to:(of_int ~width:8 1)) ~enable:wr_int_lo i.uio_in
+    -- "int_lo_q"
   in
-  let int_hi = reg (core_spec ~reset_to:(zero 8)) ~enable:wr_int_hi i.uio_in -- "div_int_hi" in
-  let frac = reg (core_spec ~reset_to:(zero 8)) ~enable:wr_frac i.uio_in -- "div_frac" in
+  let int_hi_q =
+    reg (core_spec ~reset_to:(zero 8)) ~enable:wr_int_hi i.uio_in -- "int_hi_q"
+  in
+  let frac_q =
+    reg (core_spec ~reset_to:(zero 8)) ~enable:wr_frac i.uio_in -- "frac_q"
+  in
   let clkdiv =
     Clkdiv.hierarchical
       scope
       { Clkdiv.I.clk = i.clk
       ; rst_n = core_rst_n
-      ; int_ = concat_msb [ int_hi; int_lo ] -- "div_int"
-      ; frac
+      ; int_ = concat_msb [ int_hi_q; int_lo_q ] -- "div_int"
+      ; frac = frac_q
       ; restart = div_restart
       }
   in
-  (* Sticky flags *)
-  let overflow = wire 1 -- "overflow" in
-  let underflow = wire 1 -- "underflow" in
-  overflow <== reg (core_spec ~reset_to:gnd) ((overflow &: ~:clear_flags) |: fifo.push_dropped);
-  underflow <== reg (core_spec ~reset_to:gnd) ((underflow &: ~:clear_flags) |: fifo.pop_empty);
-  (* STATUS byte (VIEW = 1) *)
+  (* Sticky flags. Set by a dropped push or a refused pop, cleared by CLEAR_FLAGS. *)
+  let overflow = wire 1 in
+  let overflow_q =
+    reg (core_spec ~reset_to:gnd) ((overflow &: ~:clear_flags) |: fifo.push_dropped)
+    -- "overflow_q"
+  in
+  overflow <== overflow_q;
+  let underflow = wire 1 in
+  let underflow_q =
+    reg (core_spec ~reset_to:gnd) ((underflow &: ~:clear_flags) |: fifo.pop_empty)
+    -- "underflow_q"
+  in
+  underflow <== underflow_q;
+  (* STATUS byte (VIEW = 1). LEVEL is 3 bits wide, as gate.md requires. The FIFO depth
+     is 4, so LEVEL fits. *)
   let status =
     concat_msb
       [ clkdiv.tick
-      ; select fifo.level 2 0
+      ; uresize fifo.level 3
       ; fifo.full
       ; fifo.empty
-      ; overflow
-      ; underflow
+      ; overflow_q
+      ; underflow_q
       ]
     -- "status"
   in
@@ -134,7 +152,7 @@ let create (scope : Scope.t) (i : _ I.t) =
 
 module Circuit_io = Circuit.With_interface (I) (O)
 
-(* The top-level circuit, and the database holding its submodules (clkdiv, fifo). *)
+(* The top-level circuit, and the database holding its submodules (clkdiv, fifo_4x32). *)
 let circuit () =
   let scope = Scope.create () in
   let circuit = Circuit_io.create_exn ~name:"polyglot" (create scope) in

@@ -1,4 +1,4 @@
-module fifo (
+module fifo_4x32 (
     data_in,
     push,
     pop,
@@ -18,143 +18,136 @@ module fifo (
     input rst_n;
     input clk;
     output [31:0] head;
-    output [3:0] level;
+    output [2:0] level;
     output full;
     output empty;
     output push_dropped;
     output pop_empty;
 
-    wire _22;
-    wire _25;
-    wire gnd;
-    wire [3:0] _27;
-    wire [1:0] _71;
-    wire _72;
-    wire _73;
-    wire [31:0] _70;
+    wire pop_empty_0;
+    wire push_dropped_0;
+    wire [1:0] _69;
+    wire wr_sel_3;
+    wire word_3_en;
+    wire [31:0] _68;
     reg [31:0] word_3;
-    wire [1:0] _65;
-    wire _66;
-    wire _67;
+    wire [1:0] _63;
+    wire wr_sel_2;
+    wire word_2_en;
     reg [31:0] word_2;
-    wire [1:0] _59;
-    wire _60;
-    wire _61;
+    wire [1:0] _57;
+    wire wr_sel_1;
+    wire word_1_en;
     reg [31:0] word_1;
-    wire [1:0] _53;
-    wire [1:0] _29;
-    reg [1:0] _34;
-    wire [1:0] wr_ptr;
-    wire _54;
-    wire _55;
+    wire [1:0] _51;
+    wire [1:0] _27;
+    reg [1:0] wr_ptr_q;
+    wire [1:0] _6;
+    wire wr_sel_0;
+    wire word_0_en;
     wire [31:0] _8;
     reg [31:0] word_0;
-    wire [2:0] empty_0;
+    wire [2:0] _20;
     wire vdd;
-    wire [2:0] _44;
-    wire [2:0] _41;
-    wire [2:0] full_0;
-    wire push_dropped_0;
-    wire push_ok;
+    wire [2:0] level_down;
+    wire [2:0] _23;
+    wire full_0;
+    wire _30;
     wire _10;
-    wire _33;
-    wire [2:0] _36;
-    wire [2:0] _37;
-    wire [2:0] _42;
-    reg [2:0] _46;
-    wire [2:0] count;
-    wire pop_empty_0;
-    wire pop_ok;
+    wire push_ok;
+    wire [2:0] level_up;
+    wire [2:0] _35;
+    wire [2:0] _40;
+    reg [2:0] level_q;
+    wire [2:0] _11;
+    wire empty_0;
+    wire _37;
     wire _13;
-    wire _40;
+    wire pop_ok;
     wire _15;
     wire _17;
-    wire [1:0] _48;
-    reg [1:0] _50;
-    wire [1:0] rd_ptr;
+    wire [1:0] _46;
+    reg [1:0] rd_ptr_q;
+    wire [1:0] _18;
     reg [31:0] head_0;
-    assign _22 = _13 & pop_empty_0;
-    assign _25 = _10 & push_dropped_0;
-    assign gnd = 1'b0;
-    assign _27 = { gnd,
-                   count };
-    assign _71 = 2'b11;
-    assign _72 = wr_ptr == _71;
-    assign _73 = _33 & _72;
-    assign _70 = 32'b00000000000000000000000000000000;
+    assign pop_empty_0 = _13 & empty_0;
+    assign push_dropped_0 = _10 & full_0;
+    assign _69 = 2'b11;
+    assign wr_sel_3 = _6 == _69;
+    assign word_3_en = push_ok & wr_sel_3;
+    assign _68 = 32'b00000000000000000000000000000000;
     always @(posedge _17) begin
-        if (_73)
+        if (word_3_en)
             word_3 <= _8;
     end
-    assign _65 = 2'b10;
-    assign _66 = wr_ptr == _65;
-    assign _67 = _33 & _66;
+    assign _63 = 2'b10;
+    assign wr_sel_2 = _6 == _63;
+    assign word_2_en = push_ok & wr_sel_2;
     always @(posedge _17) begin
-        if (_67)
+        if (word_2_en)
             word_2 <= _8;
     end
-    assign _59 = 2'b01;
-    assign _60 = wr_ptr == _59;
-    assign _61 = _33 & _60;
+    assign _57 = 2'b01;
+    assign wr_sel_1 = _6 == _57;
+    assign word_1_en = push_ok & wr_sel_1;
     always @(posedge _17) begin
-        if (_61)
+        if (word_1_en)
             word_1 <= _8;
     end
-    assign _53 = 2'b00;
-    assign _29 = wr_ptr + _59;
+    assign _51 = 2'b00;
+    assign _27 = _6 + _57;
     always @(posedge _17 or negedge _15) begin
         if (_15 == 0)
-            _34 <= _53;
+            wr_ptr_q <= _51;
         else
-            if (_33)
-                _34 <= _29;
+            if (push_ok)
+                wr_ptr_q <= _27;
     end
-    assign wr_ptr = _34;
-    assign _54 = wr_ptr == _53;
-    assign _55 = _33 & _54;
+    assign _6 = wr_ptr_q;
+    assign wr_sel_0 = _6 == _51;
+    assign word_0_en = push_ok & wr_sel_0;
     assign _8 = data_in;
     always @(posedge _17) begin
-        if (_55)
+        if (word_0_en)
             word_0 <= _8;
     end
-    assign empty_0 = 3'b000;
+    assign _20 = 3'b000;
     assign vdd = 1'b1;
-    assign _44 = 3'b000;
-    assign _41 = { _53,
-                   _40 };
-    assign full_0 = 3'b100;
-    assign push_dropped_0 = count == full_0;
-    assign push_ok = ~ push_dropped_0;
+    assign level_down = { _51,
+                          pop_ok };
+    assign _23 = 3'b100;
+    assign full_0 = _11 == _23;
+    assign _30 = ~ full_0;
     assign _10 = push;
-    assign _33 = _10 & push_ok;
-    assign _36 = { _53,
-                   _33 };
-    assign _37 = count + _36;
-    assign _42 = _37 - _41;
+    assign push_ok = _10 & _30;
+    assign level_up = { _51,
+                        push_ok };
+    assign _35 = _11 + level_up;
+    assign _40 = _35 - level_down;
     always @(posedge _17 or negedge _15) begin
         if (_15 == 0)
-            _46 <= _44;
+            level_q <= _20;
         else
-            _46 <= _42;
+            level_q <= _40;
     end
-    assign count = _46;
-    assign pop_empty_0 = count == empty_0;
-    assign pop_ok = ~ pop_empty_0;
+    assign _11 = level_q;
+    assign empty_0 = _11 == _20;
+    assign _37 = ~ empty_0;
     assign _13 = pop;
-    assign _40 = _13 & pop_ok;
+    assign pop_ok = _13 & _37;
     assign _15 = rst_n;
     assign _17 = clk;
-    assign _48 = rd_ptr + _59;
+    assign _46 = _18 + _57;
     always @(posedge _17 or negedge _15) begin
         if (_15 == 0)
-            _50 <= _53;
+            rd_ptr_q <= _51;
         else
-            if (_40)
-                _50 <= _48;
+            if (pop_ok)
+                rd_ptr_q <= _46;
     end
-    assign rd_ptr = _50;
+    assign _18 = rd_ptr_q;
     always @* begin
-        case (rd_ptr)
+        case (_18)
         0:
             head_0 <= word_0;
         1:
@@ -166,11 +159,11 @@ module fifo (
         endcase
     end
     assign head = head_0;
-    assign level = _27;
-    assign full = push_dropped_0;
-    assign empty = pop_empty_0;
-    assign push_dropped = _25;
-    assign pop_empty = _22;
+    assign level = _11;
+    assign full = full_0;
+    assign empty = empty_0;
+    assign push_dropped = push_dropped_0;
+    assign pop_empty = pop_empty_0;
 
 endmodule
 module clkdiv (
@@ -201,17 +194,17 @@ module clkdiv (
     wire [24:0] _19;
     wire [15:0] _15;
     wire [15:0] _8;
-    wire _16;
-    wire [24:0] tick_int;
+    wire int_is_zero;
+    wire [24:0] divisor;
     wire [24:0] _24;
     wire [24:0] _25;
     wire _10;
     wire [24:0] _27;
-    reg [24:0] _31;
-    wire [24:0] phase;
-    wire [24:0] phase_plus_step;
+    reg [24:0] phase_q;
+    wire [24:0] _11;
+    wire [24:0] phase_sum;
     wire _22;
-    wire _23;
+    wire tick_now;
     assign _13 = 25'b0000000000000000100000000;
     assign vdd = 1'b1;
     assign _29 = 25'b0000000000000000000000000;
@@ -226,23 +219,23 @@ module clkdiv (
                    _18 };
     assign _15 = 16'b0000000000000000;
     assign _8 = int_;
-    assign _16 = _8 == _15;
-    assign tick_int = _16 ? _20 : _19;
-    assign _24 = phase_plus_step - tick_int;
-    assign _25 = _23 ? _24 : phase_plus_step;
+    assign int_is_zero = _8 == _15;
+    assign divisor = int_is_zero ? _20 : _19;
+    assign _24 = phase_sum - divisor;
+    assign _25 = tick_now ? _24 : phase_sum;
     assign _10 = restart;
     assign _27 = _10 ? _29 : _25;
     always @(posedge _4 or negedge _2) begin
         if (_2 == 0)
-            _31 <= _29;
+            phase_q <= _29;
         else
-            _31 <= _27;
+            phase_q <= _27;
     end
-    assign phase = _31;
-    assign phase_plus_step = phase + _13;
-    assign _22 = phase_plus_step < tick_int;
-    assign _23 = ~ _22;
-    assign tick = _23;
+    assign _11 = phase_q;
+    assign phase_sum = _11 + _13;
+    assign _22 = phase_sum < divisor;
+    assign tick_now = ~ _22;
+    assign tick = tick_now;
 
 endmodule
 module polyglot (
@@ -267,38 +260,37 @@ module polyglot (
     wire _42;
     wire _40;
     wire _27;
+    wire _3;
     wire _28;
     wire _41;
-    reg _43;
-    wire underflow;
+    reg underflow_q;
     wire _46;
     wire [2:0] _24;
     wire _25;
     wire clear_flags;
     wire _44;
+    wire _4;
     wire _45;
     wire _47;
-    reg _49;
-    wire overflow;
-    wire _87;
-    wire [3:0] _85;
-    wire [2:0] _86;
+    reg overflow_q;
+    wire _86;
+    wire [2:0] _85;
     wire [2:0] _69;
     wire _70;
     wire div_restart;
     wire [2:0] _65;
     wire _66;
     wire wr_frac;
-    reg [7:0] div_frac;
+    reg [7:0] frac_q;
     wire [2:0] _58;
     wire _59;
     wire wr_int_lo;
     wire [7:0] _56;
-    reg [7:0] div_int_lo;
+    reg [7:0] int_lo_q;
     wire [2:0] _52;
     wire _53;
     wire wr_int_hi;
-    reg [7:0] div_int_hi;
+    reg [7:0] int_hi_q;
     wire [15:0] div_int;
     wire _73;
     wire _5;
@@ -310,10 +302,10 @@ module polyglot (
     wire [7:0] _78;
     wire [1:0] byte_sel;
     reg [7:0] head_byte;
-    wire [31:0] push_word;
+    wire [31:0] _36;
     wire [7:0] _7;
     wire [31:0] _35;
-    wire [31:0] _37;
+    wire [31:0] push_word;
     wire [2:0] _32;
     wire _33;
     wire do_pop;
@@ -327,7 +319,7 @@ module polyglot (
     reg rst_sync1;
     reg core_rst_n;
     wire _11;
-    wire [39:0] _39;
+    wire [38:0] _39;
     wire _75;
     wire [7:0] data_view;
     wire [7:0] _13;
@@ -335,34 +327,33 @@ module polyglot (
     wire [7:0] uo_out_0;
     assign _15 = 8'b00000000;
     assign _42 = 1'b0;
-    assign _40 = _39[39:39];
+    assign _40 = _39[38:38];
     assign _27 = ~ clear_flags;
-    assign _28 = underflow & _27;
+    assign _3 = underflow_q;
+    assign _28 = _3 & _27;
     assign _41 = _28 | _40;
     always @(posedge _11 or negedge core_rst_n) begin
         if (core_rst_n == 0)
-            _43 <= gnd;
+            underflow_q <= gnd;
         else
-            _43 <= _41;
+            underflow_q <= _41;
     end
-    assign underflow = _43;
-    assign _46 = _39[38:38];
+    assign _46 = _39[37:37];
     assign _24 = 3'b111;
     assign _25 = cmd == _24;
     assign clear_flags = core_rst_n & _25;
     assign _44 = ~ clear_flags;
-    assign _45 = overflow & _44;
+    assign _4 = overflow_q;
+    assign _45 = _4 & _44;
     assign _47 = _45 | _46;
     always @(posedge _11 or negedge core_rst_n) begin
         if (core_rst_n == 0)
-            _49 <= gnd;
+            overflow_q <= gnd;
         else
-            _49 <= _47;
+            overflow_q <= _47;
     end
-    assign overflow = _49;
-    assign _87 = _39[36:36];
-    assign _85 = _39[35:32];
-    assign _86 = _85[2:0];
+    assign _86 = _39[35:35];
+    assign _85 = _39[34:32];
     assign _69 = 3'b110;
     assign _70 = cmd == _69;
     assign div_restart = core_rst_n & _70;
@@ -371,10 +362,10 @@ module polyglot (
     assign wr_frac = core_rst_n & _66;
     always @(posedge _11 or negedge core_rst_n) begin
         if (core_rst_n == 0)
-            div_frac <= _15;
+            frac_q <= _15;
         else
             if (wr_frac)
-                div_frac <= _7;
+                frac_q <= _7;
     end
     assign _58 = 3'b011;
     assign _59 = cmd == _58;
@@ -382,38 +373,38 @@ module polyglot (
     assign _56 = 8'b00000001;
     always @(posedge _11 or negedge core_rst_n) begin
         if (core_rst_n == 0)
-            div_int_lo <= _56;
+            int_lo_q <= _56;
         else
             if (wr_int_lo)
-                div_int_lo <= _7;
+                int_lo_q <= _7;
     end
     assign _52 = 3'b100;
     assign _53 = cmd == _52;
     assign wr_int_hi = core_rst_n & _53;
     always @(posedge _11 or negedge core_rst_n) begin
         if (core_rst_n == 0)
-            div_int_hi <= _15;
+            int_hi_q <= _15;
         else
             if (wr_int_hi)
-                div_int_hi <= _7;
+                int_hi_q <= _7;
     end
-    assign div_int = { div_int_hi,
-                       div_int_lo };
+    assign div_int = { int_hi_q,
+                       int_lo_q };
     clkdiv
         clkdiv
         ( .clk(_11),
           .rst_n(core_rst_n),
           .int_(div_int),
-          .frac(div_frac),
+          .frac(frac_q),
           .restart(div_restart),
           .tick(_73) );
     assign _5 = _73;
     assign status = { _5,
+                      _85,
                       _86,
-                      _87,
                       _75,
-                      overflow,
-                      underflow };
+                      overflow_q,
+                      underflow_q };
     assign _81 = _77[31:24];
     assign _80 = _77[23:16];
     assign _79 = _77[15:8];
@@ -432,13 +423,13 @@ module polyglot (
             head_byte <= _81;
         endcase
     end
-    assign push_word = 32'b00000001001000110100010101100111;
+    assign _36 = 32'b00000001001000110100010101100111;
     assign _7 = uio_in;
     assign _35 = { _7,
                    _7,
                    _7,
                    _7 };
-    assign _37 = _35 ^ push_word;
+    assign push_word = _35 ^ _36;
     assign _32 = 3'b010;
     assign _33 = cmd == _32;
     assign do_pop = core_rst_n & _33;
@@ -462,20 +453,20 @@ module polyglot (
             core_rst_n <= rst_sync1;
     end
     assign _11 = clk;
-    fifo
-        fifo
+    fifo_4x32
+        fifo_4x32
         ( .clk(_11),
           .rst_n(core_rst_n),
           .push(do_push),
           .pop(do_pop),
-          .data_in(_37),
-          .pop_empty(_39[39:39]),
-          .push_dropped(_39[38:38]),
-          .empty(_39[37:37]),
-          .full(_39[36:36]),
-          .level(_39[35:32]),
+          .data_in(push_word),
+          .pop_empty(_39[38:38]),
+          .push_dropped(_39[37:37]),
+          .empty(_39[36:36]),
+          .full(_39[35:35]),
+          .level(_39[34:32]),
           .head(_39[31:0]) );
-    assign _75 = _39[37:37];
+    assign _75 = _39[36:36];
     assign data_view = _75 ? _15 : head_byte;
     assign _13 = ui_in;
     assign view = _13[5:5];
