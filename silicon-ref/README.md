@@ -1,9 +1,11 @@
 # silicon-ref: capturing real PIO behaviour on a Pico 2
 
 **Status: untested on hardware.** No board has run this code yet. The host-side decoder
-and its tests run on a PC (`python3 silicon-ref/test_trace.py`). `capture.py` has only
-been dry-run against a mocked MicroPython API. Every register address and MicroPython
-API call that has not been checked on a board is marked **[verify on hardware]**.
+and its tests run on a PC (`python3 silicon-ref/test_trace.py`). `capture.py` is checked on
+a PC by `test_capture_mock.py`, which fakes the MicroPython modules and asserts the exact
+register write sequence for one program. That shows what the script asks the hardware to
+do. It does not show what the silicon does. Every register address and MicroPython API call
+that has not been checked on a board is marked **[verify on hardware]**.
 
 Purpose: DESIGN.md §17 V1. Run the same base-ISA program on a real RP2350 PIO and on
 the team's model (`pgsim`), then compare the two pin traces cycle by cycle. The reference
@@ -16,6 +18,7 @@ is silicon, which no AI wrote (DESIGN.md §17.1).
 | `capture.py` | MicroPython. Loads a program (pioasm `-o json`) on one PIO state machine and a sampler on a second SM of the same PIO block, DMAs the samples to RAM, writes a trace file. |
 | `trace.py` | Pure Python 3. Reads and validates a trace, expands samples, prints or returns pin levels. Also writes the format, for tests. |
 | `test_trace.py` | Host-side tests for `trace.py`. No hardware, no dependencies. |
+| `test_capture_mock.py` | Host-side test for `capture.py`. Fakes `machine`, `rp2`, `time` and `uctypes`, and checks the register write order for the ws2812 corpus program. No hardware. |
 
 ## Set-up on the board
 
@@ -33,28 +36,71 @@ import capture
 capture.run(
     program_json="/prog.json",
     program_name=None,                          # first program in the file
-    pins=dict(out_base=0, out_count=1, set_base=0, set_count=1,
-              sideset_base=0, in_base=0, jmp_pin=0),
+    pins=dict(out_base=0, out_count=1, set_base=0, sideset_base=0,
+              in_base=0, jmp_pin=0),
     capture_base=0,                             # sample GPIO 0..7
     samples=40000,                              # multiple of 4
     out_path="/trace.jsonl",
+    # settings the JSON does not carry (see "Program configuration"); defaults are
+    # the PIO reset values unless the program's JSON gives them
+    set_count=5, clkdiv=(1, 0),
 )
 ```
 
 Then copy `/trace.jsonl` to the PC and run `python3 silicon-ref/trace.py trace.jsonl --head 32`.
 
-Supported program features: pioasm v0 programs, side-set (optional or not, pindirs or not),
-wrap, clock divider, `.in`/`.out` shift settings from the JSON, `set`/`out`/side-set pin
-bases given by the caller, FIFO join TX or RX. Not supported (raises `NotImplementedError`):
-`origin` other than unset, `movStatus`, and every PIO v1 feature.
+## Program configuration: what comes from the JSON and what you pass
+
+The pioasm JSON (`pioasm -o json`) does not carry most of the PIO configuration. The C SDK sets
+it in C code (`pio_sm_config_set_*`), so pico-examples' JSON has it null. This was checked on
+all 36 programs in `sw/pgasm/test/corpus` (pioasm 2.3.1): `in`, `out`, `setCount`,
+`fifoConfig` and `clockDiv` are `null` in every one. The `pioasm` JSON schema is
+`tools/pioasm/json_output_schema.json` in pico-sdk 2.3.1.
+
+| Setting | From the JSON | Must be passed | If neither | Argument |
+| --- | --- | --- | --- | --- |
+| Instructions, wrap, wrap target | yes (`instructions`, `wrap`, `wrapTarget`) | no | n/a | |
+| Entry point | `publicLabels.entry_point` if present | no | instruction 0 | |
+| PIO version | `pioVersion` must be 0 | no | error if not 0 | |
+| Side-set size, optional, pindirs | `sideset` (null = no side-set) | only to override | 0 bits | `sideset_size`, `sideset_optional`, `sideset_pindirs` |
+| Shift direction (IN, OUT) | `in.right`, `out.right`, only if the source has `.in`/`.out` | to override | right | `in_shift_right`, `out_shift_right` |
+| Autopush, autopull | `in.autopush`, `out.autopull` (same condition) | to override | off | `autopush`, `autopull` |
+| Push and pull thresholds | `in.threshold`, `out.threshold` (same condition) | to override | 32 | `push_thresh`, `pull_thresh` |
+| FIFO join | `fifoConfig` (only with `.fifo`) | to override | none | `fifo_join` = `"none"`, `"tx"` or `"rx"` |
+| SET count | `setCount` (null in corpus) | **yes** for any program that sets pins | 5 | `set_count` |
+| Clock divider | `clockDiv` (null in corpus) | **yes** unless the divider is 1.0 | 1.0 | `clkdiv=(int, frac)` |
+| OUT, SET, side-set, IN base pins and OUT count, JMP pin | never | **yes** | n/a | `pins` dict (`out_base`, `out_count`, `set_base`, `sideset_base`, `in_base`, `jmp_pin`) |
+| Initial pin levels and directions | never | only if the program needs them | pins as reset | `init_levels`, `init_dirs` |
+| TX FIFO contents at start | never | only if the program reads its TX FIFO | empty | `tx_words` |
+
+Each explicit argument wins over the JSON, and the JSON wins over the reset value. The header of
+the trace records the values used (`program.config`, `program.init`), so a trace can be read
+without the source.
 
 ## How the two state machines start together
 
 - The program under test runs on SM0 and the sampler on SM1 (both configurable). Both are
-  configured and their PCs set (by writing `jmp <entry>` to `SMn_INSTR`) while disabled.
-- The DMA channel is armed before either SM runs, so the RX FIFO is drained from the first word.
+  configured, flushed, and their PCs set while disabled.
 - Both SMs start with **one write** to `PIO0 CTRL` that sets both SM_ENABLE bits. Both start
   on the same sysclk edge. The header records `ctrl_before` and `ctrl_after`.
+- Order of writes in `run()` (checked by `test_capture_mock.py`):
+  1. PIO0 and DMA are taken out of reset if held (RESETS, atomic CLR alias, wait for RESET_DONE).
+  2. Both SMs disabled. FDEBUG sticky flags cleared.
+  3. Instruction memory: program at 0, sampler instruction after it.
+  4. CLKDIV, EXECCTRL, SHIFTCTRL, PINCTRL for both SMs.
+  5. FIFO flush of both SMs: FJOIN_RX toggled twice, the same method as the SDK's
+     `pio_sm_clear_fifos` (`pio.h`). A run never reads a word left over from an earlier run.
+  6. Pads: PIO function, ISO and OD cleared, input enable on the sampled pins.
+  7. `init_dirs`, then `init_levels`, through `SMn_INSTR` `set pindirs` / `set pins` with the SM
+     disabled. As the SDK does (`pio_sm_set_consecutive_pindirs`). PINCTRL is restored after.
+  8. `tx_words` written to the program SM's TX FIFO.
+  9. `jmp <entry>` and `jmp <sampler>` written to `SMn_INSTR` to set the PCs.
+  10. DMA channel armed for the sampler's RX FIFO.
+  11. SM_RESTART and CLKDIV_RESTART for both SMs, still disabled. Done last, after all
+      configuration and the jmp, immediately before the enable.
+  12. The single enable write.
+- The DMA channel is released in a `finally` block (`dma.close()`), on success and on timeout.
+  Both SMs are stopped in the same `finally`.
 - **Fixed offset.** Sample `k` is the sampler's `in pins` on sysclk cycle `k` after the start
   write, so the offset between the two SMs is 0 cycles by construction. The program's cycle 0 is
   the same cycle. The sampler sees a pad change only after the input synchroniser delay and the
@@ -65,6 +111,29 @@ bases given by the caller, FIFO join TX or RX. Not supported (raises `NotImpleme
   and the model must use the divider.
 - The sampler stops with one CTRL write after the DMA has moved all words. It can run a few
   cycles more, but its RX FIFO then fills and it stalls, so no extra samples are kept.
+
+## Pads and pins
+
+- For every pin the program drives (out, set, side-set, and any `init_levels`/`init_dirs` pin) and
+  every sampled pin, `capture.py` sets the PIO0 function and clears **ISO** and **OD**. ISO is
+  pad isolation. It resets to 1 on RP2350, and an isolated pad reads 0, so without this the trace
+  is flat. Bit positions are from `pads_bank0.h` (`PADS_BANK0_GPIO0_ISO_BITS` = 0x100,
+  `PADS_BANK0_GPIO0_OD_BITS` = 0x80). [verify on hardware]
+- Input enable (IE, bit 6) is set on the sampled group and on the pins the program reads through
+  `jmp_pin` and `in_base`. The other pins of an `in` range are not enabled. A program that reads
+  a wider range must have those pins enabled by hand, which is not written. [verify on hardware]
+
+## Limits of the arguments
+
+- `tx_words`: at most 4 words (8 with `fifo_join="tx"`). The CPU writes them to the TX FIFO
+  before enable. A longer stream would need TX DMA, which is not written. Words beyond the FIFO
+  depth are rejected before any register write.
+- `init_levels`, `init_dirs`: pins 0..31 on PIO0 (GPIO base 0). Each `set` covers up to 5 pins in
+  a run of consecutive pins. The SM must be disabled while they run (they are run before enable).
+- `fifo_join`, `set_count`, `clkdiv` and side-set values are range-checked in `capture.py`. A bad
+  value raises `ValueError` before any register write.
+- Not supported (raises `NotImplementedError`): `origin` other than unset, `movStatus`, and every
+  PIO v1 feature (`pioVersion` other than 0, `fifoConfig` for TXPUT/TXGET/PUTGET).
 
 ## Sampler program and sample size
 
@@ -96,7 +165,9 @@ One JSON object per line. Records are in this order.
    - `pio`: `{"block": 0, "base": "0x50200000"}`.
    - `program`: `name`, `pio_version`, `offset` (always 0), `entry`, `words` (the 16-bit
      instruction words as `"0x%04x"`), `registers` (the values written to CLKDIV, EXECCTRL,
-     SHIFTCTRL, PINCTRL), and `pins` (the caller's pin bases).
+     SHIFTCTRL, PINCTRL), `pins` (the caller's pin bases), `config` (the resolved settings: clock
+     divider, FIFO join, set count, side-set, shift and threshold values), and `init` (levels,
+     directions and TX words written before enable).
    - `capture`: `sm`, `offset` (the sampler's instruction address), `word`, `pins_base`,
      `pins_count` (8), `bits_per_sample` (8), `samples_per_word` (4), `clkdiv`, `fifo_read_addr`,
      `dreq`.
@@ -135,40 +206,54 @@ Until the calibration is run, the claim "sample k is sysclk cycle k" is unverifi
 ## Register addresses
 
 All addresses are from the pico-sdk 2.3.1 register headers, checked against the RP2350 headers
-in `src/rp2350/hardware_regs/include/hardware/regs/`. Each one still needs a check on the
-board: **[verify on hardware]**. Section numbers in the RP2350 datasheet are not cited here
-because they were not checked.
+in `src/rp2350/hardware_regs/include/hardware/regs/` unless a row says otherwise. Each one still
+needs a check on the board: **[verify on hardware]**. Section numbers in the RP2350 datasheet are
+not cited here because they were not checked.
 
 | Item | Address or offset | Field and source |
 | --- | --- | --- |
 | PIO0 base | `0x50200000` | `addressmap.h` `PIO0_BASE`. [verify on hardware] |
-| CTRL | `PIO0 + 0x000` | `pio.h` `PIO_CTRL_OFFSET`. SM_ENABLE [3:0], SM_RESTART [7:4], CLKDIV_RESTART [11:8]. [verify on hardware] |
-| FDEBUG | `PIO0 + 0x008` | RXSTALL [3:0], write 1 to clear. [verify on hardware] |
-| RXF0 / RXF1 | `PIO0 + 0x020` / `+ 0x024` | RX FIFO of SM0 / SM1 (one per SM). [verify on hardware] |
-| INSTR_MEM0 | `PIO0 + 0x048 + 4*n` | 32 instruction words. [verify on hardware] |
-| SM0_CLKDIV | `PIO0 + 0x0c8` | INT [31:16], FRAC [15:8]. SMn is at `+ 0x18*n`. [verify on hardware] |
-| SM0_EXECCTRL | `PIO0 + 0x0cc` | SIDE_EN [30], SIDE_PINDIR [29], JMP_PIN [28:24], WRAP_TOP [16:12], WRAP_BOTTOM [11:7], STATUS_SEL [6:5], STATUS_N [4:0]. [verify on hardware] |
-| SM0_SHIFTCTRL | `PIO0 + 0x0d0` | FJOIN_RX [31], FJOIN_TX [30], PULL_THRESH [29:25], PUSH_THRESH [24:20], OUT_SHIFTDIR [19], IN_SHIFTDIR [18], AUTOPULL [17], AUTOPUSH [16]. [verify on hardware] |
-| SM0_INSTR | `PIO0 + 0x0d8` | Writing executes an instruction at once. Used for `jmp <entry>`. [verify on hardware] |
-| SM0_PINCTRL | `PIO0 + 0x0dc` | SIDESET_COUNT [31:29] (includes the enable bit), SET_COUNT [28:26], OUT_COUNT [25:20], IN_BASE [19:15], SIDESET_BASE [14:10], SET_BASE [9:5], OUT_BASE [4:0]. [verify on hardware] |
-| IO_BANK0 base | `0x40028000` | `addressmap.h`. GPIOn_CTRL at `+4+8n`, FUNCSEL [4:0]. PIO0 = 6 (`io_bank0.h` `GPIO_FUNC_PIO0`). PIO2 = 8. [verify on hardware] |
-| PADS_BANK0 base | `0x40038000` | `addressmap.h`. GPIOn pad at `+4+4n`. IE = bit 6, OD = bit 7. [verify on hardware] |
+| CTRL | `PIO0 + 0x000` | `pio.h` `PIO_CTRL_OFFSET`. SM_ENABLE [3:0] (`CTRL_SM_ENABLE_LSB` 0), SM_RESTART [7:4] (LSB 4), CLKDIV_RESTART [11:8] (LSB 8). Restart bits are self-clearing (SC). [verify on hardware] |
+| FDEBUG | `PIO0 + 0x008` | `pio.h` `PIO_FDEBUG_OFFSET`. RXSTALL [3:0], RXUNDER [11:8], TXOVER [19:16], TXSTALL [27:24]. Write 1 to clear; `capture.py` clears with 0x0F0F0F0F. [verify on hardware] |
+| TXF0 | `PIO0 + 0x010` | `pio.h` `PIO_TXF0_OFFSET`. TXFn at +4n. Used for `tx_words`. [verify on hardware] |
+| RXF0 / RXF1 | `PIO0 + 0x020` / `+ 0x024` | `pio.h` `PIO_RXF0_OFFSET`. RX FIFO of SM0 / SM1. [verify on hardware] |
+| INSTR_MEM0 | `PIO0 + 0x048 + 4*n` | `pio.h` `PIO_INSTR_MEM0_OFFSET`. 32 instruction words. [verify on hardware] |
+| SM0_CLKDIV | `PIO0 + 0x0c8` | `pio.h` `PIO_SM0_CLKDIV_OFFSET`. INT [31:16], FRAC [15:8]. SMn is at `+ 0x18*n`. [verify on hardware] |
+| SM0_EXECCTRL | `PIO0 + 0x0cc` | `pio.h` `PIO_SM0_EXECCTRL_OFFSET`. SIDE_EN [30], SIDE_PINDIR [29], JMP_PIN [28:24], WRAP_TOP [16:12], WRAP_BOTTOM [11:7], OUT_STICKY [17] (never set here), STATUS_SEL [6:5], STATUS_N [4:0]. [verify on hardware] |
+| SM0_SHIFTCTRL | `PIO0 + 0x0d0` | `pio.h` `PIO_SM0_SHIFTCTRL_OFFSET`. FJOIN_RX [31], FJOIN_TX [30], PULL_THRESH [29:25], PUSH_THRESH [24:20], OUT_SHIFTDIR [19], IN_SHIFTDIR [18], AUTOPULL [17], AUTOPUSH [16]. [verify on hardware] |
+| SM0_INSTR | `PIO0 + 0x0d8` | `pio.h` `PIO_SM0_INSTR_OFFSET`. A write executes at once (the SDK's `pio_sm_exec`, `pio.h`). Used for `jmp <entry>`, `set pins`, `set pindirs`. [verify on hardware] |
+| SM0_PINCTRL | `PIO0 + 0x0dc` | `pio.h` `PIO_SM0_PINCTRL_OFFSET`. SIDESET_COUNT [31:29] (includes the enable bit), SET_COUNT [28:26], OUT_COUNT [25:20], IN_BASE [19:15], SIDESET_BASE [14:10], SET_BASE [9:5], OUT_BASE [4:0]. [verify on hardware] |
+| SET instruction | `0xE000 \| (dest << 5) \| data` | Opcode 111. Destination 0 = pins, 4 = pindirs (`pio_instructions.h`, `pio_pins`, `pio_pindirs`). [verify on hardware] |
+| IO_BANK0 base | `0x40028000` | `addressmap.h` `IO_BANK0_BASE`. GPIOn_CTRL at `+4+8n`, FUNCSEL [4:0]. PIO0 = 6 (`rp2350/hardware_structs/include/hardware/structs/io_bank0.h`, `GPIO_FUNC_PIO0`). PIO2 = 8. [verify on hardware] |
+| PADS_BANK0 base | `0x40038000` | `addressmap.h` `PADS_BANK0_BASE`. GPIOn pad at `+4+4n`. IE = bit 6 (`PADS_BANK0_GPIO0_IE_BITS`, 0x40). OD = bit 7 (`PADS_BANK0_GPIO0_OD_BITS`, 0x80). **ISO = bit 8** (`PADS_BANK0_GPIO0_ISO_BITS`, 0x100; reset value 1, `PADS_BANK0_GPIO0_ISO_RESET`). [verify on hardware] |
+| RESETS base | `0x40020000` | `addressmap.h` `RESETS_BASE`. RESET at `+0x000` (`RESETS_RESET_OFFSET`, 1 = held), RESET_DONE at `+0x008` (`RESETS_RESET_DONE_OFFSET`). PIO0 = bit 11 (`RESETS_RESET_PIO0_BITS`), DMA = bit 2 (`RESETS_RESET_DMA_BITS`). Atomic clear is the `REG_ALIAS_CLR_BITS` (0x3 << 12) alias, `+0x3000`. [verify on hardware] |
 | DREQ | RX0 = 4, RX1 = 5 | `dreq.h` `DREQ_PIO0_RX0`, `DREQ_PIO0_RX1`. The sampler uses `4 + sm`. [verify on hardware] |
-| RESETS | `0x40020000`, PIO0 bit `0x800` | `resets.h` `RESETS_RESET_PIO0`. `capture.py` assumes PIO0 is already out of reset (assumed, not checked). It does not write RESETS. [verify on hardware] |
 
 Also [verify on hardware]: the MicroPython `rp2.DMA` API used in `capture.py`
 (`pack_ctrl(size, inc_read, inc_write, treq_sel, irq_quiet, enable)`, `config(read, write,
-count, ctrl)`, `active()`) and `machine.mem32` as a 32-bit read and write. The version of
-MicroPython on the board must be recorded with the trace.
+count, ctrl)`, `active()`, `close()`; see the MicroPython `rp2.DMA` page) and `machine.mem32`
+as a 32-bit read and write. `close()` releases the channel and the DMA object cannot be used
+afterwards. The version of MicroPython on the board must be recorded with the trace.
 
 ## Tests
 
 ```
-python3 silicon-ref/test_trace.py      # 11 tests, plain Python, no dependencies
-python3 -m pytest silicon-ref/          # same tests under pytest, if installed
+python3 silicon-ref/test_trace.py          # 11 tests, plain Python, no dependencies
+python3 silicon-ref/test_capture_mock.py   # 9 tests, plain Python, mocked MicroPython
+python3 -m pytest silicon-ref/             # the same tests under pytest, if installed
 ```
 
-The tests cover: the sample byte order and an independent ISR model of `in pins, 8`; file
-round trip; pin levels; the warning path; and rejection of a missing or reordered word block,
-a missing footer, a word count mismatch, an unknown format or version, and an incomplete
-capture. They do not cover silicon behaviour, which needs the calibration run.
+`test_trace.py` covers: the sample byte order and an independent ISR model of `in pins, 8`; file
+round trip; pin levels; the warning path; and rejection of a missing or reordered word block, a
+missing footer, a word count mismatch, an unknown format or version, and an incomplete capture.
+
+`test_capture_mock.py` covers: the exact register write sequence for the ws2812 program; the single
+enable write coming straight after the restart; configuration and PC writes before the restart;
+ISO and OD cleared and IE set on the pads; the FJOIN_RX flush before the DMA is armed; a repeated
+run issuing the same writes; PIO0 and DMA taken out of reset; the DMA closed and both SMs stopped
+on timeout; and `tx_words` rejected before any write. The expected values are derived from the
+header bit positions and are [verify on hardware]. The mock models the reset alias and
+write-1-to-clear of FDEBUG, but not the real pad reset values, so it does not show that the pad
+bits are preserved on silicon.
+
+Neither test file covers silicon behaviour, which needs the calibration run.
