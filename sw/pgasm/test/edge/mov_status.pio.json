@@ -1,0 +1,35 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "aq",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 0,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": {"type": "STATUS_IRQ_SET", "n": 1},
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "A042", "instruction": "nop"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

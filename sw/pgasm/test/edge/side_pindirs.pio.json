@@ -1,0 +1,36 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "b",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 1,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 2, "optional": false, "pindirs": true},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "F183", "instruction": "set    pindirs, 3      side 2 [1]"},
+				{"hex": "E880", "instruction": "set    pindirs, 0      side 1"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

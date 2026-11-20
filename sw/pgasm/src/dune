@@ -1,0 +1,5 @@
+(library
+ (name pgasm_lib)
+ (libraries core polyglot_isa)
+ (preprocess
+  (pps ppx_jane)))

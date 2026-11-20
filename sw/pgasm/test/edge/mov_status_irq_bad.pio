@@ -1,0 +1,3 @@
+.program ms6
+.mov_status irq set 9
+    nop

@@ -1,0 +1,8 @@
+.program p
+    set x, 1
+.wrap_target
+    set y, 2
+    set x, 3
+    set y, 4
+.wrap
+    set x, 5

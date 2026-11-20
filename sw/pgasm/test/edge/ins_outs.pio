@@ -1,0 +1,7 @@
+.program ah
+    in osr, 32
+    in status, 5
+    out exec, 7
+    out pc, 3
+    out pindirs, 32
+    out isr, 1

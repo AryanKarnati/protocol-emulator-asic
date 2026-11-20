@@ -1,0 +1,2 @@
+.program ap
+    irq prev 1

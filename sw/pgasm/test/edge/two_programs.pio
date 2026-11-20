@@ -1,0 +1,4 @@
+.program aw
+    nop
+.program ax
+    set x, 1

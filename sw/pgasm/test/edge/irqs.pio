@@ -1,0 +1,7 @@
+.program af
+    irq set 3
+    irq nowait 4 rel
+    irq wait 1
+    irq clear 2
+    irq 5
+    irq wait 6 rel

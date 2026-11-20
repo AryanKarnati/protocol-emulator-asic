@@ -1,0 +1,3 @@
+.program ms4
+.mov_status irq next set 2
+    nop

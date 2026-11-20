@@ -1,0 +1,4 @@
+.program aj
+    .word 0x1234
+    nop
+    .word 0xffff

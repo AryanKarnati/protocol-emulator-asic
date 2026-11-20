@@ -1,0 +1,3 @@
+.program ms2
+.mov_status rxfifo < 9
+    nop

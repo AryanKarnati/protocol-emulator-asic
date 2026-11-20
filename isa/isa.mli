@@ -127,9 +127,9 @@ type t =
       ; op : mov_op
       ; source : mov_source
       }
+  (** [clear] and [wait] both set: the hardware clear wins, [to_string] prints only
+      "clear", so that text does not round-trip. The word itself still round-trips. *)
   | Irq of
-      (** [clear] and [wait] both set: the hardware clear wins, [to_string] prints only
-          "clear", so that text does not round-trip. The word itself still round-trips. *)
       { delay_side : int
       ; clear : bool
       ; wait : bool
@@ -171,7 +171,8 @@ module Side : sig
 end
 
 (** Raw field codes, for consumers that need the encoding tables (for example the RTL
-    decoder). Each [*_of_code] returns [None] for a reserved code. *)
+    decoder). Only [mov_dest_of_code], [mov_op_of_code] and [set_dest_of_code] return [None]
+    for a reserved code. The other [*_of_code] functions are total. *)
 val jmp_cond_code : jmp_cond -> int
 val jmp_cond_of_code : int -> jmp_cond
 val in_source_code : in_source -> int

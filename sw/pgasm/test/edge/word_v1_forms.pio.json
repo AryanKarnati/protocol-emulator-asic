@@ -1,0 +1,39 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "wv",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 4,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "20E0", "instruction": "wait   1 jmppin"},
+				{"hex": "20C8", "instruction": "wait   1 irq prev, 0"},
+				{"hex": "C009", "instruction": "irq    prev nowait 1"},
+				{"hex": "80A0", "instruction": "pull   block"},
+				{"hex": "6080", "instruction": "out    pindirs, 32"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

@@ -1,0 +1,3 @@
+.program ms1
+.mov_status txfifo < 5
+    nop

@@ -1,0 +1,5 @@
+.program ai
+    push iffull noblock
+    pull ifempty
+    pull noblock
+    push block

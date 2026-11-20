@@ -1,0 +1,6 @@
+.program a
+.side_set 1 opt
+    set pins, 1 side 1 [2]
+    set pins, 0
+    nop side 0
+    nop [3]

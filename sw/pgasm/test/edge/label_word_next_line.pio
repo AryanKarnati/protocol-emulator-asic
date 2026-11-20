@@ -1,0 +1,4 @@
+.program lw2
+lab:
+    .word 0x1234
+    jmp lab

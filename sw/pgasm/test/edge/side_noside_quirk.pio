@@ -1,0 +1,3 @@
+.program e
+    nop side 0
+    set x, 1

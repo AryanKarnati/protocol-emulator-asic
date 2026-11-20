@@ -1,0 +1,40 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "af",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 5,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "C003", "instruction": "irq    nowait 3"},
+				{"hex": "C014", "instruction": "irq    nowait 4 rel"},
+				{"hex": "C021", "instruction": "irq    wait 1"},
+				{"hex": "C042", "instruction": "irq    clear 2"},
+				{"hex": "C005", "instruction": "irq    nowait 5"},
+				{"hex": "C036", "instruction": "irq    wait 6 rel"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

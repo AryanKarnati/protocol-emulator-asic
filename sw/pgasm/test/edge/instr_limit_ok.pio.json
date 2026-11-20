@@ -1,0 +1,66 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "av",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 31,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"},
+				{"hex": "A042", "instruction": "nop"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

@@ -1,0 +1,3 @@
+.program z
+.fifo rx
+    push block
