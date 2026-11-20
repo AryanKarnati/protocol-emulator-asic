@@ -35,6 +35,7 @@ Files that do not use v1 are assembled as PIO v0 (RP2040), which is Polyglot's b
 - Programs: 36
 - Files that use PIO v1: 0 (programs: 0)
 - Files pioasm rejected: 0 (the script stops on any rejection)
+- pico-examples sdk-2.3.1 contains no PIO v1 `.pio` files: confirmed by assembling all 26 with `pioasm -v 0` (pioasm 2.3.1, all 26 accepted).
 
 ## Per file
 

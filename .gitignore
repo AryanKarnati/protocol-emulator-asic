@@ -13,3 +13,6 @@ test/results.xml
 test/gate_level_netlist.v
 _build/
 *.install
+.claude/
+__pycache__/
+*.pyc

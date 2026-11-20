@@ -7,19 +7,25 @@
 # STATUS: UNTESTED ON HARDWARE. Written from the RP2350 register map (checked against
 # pico-sdk 2.3.1, src/rp2350/hardware_regs) and the MicroPython rp2 port. Nothing here
 # has run on a board yet. Every register address and API call that is not verified on
-# the board is marked [verify on hardware].
+# the board is marked [verify on hardware]. A host-side mock test
+# (silicon-ref/test_capture_mock.py) checks the register write sequence, not the silicon.
 #
 # Usage (on the board, with the pioasm JSON copied to flash):
 #   import capture
 #   capture.run(
 #       program_json="/prog.json",           # pioasm -o json output
 #       program_name=None,                   # None = first program in the file
-#       pins=dict(out_base=0, out_count=1, set_base=0, set_count=1,
-#                 sideset_base=0, in_base=0, jmp_pin=0),
+#       pins=dict(out_base=0, out_count=1, set_base=0, sideset_base=0,
+#                 in_base=0, jmp_pin=0),
 #       capture_base=0,                      # first pin sampled by the capture SM
 #       samples=40000,                       # multiple of 4 (samples per 32-bit word)
 #       out_path="/trace.jsonl",
 #   )
+#
+# Which settings come from the pioasm JSON and which must be passed: see README.md,
+# section "Program configuration". Summary: the JSON gives wrap, entry point, side-set
+# and (only when the source has .in/.out/.fifo directives) shift settings. The C SDK sets
+# set-count, clock divider and shift settings in C, so those must be passed as arguments.
 #
 # Limits are documented in README.md. Summary: 8 pins give 4 samples per 32-bit word,
 # so the capture SM pushes one word every 4 sysclk cycles. That is 37.5 Mword/s at
@@ -35,27 +41,50 @@ import uctypes
 # ---------------------------------------------------------------------------
 # RP2350 register map [verify on hardware]
 # Addresses and offsets are from pico-sdk 2.3.1, src/rp2350/hardware_regs/include/
-# hardware/regs/{addressmap.h, pio.h, io_bank0.h, pads_bank0.h, dreq.h}.
+# hardware/regs/{addressmap.h, pio.h, resets.h, io_bank0.h, pads_bank0.h, dreq.h}.
 # ---------------------------------------------------------------------------
 PIO0_BASE = 0x50200000            # addressmap.h PIO0_BASE [verify on hardware]
-PIO_CTRL = 0x000                  # pio.h PIO_CTRL_OFFSET; SM_ENABLE [3:0], SM_RESTART [7:4], CLKDIV_RESTART [11:8]
-PIO_FDEBUG = 0x008                # RXSTALL [3:0], write-1-to-clear
-PIO_RXF0 = 0x020                  # RXF0..RXF3 are the RX FIFOs of SM0..SM3 (RXF1 = 0x024)
-PIO_INSTR_MEM0 = 0x048            # instruction memory, 32 words at +4*n
-SM0_CLKDIV = 0x0C8                # SMn registers at SM0_* + 0x18*n (SM1_CLKDIV = 0x0E0)
-SM_STRIDE = 0x18
-SM0_EXECCTRL = 0x0CC
-SM0_SHIFTCTRL = 0x0D0
-SM0_INSTR = 0x0D8                 # writing here executes the instruction immediately
-SM0_PINCTRL = 0x0DC
-CTRL_SM_RESTART_LSB = 4
-CTRL_CLKDIV_RESTART_LSB = 8
+PIO_CTRL = 0x000                  # pio.h PIO_CTRL_OFFSET
+CTRL_SM_ENABLE_LSB = 0            # PIO_CTRL_SM_ENABLE_LSB, bits [3:0]
+CTRL_SM_RESTART_LSB = 4           # PIO_CTRL_SM_RESTART_LSB, bits [7:4] (self-clearing)
+CTRL_CLKDIV_RESTART_LSB = 8       # PIO_CTRL_CLKDIV_RESTART_LSB, bits [11:8] (self-clearing)
+PIO_FDEBUG = 0x008                # pio.h PIO_FDEBUG_OFFSET; RXSTALL [3:0], RXUNDER [11:8],
+                                  # TXOVER [19:16], TXSTALL [27:24]; write 1 to clear
+FDEBUG_CLEAR_ALL = 0x0F0F0F0F     # all four sticky fields, one nibble each
+PIO_TXF0 = 0x010                  # pio.h PIO_TXF0_OFFSET; TXFn at +4*n
+PIO_RXF0 = 0x020                  # pio.h PIO_RXF0_OFFSET; RXFn at +4*n
+PIO_INSTR_MEM0 = 0x048            # pio.h PIO_INSTR_MEM0_OFFSET; 32 words at +4*n
+SM0_CLKDIV = 0x0C8                # pio.h PIO_SM0_CLKDIV_OFFSET
+SM0_EXECCTRL = 0x0CC              # pio.h PIO_SM0_EXECCTRL_OFFSET
+SM0_SHIFTCTRL = 0x0D0             # pio.h PIO_SM0_SHIFTCTRL_OFFSET
+SM0_INSTR = 0x0D8                 # pio.h PIO_SM0_INSTR_OFFSET; a write executes at once
+SM0_PINCTRL = 0x0DC               # pio.h PIO_SM0_PINCTRL_OFFSET
+SM_STRIDE = 0x18                  # SMn registers are SM0 + n * 0x18
+
+SHIFTCTRL_FJOIN_RX = 1 << 31      # PIO_SM0_SHIFTCTRL_FJOIN_RX_LSB 31
+SHIFTCTRL_FJOIN_TX = 1 << 30      # PIO_SM0_SHIFTCTRL_FJOIN_TX_LSB 30
+
+RESETS_BASE = 0x40020000          # addressmap.h RESETS_BASE [verify on hardware]
+RESETS_RESET = 0x000              # resets.h RESETS_RESET_OFFSET; 1 = held in reset
+RESETS_RESET_DONE = 0x008         # resets.h RESETS_RESET_DONE_OFFSET; 1 = out of reset
+RESET_DMA = 1 << 2                # resets.h RESETS_RESET_DMA_BITS
+RESET_PIO0 = 1 << 11              # resets.h RESETS_RESET_PIO0_BITS
+REG_ALIAS_SET = 0x2000            # addressmap.h REG_ALIAS_SET_BITS (0x2 << 12)
+REG_ALIAS_CLR = 0x3000            # addressmap.h REG_ALIAS_CLR_BITS (0x3 << 12)
 
 IO_BANK0_BASE = 0x40028000        # addressmap.h IO_BANK0_BASE; GPIOn_CTRL at +4 + 8n, FUNCSEL [4:0]
-PADS_BANK0_BASE = 0x40038000      # addressmap.h PADS_BANK0_BASE; GPIOn pad at +4 + 4n, IE = bit 6
-PAD_IE_BIT = 1 << 6
-FUNCSEL_PIO0 = 6                  # io_bank0.h GPIO_FUNC_PIO0 = 6 (PIO2 = 8 on RP2350)
+PADS_BANK0_BASE = 0x40038000      # addressmap.h PADS_BANK0_BASE; GPIOn pad at +4 + 4n
+PAD_OD_BIT = 1 << 7               # pads_bank0.h PADS_BANK0_GPIO0_OD_BITS (0x80), output disable
+PAD_IE_BIT = 1 << 6               # pads_bank0.h PADS_BANK0_GPIO0_IE_BITS (0x40), input enable
+PAD_ISO_BIT = 1 << 8              # pads_bank0.h PADS_BANK0_GPIO0_ISO_BITS (0x100), reset value 1
+FUNCSEL_PIO0 = 6                  # rp2350/hardware_structs/io_bank0.h GPIO_FUNC_PIO0 = 6 (PIO2 = 8)
 DREQ_PIO0_RX0 = 4                 # dreq.h DREQ_PIO0_RX0 = 4; RX1 = 5 (TX0 = 0)
+
+# SET instruction: opcode 111 in [15:13]; destination in [7:5] (pio_instructions.h
+# pio_pins = 0, pio_pindirs = 4); 5-bit data in [4:0].
+SET_OPCODE = 0xE000
+SET_DEST_PINS = 0
+SET_DEST_PINDIRS = 4
 
 # In-instruction encoding: IN (opcode 010) source PINS (000), bit count N (0 = 32).
 # pioasm 2.3.1 assembles `in pins, 8` to 0x4008 (checked with `pioasm -o hex`).
@@ -76,6 +105,22 @@ def _sm_reg(sm, base_off):
     return PIO0_BASE + base_off + SM_STRIDE * sm
 
 
+def _ensure_pio0_and_dma_out_of_reset():
+    """Release PIO0 and DMA from reset if held, and wait for RESET_DONE.
+
+    Uses the atomic CLR alias (REG_ALIAS_CLR_BITS) like the SDK's reset_unreset_block.
+    A no-op when the blocks are already out of reset. [verify on hardware]
+    """
+    held = _r(RESETS_BASE + RESETS_RESET) & (RESET_PIO0 | RESET_DMA)
+    if not held:
+        return
+    _w(RESETS_BASE + REG_ALIAS_CLR + RESETS_RESET, held)
+    for _ in range(100000):
+        if (_r(RESETS_BASE + RESETS_RESET_DONE) & held) == held:
+            return
+    raise RuntimeError("PIO0/DMA did not leave reset (RESETS_RESET_DONE stuck)")
+
+
 def _load_pioasm_program(path, name):
     """Read one program from a pioasm -o json file. Returns the program dict."""
     with open(path) as f:
@@ -89,72 +134,181 @@ def _load_pioasm_program(path, name):
     raise ValueError("program %r not found in %s" % (name, path))
 
 
-def _program_regs(p, pins, offset, sm_entry):
+_FIFO_FROM_JSON = {None: "none", "PIO_FIFO_JOIN_TX": "tx", "PIO_FIFO_JOIN_RX": "rx"}
+
+
+def _pick(override, json_value, default):
+    """Explicit argument wins, then the JSON value, then the PIO reset default."""
+    if override is not None:
+        return override
+    if json_value is not None:
+        return json_value
+    return default
+
+
+def _program_regs(p, pins, ov, offset=0):
     """Compute SM register values for the program under test.
 
-    Field positions: pio.h SM0_EXECCTRL, SM0_SHIFTCTRL, SM0_PINCTRL, SM0_CLKDIV.
-    SIDESET_COUNT includes the enable bit when side-set is optional, as pio.h
-    documents for PINCTRL and as pioasm's c-sdk output does (sideset_bits_including_opt).
+    Precedence per setting: explicit argument (ov, a dict with None = not given), then the
+    pioasm JSON, then the PIO reset value. Field positions are from pio.h:
+    SM0_EXECCTRL, SM0_SHIFTCTRL, SM0_PINCTRL, SM0_CLKDIV.
     """
+    if p.get("pioVersion", 0) != 0:
+        raise NotImplementedError("pioVersion %r: only PIO v0 (RP2040 PIO) is handled" % p.get("pioVersion"))
     if p.get("origin", -1) not in (-1, 0):
         raise NotImplementedError("program origin must be 0 or unset (no relocation here)")
     if p.get("movStatus") is not None:
         raise NotImplementedError("movStatus (STATUS_SEL) not handled yet")
-    fifo = p.get("fifoConfig")
-    if fifo not in (None, "PIO_FIFO_JOIN_TX", "PIO_FIFO_JOIN_RX"):
-        raise NotImplementedError("fifoConfig %r is PIO v1 or unhandled" % fifo)
 
-    ss = p.get("sideset") or {"size": 0, "optional": False, "pindirs": False}
-    ss_count = ss["size"] + (1 if ss["optional"] else 0)
+    # FIFO join: the JSON field is null unless the source sets .fifo; explicit arg wins.
+    if p.get("fifoConfig") not in _FIFO_FROM_JSON:
+        raise NotImplementedError("fifoConfig %r is PIO v1 or unhandled" % p.get("fifoConfig"))
+    fifo = _pick(ov["fifo_join"], _FIFO_FROM_JSON[p.get("fifoConfig")], "none")
+    if fifo not in ("none", "tx", "rx"):
+        raise ValueError("fifo_join must be 'none', 'tx' or 'rx'")
+
+    # Side-set: JSON object or null (null = no side-set). Explicit args override each field.
+    ss_json = p.get("sideset") or {"size": 0, "optional": False, "pindirs": False}
+    ss_size = _pick(ov["sideset_size"], ss_json["size"], 0)
+    ss_opt = bool(_pick(ov["sideset_optional"], ss_json["optional"], False))
+    ss_pindirs = bool(_pick(ov["sideset_pindirs"], ss_json["pindirs"], False))
+    if not 0 <= ss_size <= 5:
+        raise ValueError("side-set size must be 0..5")
+    ss_count = ss_size + (1 if ss_opt else 0)     # SIDESET_COUNT includes the enable bit
     if ss_count > 5:
-        raise ValueError("side-set too wide")
+        raise ValueError("side-set too wide (size + optional bit > 5)")
 
+    # .in / .out settings: JSON object (only when the source has the directive) or null.
     inn = p.get("in") or {}
     outp = p.get("out") or {}
-    in_right = inn.get("right", True)          # PIO reset: shift right
-    out_right = outp.get("right", True)
-    autopush = inn.get("autopush", False)
-    autopull = outp.get("autopull", False)
-    in_thr = inn.get("threshold", 32) & 0x1F   # 0 encodes 32
-    out_thr = outp.get("threshold", 32) & 0x1F
+    in_right = bool(_pick(ov["in_shift_right"], inn.get("right"), True))
+    out_right = bool(_pick(ov["out_shift_right"], outp.get("right"), True))
+    autopush = bool(_pick(ov["autopush"], inn.get("autopush"), False))
+    autopull = bool(_pick(ov["autopull"], outp.get("autopull"), False))
+    push_thr = _pick(ov["push_thresh"], inn.get("threshold"), 32)
+    pull_thr = _pick(ov["pull_thresh"], outp.get("threshold"), 32)
+    for name, t in (("push_thresh", push_thr), ("pull_thresh", pull_thr)):
+        if not 1 <= t <= 32:
+            raise ValueError("%s must be 1..32 (32 is encoded as 0)" % name)
+
+    set_count = _pick(ov["set_count"], p.get("setCount"), 5)     # PIO reset SET_COUNT = 5
+    if not 0 <= set_count <= 5:
+        raise ValueError("set_count must be 0..5")
+
+    cd_json = p.get("clockDiv") or {"int": 1, "frac": 0}          # PIO reset divider 1.0
+    cd_int, cd_frac = ov["clkdiv"] if ov["clkdiv"] is not None else (cd_json["int"], cd_json["frac"])
+    if not 1 <= cd_int <= 65535 or not 0 <= cd_frac <= 255:
+        raise ValueError("clkdiv: int 1..65535 (0 would mean 65536), frac 0..255")
 
     wrap_top = offset + p["wrap"]
     wrap_bottom = offset + p["wrapTarget"]
-    execctrl = ((1 if ss["optional"] else 0) << 30) | ((1 if ss["pindirs"] else 0) << 29) \
+    execctrl = ((1 if ss_opt else 0) << 30) | ((1 if ss_pindirs else 0) << 29) \
         | ((pins["jmp_pin"] & 0x1F) << 24) | ((wrap_top & 0x1F) << 12) | ((wrap_bottom & 0x1F) << 7)
-    shiftctrl = ((1 if fifo == "PIO_FIFO_JOIN_RX" else 0) << 31) \
-        | ((1 if fifo == "PIO_FIFO_JOIN_TX" else 0) << 30) \
-        | (out_thr << 25) | (in_thr << 20) \
+    shiftctrl = ((1 if fifo == "rx" else 0) << 31) | ((1 if fifo == "tx" else 0) << 30) \
+        | ((pull_thr & 0x1F) << 25) | ((push_thr & 0x1F) << 20) \
         | ((1 if out_right else 0) << 19) | ((1 if in_right else 0) << 18) \
         | ((1 if autopull else 0) << 17) | ((1 if autopush else 0) << 16)
-    set_count = p["setCount"] if p.get("setCount") is not None else 5
     out_count = pins["out_count"]
-    pinctrl = (ss_count << 29) | ((set_count & 7) << 26) | ((out_count & 0x3F) << 20) \
+    pinctrl = (ss_count << 29) | (set_count << 26) | ((out_count & 0x3F) << 20) \
         | ((pins["in_base"] & 0x1F) << 15) | ((pins["sideset_base"] & 0x1F) << 10) \
         | ((pins["set_base"] & 0x1F) << 5) | (pins["out_base"] & 0x1F)
-    cd = p.get("clockDiv") or {"int": 1, "frac": 0}
-    clkdiv = ((cd["int"] & 0xFFFF) << 16) | ((cd["frac"] & 0xFF) << 8)
+    clkdiv = ((cd_int & 0xFFFF) << 16) | ((cd_frac & 0xFF) << 8)
     return dict(clkdiv=clkdiv, execctrl=execctrl, shiftctrl=shiftctrl, pinctrl=pinctrl,
-                entry=offset + sm_entry, pin_span=(pins["out_base"], out_count),
+                fifo=fifo, set_count=set_count, ss_size=ss_size, ss_optional=ss_opt,
+                ss_pindirs=ss_pindirs, in_right=in_right, out_right=out_right,
+                autopush=autopush, autopull=autopull, push_thresh=push_thr,
+                pull_thresh=pull_thr, clkdiv_int=cd_int, clkdiv_frac=cd_frac,
+                pin_span=(pins["out_base"], out_count),
                 set_span=(pins["set_base"], set_count),
-                side_span=(pins["sideset_base"], ss["size"]))
+                side_span=(pins["sideset_base"], ss_size))
 
 
 def _set_pio_function(pin):
+    """Route a pad to PIO0, clear pad isolation (ISO) and output disable (OD).
+
+    ISO resets to 1 on RP2350 (pads_bank0.h PADS_BANK0_GPIO0_ISO_RESET = 1), and an isolated
+    pad reads 0, so the trace would be flat. [verify on hardware]
+    """
     ctrl_addr = IO_BANK0_BASE + 4 + 8 * pin
     v = _r(ctrl_addr)
     _w(ctrl_addr, (v & ~0x1F) | FUNCSEL_PIO0)
+    pad_addr = PADS_BANK0_BASE + 4 + 4 * pin
+    _w(pad_addr, _r(pad_addr) & ~(PAD_ISO_BIT | PAD_OD_BIT))
 
 
 def _enable_input(pin):
+    """Input enable for a sampled pin, with the same ISO and OD clearing as _set_pio_function."""
     pad_addr = PADS_BANK0_BASE + 4 + 4 * pin
-    _w(pad_addr, (_r(pad_addr) | PAD_IE_BIT) & ~0x80)   # IE on, OD off [verify on hardware]
+    _w(pad_addr, (_r(pad_addr) | PAD_IE_BIT) & ~(PAD_ISO_BIT | PAD_OD_BIT))
+
+
+def _flush_fifos(sm, shiftctrl):
+    """Empty the RX and TX FIFOs of one SM. [verify on hardware]
+
+    Same method as pico-sdk pio_sm_clear_fifos (pio.h): toggling FJOIN_RX clears both
+    FIFOs. The SDK does the toggle with the XOR alias. Here it is two plain writes of the
+    value the SM is about to run with, so the final FJOIN_RX setting is unchanged.
+    """
+    addr = _sm_reg(sm, SM0_SHIFTCTRL)
+    _w(addr, shiftctrl ^ SHIFTCTRL_FJOIN_RX)
+    _w(addr, shiftctrl)
+
+
+def _exec_on_sm(sm, instr):
+    """Execute one instruction on an SM through SMn_INSTR (pio.h pio_sm_exec). SM disabled."""
+    _w(_sm_reg(sm, SM0_INSTR), instr)
+
+
+def _set_pins_or_dirs(sm, levels, dest):
+    """Drive `set pins` or `set pindirs` on a disabled SM, a few pins at a time.
+
+    levels: dict pin -> 0 or 1. Pins are grouped into runs of up to 5 consecutive pins
+    (SET_COUNT is at most 5). This does what the SDK's pio_sm_set_pins_with_mask and
+    pio_sm_set_consecutive_pindirs do. PINCTRL is changed for each run and the caller
+    rewrites the final PINCTRL afterwards. [verify on hardware]
+    """
+    pins_sorted = sorted(levels)
+    run = []
+    groups = []
+    for p in pins_sorted:
+        if run and (p != run[-1] + 1 or len(run) == 5):
+            groups.append(run)
+            run = []
+        run.append(p)
+    if run:
+        groups.append(run)
+    for g in groups:
+        base = g[0]
+        value = 0
+        for i, p in enumerate(g):
+            if levels[p] not in (0, 1):
+                raise ValueError("pin level must be 0 or 1")
+            value |= (levels[p] & 1) << i
+        _w(_sm_reg(sm, SM0_PINCTRL), (len(g) << 26) | ((base & 0x1F) << 5))
+        _exec_on_sm(sm, SET_OPCODE | (dest << 5) | value)
+
+
+def _stop_both(ctrl_addr, en_mask):
+    _w(ctrl_addr, _r(ctrl_addr) & ~en_mask)
 
 
 def run(program_json, program_name, pins, capture_base, samples, out_path,
-        capture_sm=1, program_sm=0, sysclk_hz=None, dma_timeout_ms=5000):
+        capture_sm=1, program_sm=0, sysclk_hz=None, dma_timeout_ms=5000,
+        # --- explicit settings (None = take the pioasm JSON value, else the PIO reset value)
+        in_shift_right=None, out_shift_right=None, autopush=None, autopull=None,
+        push_thresh=None, pull_thresh=None, fifo_join=None, set_count=None,
+        sideset_size=None, sideset_optional=None, sideset_pindirs=None, clkdiv=None,
+        # --- initial state of the program under test, applied before enable
+        tx_words=None, init_levels=None, init_dirs=None):
     """Load the program under test on program_sm and the capture program on capture_sm,
     capture `samples` pin samples (8 pins), and write a trace file to out_path.
+
+    fifo_join: "none", "tx" or "rx" (joins the program SM's FIFOs; the capture SM is always
+        unjoined). clkdiv: (int, frac) tuple. set_count: 0..5.
+    tx_words: up to 4 words (8 with fifo_join "tx") written to the program SM's TX FIFO
+        by the CPU before enable. Longer streams need TX DMA, which is not written.
+    init_levels / init_dirs: dict pin -> 0/1, applied with `set pins` / `set pindirs`.
+        Pins used here must be in the program's pin range (out/set/sideset) to be useful.
     """
     if samples % 4 != 0:
         raise ValueError("samples must be a multiple of 4 (4 samples per 32-bit word)")
@@ -171,90 +325,129 @@ def run(program_json, program_name, pins, capture_base, samples, out_path,
     cap_off = len(words)                 # capture program placed right after the program
     # Program under test is loaded at offset 0. Its entry point is the first instruction
     # unless the file names one through a label (pioasm publicLabels, e.g. entry_point).
-    entry_rel = 0
-    if "entry_point" in prog.get("publicLabels", {}):
-        entry_rel = prog["publicLabels"]["entry_point"]
+    entry = prog.get("publicLabels", {}).get("entry_point", 0)
 
-    pr = _program_regs(prog, pins, 0, entry_rel)
+    ov = dict(in_shift_right=in_shift_right, out_shift_right=out_shift_right,
+              autopush=autopush, autopull=autopull, push_thresh=push_thresh,
+              pull_thresh=pull_thresh, fifo_join=fifo_join, set_count=set_count,
+              sideset_size=sideset_size, sideset_optional=sideset_optional,
+              sideset_pindirs=sideset_pindirs, clkdiv=clkdiv)
+    pr = _program_regs(prog, pins, ov)
+    pr["entry"] = entry
+    if entry >= len(words):
+        raise ValueError("entry point %d is outside the program" % entry)
+
+    tx_words = list(tx_words or [])
+    tx_limit = 8 if pr["fifo"] == "tx" else 4
+    if len(tx_words) > tx_limit:
+        raise ValueError("tx_words: at most %d words fit the TX FIFO (fifo_join=%r)"
+                         % (tx_limit, pr["fifo"]))
+    for w in tx_words:
+        if not 0 <= w <= 0xFFFFFFFF:
+            raise ValueError("tx_words must be 32-bit values")
+    init_levels = dict(init_levels or {})
+    init_dirs = dict(init_dirs or {})
+
     pin_set = set()
     for base, n in (pr["pin_span"], pr["set_span"], pr["side_span"]):
         for p in range(base, base + n):
             pin_set.add(p & 31)
     cap_pins = [(capture_base + j) & 31 for j in range(8)]
+    # Initial pin levels and directions also touch the pads, so they are driven by the PIO.
+    pin_set |= set(init_levels) | set(init_dirs)
+
+    cap_execctrl = ((cap_off & 0x1F) << 12) | ((cap_off & 0x1F) << 7)
+    cap_shiftctrl = (1 << 19) | (1 << 18) | (1 << 16)     # out right, in right, autopush, thresh 32
+    cap_pinctrl = ((capture_base & 0x1F) << 15)
+    cap_clkdiv = 1 << 16                                  # INT 1, FRAC 0: samples every sysclk
 
     en_mask = (1 << program_sm) | (1 << capture_sm)
+    ctrl_addr = PIO0_BASE + PIO_CTRL
     if sysclk_hz is None:
         sysclk_hz = machine.freq()
 
-    # Stop both SMs and restart them so PC, shift registers and clock dividers are clean.
-    _w(PIO0_BASE + PIO_CTRL, _r(PIO0_BASE + PIO_CTRL) & ~en_mask)
-    _w(PIO0_BASE + PIO_CTRL, (1 << (CTRL_SM_RESTART_LSB + program_sm))
-       | (1 << (CTRL_SM_RESTART_LSB + capture_sm))
-       | (1 << (CTRL_CLKDIV_RESTART_LSB + program_sm))
-       | (1 << (CTRL_CLKDIV_RESTART_LSB + capture_sm)))
-    _w(PIO0_BASE + PIO_FDEBUG, 0xF)      # clear sticky stall flags (write 1 to clear)
-
-    # Instruction memory: program at 0, capture instruction after it.
+    # 1. PIO0 and DMA out of reset (RESETS). No-op when they already are.
+    _ensure_pio0_and_dma_out_of_reset()
+    # 2. Both SMs disabled. The restart happens later, after all configuration.
+    _stop_both(ctrl_addr, en_mask)
+    _w(PIO0_BASE + PIO_FDEBUG, FDEBUG_CLEAR_ALL)
+    # 3. Instruction memory: program at 0, capture instruction after it.
     for i, w in enumerate(words):
         _w(PIO0_BASE + PIO_INSTR_MEM0 + 4 * i, w)
     _w(PIO0_BASE + PIO_INSTR_MEM0 + 4 * cap_off, cap_word)
-
-    # Program under test on program_sm.
+    # 4. Per-SM configuration (SMs disabled).
     _w(_sm_reg(program_sm, SM0_CLKDIV), pr["clkdiv"])
     _w(_sm_reg(program_sm, SM0_EXECCTRL), pr["execctrl"])
     _w(_sm_reg(program_sm, SM0_SHIFTCTRL), pr["shiftctrl"])
     _w(_sm_reg(program_sm, SM0_PINCTRL), pr["pinctrl"])
-
-    # Capture SM: clkdiv 1.0 so it samples every sysclk; IN_BASE = first captured pin;
-    # wrap onto itself so one `in pins, 8` runs every cycle; autopush at 32 bits.
-    cap_execctrl = ((cap_off & 0x1F) << 12) | ((cap_off & 0x1F) << 7)
-    cap_shiftctrl = (1 << 19) | (1 << 18) | (1 << 16)     # out right (reset), in right, autopush, thresh 32
-    cap_pinctrl = ((capture_base & 0x1F) << 15)
-    _w(_sm_reg(capture_sm, SM0_CLKDIV), 1 << 16)           # INT 1, FRAC 0
+    _w(_sm_reg(capture_sm, SM0_CLKDIV), cap_clkdiv)
     _w(_sm_reg(capture_sm, SM0_EXECCTRL), cap_execctrl)
     _w(_sm_reg(capture_sm, SM0_SHIFTCTRL), cap_shiftctrl)
     _w(_sm_reg(capture_sm, SM0_PINCTRL), cap_pinctrl)
-
-    # Set each SM's PC by writing `jmp <addr>` to SMn_INSTR (JMP always = 000 00000 000 addr).
-    _w(_sm_reg(program_sm, SM0_INSTR), pr["entry"] & 0x1F)
-    _w(_sm_reg(capture_sm, SM0_INSTR), cap_off & 0x1F)
-
-    # GPIO: PIO0 function on every pin the program drives and on the captured pins;
-    # input enable on the captured pins.
+    # 5. Empty both SMs' FIFOs, so a repeated run never DMAs words from an earlier run.
+    _flush_fifos(program_sm, pr["shiftctrl"])
+    _flush_fifos(capture_sm, cap_shiftctrl)
+    # 6. Pads: PIO function, ISO and OD cleared; input enable on the sampled pins and on the
+    # pins the program reads through jmp_pin and in_base (the rest of an `in` range is not
+    # enabled; see README).
     for p in sorted(pin_set | set(cap_pins)):
         _set_pio_function(p)
-    for p in cap_pins:
+    for p in sorted(set(cap_pins) | {pins["jmp_pin"] & 31, pins["in_base"] & 31}):
         _enable_input(p)
+    # 7. Initial pin directions and levels, through SMn_INSTR `set` (SMs disabled).
+    _set_pins_or_dirs(program_sm, init_dirs, SET_DEST_PINDIRS)
+    _set_pins_or_dirs(program_sm, init_levels, SET_DEST_PINS)
+    _w(_sm_reg(program_sm, SM0_PINCTRL), pr["pinctrl"])   # undo the temporary PINCTRL
+    # 8. TX FIFO preload (CPU writes, before enable).
+    for w in tx_words:
+        _w(PIO0_BASE + PIO_TXF0 + 4 * program_sm, w)
+    # 9. Program counters: `jmp <addr>` written to SMn_INSTR (JMP = 000 00000 000 addr).
+    _exec_on_sm(program_sm, pr["entry"] & 0x1F)
+    _exec_on_sm(capture_sm, cap_off & 0x1F)
 
-    # DMA: RX FIFO of the capture SM to buf, one 32-bit word per request. Armed before
-    # the SMs start, so the FIFO never fills before the first read.
+    # 10. DMA: RX FIFO of the capture SM to buf, one 32-bit word per request. Armed before
+    # the SMs start, after the FIFO flush, so the first word is from this run.
     # DREQ for the RX FIFO of SM n is DREQ_PIO0_RX0 + n (dreq.h: RX0 = 4, RX1 = 5).
     treq = DREQ_PIO0_RX0 + capture_sm
     dma = rp2.DMA()
-    ctrl_dma = dma.pack_ctrl(size=2, inc_read=False, inc_write=True, treq_sel=treq,
-                             irq_quiet=True, enable=True)   # [verify on hardware: MicroPython API]
-    dma.config(read=PIO0_BASE + PIO_RXF0 + 4 * capture_sm,
-               write=uctypes.addressof(buf), count=n_words, ctrl=ctrl_dma)
-    dma.active(1)
+    fdebug = 0
+    try:
+        ctrl_dma = dma.pack_ctrl(size=2, inc_read=False, inc_write=True, treq_sel=treq,
+                                 irq_quiet=True, enable=True)   # [verify on hardware: MicroPython API]
+        dma.config(read=PIO0_BASE + PIO_RXF0 + 4 * capture_sm,
+                   write=uctypes.addressof(buf), count=n_words, ctrl=ctrl_dma)
+        dma.active(1)
 
-    # Start both SMs with one CTRL write. Both start on the same sysclk edge.
-    ctrl_before = _r(PIO0_BASE + PIO_CTRL)
-    ctrl_after = ctrl_before | en_mask
-    t0 = time.ticks_us()
-    _w(PIO0_BASE + PIO_CTRL, ctrl_after)
+        # 11. Restart both SMs and their clock dividers, still disabled. SM_RESTART and
+        # CLKDIV_RESTART are self-clearing. This is after all configuration and the jmp.
+        restart = (1 << (CTRL_SM_RESTART_LSB + program_sm)) \
+            | (1 << (CTRL_SM_RESTART_LSB + capture_sm)) \
+            | (1 << (CTRL_CLKDIV_RESTART_LSB + program_sm)) \
+            | (1 << (CTRL_CLKDIV_RESTART_LSB + capture_sm))
+        _w(ctrl_addr, (_r(ctrl_addr) & ~en_mask) | restart)
+        ctrl_before = _r(ctrl_addr) & ~en_mask          # SM_ENABLE bits are still 0 here
+        ctrl_after = ctrl_before | en_mask
 
-    deadline = time.ticks_add(t0, dma_timeout_ms * 1000)
-    while dma.active():
-        if time.ticks_diff(deadline, time.ticks_us()) < 0:
-            # Stop both SMs before failing so the board is left in a known state.
-            _w(PIO0_BASE + PIO_CTRL, _r(PIO0_BASE + PIO_CTRL) & ~en_mask)
-            raise RuntimeError("DMA did not finish: RX FIFO drain too slow or wiring/config error")
+        # 12. The single enable write starts both SMs on the same sysclk edge.
+        t0 = time.ticks_us()
+        _w(ctrl_addr, ctrl_after)
 
-    # Stop both SMs with one write, then read the stall flags.
-    _w(PIO0_BASE + PIO_CTRL, _r(PIO0_BASE + PIO_CTRL) & ~en_mask)
-    fdebug = _r(PIO0_BASE + PIO_FDEBUG)
+        deadline = time.ticks_add(t0, dma_timeout_ms * 1000)
+        while dma.active():
+            if time.ticks_diff(deadline, time.ticks_us()) < 0:
+                raise RuntimeError("DMA did not finish: RX FIFO drain too slow or wiring/config error")
+
+        # Stop both SMs with one write, then read the sticky stall flags.
+        _stop_both(ctrl_addr, en_mask)
+        fdebug = _r(PIO0_BASE + PIO_FDEBUG)
+    finally:
+        # Leave the board in a known state on every path, including the timeout.
+        _stop_both(ctrl_addr, en_mask)
+        dma.active(0)
+        dma.close()                                    # releases the DMA channel
+
     rxstall_capture = bool((fdebug >> capture_sm) & 1)
-    _w(PIO0_BASE + PIO_FDEBUG, fdebug & 0xF)              # write-1-to-clear
+    _w(PIO0_BASE + PIO_FDEBUG, fdebug & FDEBUG_CLEAR_ALL)   # write-1-to-clear what we read
 
     header = {
         "record": "header",
@@ -273,6 +466,25 @@ def run(program_json, program_name, pins, capture_base, samples, out_path,
             "registers": {"clkdiv": "0x%08x" % pr["clkdiv"], "execctrl": "0x%08x" % pr["execctrl"],
                           "shiftctrl": "0x%08x" % pr["shiftctrl"], "pinctrl": "0x%08x" % pr["pinctrl"]},
             "pins": pins,
+            "config": {
+                "clkdiv": "%d.%d" % (pr["clkdiv_int"], pr["clkdiv_frac"]),
+                "fifo_join": pr["fifo"],
+                "set_count": pr["set_count"],
+                "sideset_size": pr["ss_size"],
+                "sideset_optional": pr["ss_optional"],
+                "sideset_pindirs": pr["ss_pindirs"],
+                "in_shift_right": pr["in_right"],
+                "out_shift_right": pr["out_right"],
+                "autopush": pr["autopush"],
+                "autopull": pr["autopull"],
+                "push_thresh": pr["push_thresh"],
+                "pull_thresh": pr["pull_thresh"],
+            },
+            "init": {
+                "levels": {str(k): v for k, v in sorted(init_levels.items())},
+                "dirs": {str(k): v for k, v in sorted(init_dirs.items())},
+                "tx_words": ["0x%08x" % w for w in tx_words],
+            },
         },
         "capture": {
             "sm": capture_sm,

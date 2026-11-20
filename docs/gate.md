@@ -72,7 +72,7 @@ Writing `INT` or `FRAC` does not restart the divider. Tests load the divisor, th
 
 While `rst_n` is low, the outputs already show this reset state: `STATUS` reads `0x84` (`TICK` and `EMPTY`), and the head byte reads `0x00`.
 
-After `rst_n` rises, commands are ignored at the first two rising edges and executed from the third. Tests send only `NOP` for at least the first three rising edges after release.
+After `rst_n` rises, commands are ignored at the first two rising edges and executed from the third. The outputs keep showing the reset state until then. This is exact, and tests may check it. Here "rises" means `rst_n` goes high between two rising edges, away from either edge.
 
 ## Clock divider behaviour
 
@@ -84,9 +84,9 @@ Tests may rely on these properties, which match the formal property in DESIGN.md
 2. With `FRAC` ≠ 0, the gap between consecutive ticks is always `INT` or `INT` + 1 cycles.
 3. After `DIV_RESTART`, any 256 consecutive gaps add up to exactly 256 × `INT` + `FRAC` cycles.
 
-A "gap" is the number of cycles between two consecutive ticks that both come after the `DIV_RESTART`. The time from the restart to the first tick is not a gap. It is at most `INT` + 1 cycles, and its exact value is not specified, so tests must not depend on it. Exact phase matching with RP2040 silicon is checked later, by V1.
+A "gap" is the number of cycles between two consecutive ticks that both come after the `DIV_RESTART`. The time from the restart to the first tick is not a gap. Count the cycle just after the restart edge as cycle 0. The first tick then comes in cycle `INT` + 1 or earlier, where `INT` = 0 counts as 65536. Its exact cycle is not specified, so tests must not depend on it beyond that bound. Exact phase matching with RP2040 silicon is checked later, by V1.
 
-Property 1 holds at all times, including straight after a `DIV_RESTART` or a write to `INT` or `FRAC`: with `INT` = 1 and `FRAC` = 0, `TICK` is 1 in every cycle.
+Property 1 holds at all times, including straight after a `DIV_RESTART` or a write to `INT` or `FRAC`: with `INT` = 1 and `FRAC` = 0, `TICK` is 1 in every cycle. That includes the cycle just after the write that makes (`INT`, `FRAC`) equal (1, 0), with or without a restart.
 
 Between a write to `INT` or `FRAC` and the next `DIV_RESTART`, tick spacing is not specified, except for the rule in the paragraph above.
 
