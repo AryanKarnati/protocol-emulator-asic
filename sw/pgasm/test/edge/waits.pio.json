@@ -1,0 +1,40 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "ae",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 5,
+			"origin": -1,
+			"usedGPIORanges": 3,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "2085", "instruction": "wait   1 gpio, 5"},
+				{"hex": "2023", "instruction": "wait   0 pin, 3"},
+				{"hex": "20C2", "instruction": "wait   1 irq, 2"},
+				{"hex": "20D3", "instruction": "wait   1 irq, 3 rel"},
+				{"hex": "2087", "instruction": "wait   1 gpio, 7"},
+				{"hex": "201F", "instruction": "wait   0 gpio, 31"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

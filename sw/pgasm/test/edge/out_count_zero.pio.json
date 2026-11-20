@@ -1,0 +1,35 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "u",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 0,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": {"pinCount": 0, "right": true, "autopull": true, "threshold": 32},
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "6061", "instruction": "out    null, 1"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

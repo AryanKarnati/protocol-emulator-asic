@@ -1,0 +1,11 @@
+.define N 3
+.define M (N+1)*2
+.program l
+.define public Q 5
+.define K N - 1
+    set x, M
+    set y, K
+    set x, -1
+    set y, ~0
+    set x, ::1
+    set y, (2<<3)|1

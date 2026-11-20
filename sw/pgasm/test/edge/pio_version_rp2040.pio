@@ -1,0 +1,3 @@
+.pio_version rp2040
+.program an
+    nop

@@ -1,0 +1,8 @@
+.program ag
+    mov x, ! y
+    mov isr, ::osr
+    mov pc, y
+    mov exec, x
+    mov osr, status
+    mov pins, ~null
+    mov x, pins

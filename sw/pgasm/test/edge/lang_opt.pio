@@ -1,0 +1,5 @@
+.program v
+.lang_opt python out_init = pico.PIO.OUT_HIGH
+.lang_opt python out_shiftdir = 1
+.lang_opt c-sdk pins = "quoted str"
+    nop

@@ -1,0 +1,3 @@
+.program ac
+.clock_div 3
+    nop

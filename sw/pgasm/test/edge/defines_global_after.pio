@@ -1,0 +1,4 @@
+.program m
+.define X 1
+.define X 2
+    set x, X

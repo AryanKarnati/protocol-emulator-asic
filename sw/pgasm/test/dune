@@ -1,0 +1,8 @@
+(test
+ (name test_corpus)
+ (libraries core pgasm_lib)
+ (preprocess
+  (pps ppx_jane))
+ (deps
+  (source_tree corpus)
+  (source_tree edge)))

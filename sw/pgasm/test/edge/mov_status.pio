@@ -1,0 +1,3 @@
+.program aq
+.mov_status irq set 1
+    nop

@@ -1,0 +1,6 @@
+.program o
+public entry:
+    jmp entry
+*other:
+    nop
+    jmp other

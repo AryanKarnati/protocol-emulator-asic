@@ -1,0 +1,4 @@
+.program b
+.side_set 2 pindirs
+    set pindirs, 3 side 2 [1]
+    set pindirs, 0 side 1

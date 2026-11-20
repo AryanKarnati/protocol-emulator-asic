@@ -1,0 +1,37 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "s",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 2,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": {"pinCount": 32, "right": false, "autopush": true, "threshold": 16},
+			"out": {"pinCount": 8, "right": true, "autopull": false, "threshold": 20},
+			"setCount": 3,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "4004", "instruction": "in     pins, 4"},
+				{"hex": "6028", "instruction": "out    x, 8"},
+				{"hex": "E001", "instruction": "set    pins, 1"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

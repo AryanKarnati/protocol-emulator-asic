@@ -1,0 +1,41 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "ag",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 6,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "A02A", "instruction": "mov    x, ~y"},
+				{"hex": "A0D7", "instruction": "mov    isr, ::osr"},
+				{"hex": "A0A2", "instruction": "mov    pc, y"},
+				{"hex": "A081", "instruction": "mov    exec, x"},
+				{"hex": "A0E5", "instruction": "mov    osr, status"},
+				{"hex": "A00B", "instruction": "mov    pins, ~null"},
+				{"hex": "A020", "instruction": "mov    x, pins"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

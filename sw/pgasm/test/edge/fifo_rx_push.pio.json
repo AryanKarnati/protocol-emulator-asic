@@ -1,0 +1,35 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "z",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 0,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": "PIO_FIFO_JOIN_RX",
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "8020", "instruction": "push   block"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

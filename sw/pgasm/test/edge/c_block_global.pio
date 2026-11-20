@@ -1,0 +1,5 @@
+% c-sdk {
+global
+%}
+.program x
+    nop

@@ -1,0 +1,38 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "ai",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 3,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "8040", "instruction": "push   iffull noblock"},
+				{"hex": "80E0", "instruction": "pull   ifempty block"},
+				{"hex": "8080", "instruction": "pull   noblock"},
+				{"hex": "8020", "instruction": "push   block"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}

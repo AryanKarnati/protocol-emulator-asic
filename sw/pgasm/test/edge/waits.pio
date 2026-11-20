@@ -1,0 +1,7 @@
+.program ae
+    wait 1 gpio 5
+    wait 0 pin 3
+    wait 1 irq 2
+    wait 1 irq 3 rel
+    wait gpio 7
+    wait 0 gpio 31

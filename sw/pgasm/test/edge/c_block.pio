@@ -1,0 +1,11 @@
+.program w
+    nop
+% c-sdk {
+line one
+
+    indented
+%}
+% python {
+  x = 1
+%}
+    nop

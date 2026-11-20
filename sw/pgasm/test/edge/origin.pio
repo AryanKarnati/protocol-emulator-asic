@@ -1,0 +1,5 @@
+.program k
+.origin 4
+start:
+    jmp start
+    nop

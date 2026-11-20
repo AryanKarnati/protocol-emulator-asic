@@ -1,0 +1,7 @@
+.program s
+.in 32 left auto 16
+.out 8 right manual 20
+.set 3
+    in pins, 4
+    out x, 8
+    set pins, 1

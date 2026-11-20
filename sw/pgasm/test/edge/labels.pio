@@ -1,0 +1,11 @@
+.program n
+.wrap_target
+lp:
+    jmp x--, lp side 1
+    jmp !x, end
+    jmp y--, lp
+    jmp x!=y, end
+    jmp pin, lp
+    jmp !osre, lp
+end:
+.wrap
