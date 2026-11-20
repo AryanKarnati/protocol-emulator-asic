@@ -133,9 +133,9 @@ type t =
       ; op : mov_op
       ; source : mov_source
       }
+  (** [clear] and [wait] both set: the hardware clear wins, [to_string] prints only
+      "clear", so that text does not round-trip. The word itself still round-trips. *)
   | Irq of
-      (** [clear] and [wait] both set: the hardware clear wins, [to_string] prints only
-          "clear", so that text does not round-trip. The word itself still round-trips. *)
       { delay_side : int
       ; clear : bool
       ; wait : bool
