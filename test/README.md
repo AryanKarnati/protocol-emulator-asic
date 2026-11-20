@@ -12,9 +12,9 @@ Install the Python packages:
 pip install -r requirements.txt
 ```
 
-Install Icarus Verilog. If you use the OSS CAD Suite, put its `bin` directory on `PATH`.
+Install Icarus Verilog (`iverilog` and `vvp`).
 
-For local runs on this machine, put `~/.local/polyglot-bin` (iverilog and vvp launchers that don't break cocotb's Python) and `~/.local/venvs/cocotb/bin` on `PATH`.
+If you use the OSS CAD Suite, use wrappers for `iverilog` and `vvp` that don't set `PYTHONHOME`, and put them first on `PATH`. The suite's own environment can break cocotb's Python.
 
 ## RTL simulation
 
