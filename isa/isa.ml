@@ -134,6 +134,8 @@ type t =
       ; source : mov_source
       }
   | Irq of
+      (** [clear] and [wait] both set: the hardware clear wins, [to_string] prints only
+          "clear", so that text does not round-trip. The word itself still round-trips. *)
       { delay_side : int
       ; clear : bool
       ; wait : bool
@@ -371,75 +373,30 @@ let encode_bit_count n =
   n land 31
 ;;
 
-let encode = function
-  | Illegal w ->
-    check_range "illegal word" w 0 0xFFFF;
-    w
-  | Jmp { delay_side; cond; addr } ->
-    check_ds delay_side;
-    check_range "addr" addr 0 31;
-    (delay_side lsl 8) lor (jmp_cond_code cond lsl 5) lor addr
-  | Wait { delay_side; polarity; source } ->
-    check_ds delay_side;
-    let pol = if polarity then 0x80 else 0 in
-    let src, low =
-      match source with
-      | Wsrc_gpio n ->
-        check_range "gpio" n 0 31;
-        0, n
-      | Wsrc_pin n ->
-        check_range "pin" n 0 31;
-        1, n
-      | Wsrc_irq { index; rel } ->
-        check_range "irq index" index 0 7;
-        2, index lor (if rel then 0x10 else 0)
-    in
-    0x2000 lor (delay_side lsl 8) lor pol lor (src lsl 5) lor low
-  | In { delay_side; source; bit_count } ->
-    check_ds delay_side;
-    0x4000 lor (delay_side lsl 8) lor (in_source_code source lsl 5) lor encode_bit_count bit_count
-  | Out { delay_side; dest; bit_count } ->
-    check_ds delay_side;
-    0x6000
-    lor (delay_side lsl 8)
-    lor (out_dest_code dest lsl 5)
-    lor encode_bit_count bit_count
-  | Push { delay_side; if_full; block } ->
-    check_ds delay_side;
-    0x8000
-    lor (delay_side lsl 8)
-    lor (if if_full then 0x40 else 0)
-    lor (if block then 0x20 else 0)
-  | Pull { delay_side; if_empty; block } ->
-    check_ds delay_side;
-    0x8080
-    lor (delay_side lsl 8)
-    lor (if if_empty then 0x40 else 0)
-    lor (if block then 0x20 else 0)
-  | Mov { delay_side; dest; op; source } ->
-    check_ds delay_side;
-    0xA000
-    lor (delay_side lsl 8)
-    lor (mov_dest_code dest lsl 5)
-    lor (mov_op_code op lsl 3)
-    lor mov_source_code source
-  | Irq { delay_side; clear; wait; index; rel } ->
-    check_ds delay_side;
-    check_range "irq index" index 0 7;
-    0xC000
-    lor (delay_side lsl 8)
-    lor (if clear then 0x40 else 0)
-    lor (if wait then 0x20 else 0)
-    lor (if rel then 0x10 else 0)
-    lor index
-  | Set { delay_side; dest; data } ->
-    check_ds delay_side;
-    check_range "set data" data 0 31;
-    0xE000 lor (delay_side lsl 8) lor (set_dest_code dest lsl 5) lor data
-;;
-
 (* ---------- Decoding ---------- *)
 
+(* Decode a 16-bit word. Total on 0..0xFFFF: every word gives a value of [t]. Raises
+   [Invalid_argument] outside that range.
+
+   Reserved encodings decode to [Illegal w]. The complete set, version 0:
+   - WAIT source 11: JMPPIN, RP2350 version 1 only.
+   - WAIT source IRQ with index bit 3: PREV/NEXT, RP2350 version 1 only. Beyond DESIGN.md
+     9.1; orchestrator ruling, pending V1.
+   - IN source 101: not reserved in pioasm (it assembles [in status]). Decodes to
+     [In_status], which [is_legal] reports as not legal. DESIGN.md 9.1 lists it as
+     reserved. Decision recorded in the commit that added [is_legal].
+   - PUSH/PULL with bits 4:0 non-zero: DESIGN.md 9.1 requires 00000. These words are
+     MOV RXFIFO in RP2350 version 1.
+   - MOV destination 011: PINDIRS, RP2350 version 1 only.
+   - MOV operation 11: reserved in DESIGN.md 9.1.
+   - IRQ bit 7: reserved in pioasm and the disassembler. Beyond DESIGN.md 9.1; orchestrator
+     ruling, pending V1.
+   - IRQ index bit 3: PREV/NEXT, RP2350 version 1 only. Beyond DESIGN.md 9.1; orchestrator
+     ruling, pending V1.
+   - SET destination 101, 110, 111: reserved in DESIGN.md 9.1.
+
+   A reserved word executes as a NOP and sets FDEBUG.ILLEGAL (DESIGN.md 9.1). [encode]
+   gives back the same word for it. *)
 let decode w =
   check_range "word" w 0 0xFFFF;
   let ds = (w lsr 8) land 31 in
@@ -525,6 +482,104 @@ let is_legal = function
   | Illegal _ -> false
   | In { source = In_status; _ } -> false
   | _ -> true
+;;
+
+(* Raw delay/side-set field, instruction bits 12:8. For [Illegal w] it is read from w. *)
+let delay_side = function
+  | Jmp { delay_side; _ }
+  | Wait { delay_side; _ }
+  | In { delay_side; _ }
+  | Out { delay_side; _ }
+  | Push { delay_side; _ }
+  | Pull { delay_side; _ }
+  | Mov { delay_side; _ }
+  | Irq { delay_side; _ }
+  | Set { delay_side; _ } -> delay_side
+  | Illegal w -> (w lsr 8) land 31
+;;
+
+let with_delay_side t ds =
+  check_ds ds;
+  match t with
+  | Jmp r -> Jmp { r with delay_side = ds }
+  | Wait r -> Wait { r with delay_side = ds }
+  | In r -> In { r with delay_side = ds }
+  | Out r -> Out { r with delay_side = ds }
+  | Push r -> Push { r with delay_side = ds }
+  | Pull r -> Pull { r with delay_side = ds }
+  | Mov r -> Mov { r with delay_side = ds }
+  | Irq r -> Irq { r with delay_side = ds }
+  | Set r -> Set { r with delay_side = ds }
+  | Illegal w -> Illegal ((w land lnot (31 lsl 8)) lor (ds lsl 8))
+;;
+
+let encode = function
+  | Illegal w ->
+    check_range "illegal word" w 0 0xFFFF;
+    if not (equal (decode w) (Illegal w))
+    then invalid_arg (sprintf "Isa.encode: Illegal 0x%04x is not a reserved encoding" w);
+    w
+  | Jmp { delay_side; cond; addr } ->
+    check_ds delay_side;
+    check_range "addr" addr 0 31;
+    (delay_side lsl 8) lor (jmp_cond_code cond lsl 5) lor addr
+  | Wait { delay_side; polarity; source } ->
+    check_ds delay_side;
+    let pol = if polarity then 0x80 else 0 in
+    let src, low =
+      match source with
+      | Wsrc_gpio n ->
+        check_range "gpio" n 0 31;
+        0, n
+      | Wsrc_pin n ->
+        check_range "pin" n 0 31;
+        1, n
+      | Wsrc_irq { index; rel } ->
+        check_range "irq index" index 0 7;
+        2, index lor (if rel then 0x10 else 0)
+    in
+    0x2000 lor (delay_side lsl 8) lor pol lor (src lsl 5) lor low
+  | In { delay_side; source; bit_count } ->
+    check_ds delay_side;
+    0x4000 lor (delay_side lsl 8) lor (in_source_code source lsl 5) lor encode_bit_count bit_count
+  | Out { delay_side; dest; bit_count } ->
+    check_ds delay_side;
+    0x6000
+    lor (delay_side lsl 8)
+    lor (out_dest_code dest lsl 5)
+    lor encode_bit_count bit_count
+  | Push { delay_side; if_full; block } ->
+    check_ds delay_side;
+    0x8000
+    lor (delay_side lsl 8)
+    lor (if if_full then 0x40 else 0)
+    lor (if block then 0x20 else 0)
+  | Pull { delay_side; if_empty; block } ->
+    check_ds delay_side;
+    0x8080
+    lor (delay_side lsl 8)
+    lor (if if_empty then 0x40 else 0)
+    lor (if block then 0x20 else 0)
+  | Mov { delay_side; dest; op; source } ->
+    check_ds delay_side;
+    0xA000
+    lor (delay_side lsl 8)
+    lor (mov_dest_code dest lsl 5)
+    lor (mov_op_code op lsl 3)
+    lor mov_source_code source
+  | Irq { delay_side; clear; wait; index; rel } ->
+    check_ds delay_side;
+    check_range "irq index" index 0 7;
+    0xC000
+    lor (delay_side lsl 8)
+    lor (if clear then 0x40 else 0)
+    lor (if wait then 0x20 else 0)
+    lor (if rel then 0x10 else 0)
+    lor index
+  | Set { delay_side; dest; data } ->
+    check_ds delay_side;
+    check_range "set data" data 0 31;
+    0xE000 lor (delay_side lsl 8) lor (set_dest_code dest lsl 5) lor data
 ;;
 
 (* ---------- Disassembly ----------
@@ -653,7 +708,7 @@ let parts = function
 
 let to_string ?(side = Side.none) t =
   match t with
-  | Illegal _ -> "reserved"
+  | Illegal w -> sprintf ".word 0x%04x" w
   | _ ->
     let mnemonic, operands, ds = parts t in
     let { Side.side = side_value; delay } = Side.split side ds in
