@@ -1,0 +1,39 @@
+name: ocaml
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v6
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: 5.x
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -f polyglot.opam.locked ]; then
+            opam install . --deps-only --with-test --locked
+          else
+            opam install . --deps-only --with-test
+          fi
+
+      - name: Build
+        run: opam exec -- dune build
+
+      - name: Test
+        run: opam exec -- dune test
+
+      - name: Check generated Verilog is up to date
+        shell: bash
+        run: |
+          out="$(mktemp)"
+          opam exec -- dune exec --display=quiet hw/bin/gen_verilog.exe > "$out"
+          diff -u src/polyglot.v "$out"
