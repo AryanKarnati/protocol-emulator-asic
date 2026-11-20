@@ -450,6 +450,38 @@ def test_override_path_write_sequence_is_exact():
 
 UART_JSON = os.path.join(HERE, "..", "sw", "pgasm", "test", "corpus", "pico-examples",
                          "pio", "uart_tx", "uart_tx.pio.json")
+I2C_JSON = os.path.join(HERE, "..", "sw", "pgasm", "test", "corpus", "pico-examples",
+                        "pio", "i2c", "i2c.pio.json")
+
+
+def test_optional_pindir_sideset_i2c_routes_one_data_pin():
+    """i2c `program i2c`: sideset {size 2, optional true, pindirs true}.
+
+    size 2 is the JSON value and includes the enable bit, so SIDESET_COUNT (PINCTRL[31:29]) is 2,
+    SIDE_EN (EXECCTRL[30]) and SIDE_PINDIR (EXECCTRL[29]) are both set, and the side-set span is
+    one data pin. Out count 0, set count 0 and capture on pins 8..15 keep the routed pads to
+    {1} (side-set) and {8..15} (sampled). Pin 2 must not be routed.
+    """
+    capture, mem = _install_fakes()
+    d = tempfile.mkdtemp()
+    out = os.path.join(d, "t.jsonl")
+    capture.run(program_json=I2C_JSON, program_name="i2c",
+                pins=dict(out_base=0, out_count=0, set_base=0, sideset_base=1,
+                          in_base=0, jmp_pin=0),
+                capture_base=8, samples=8, out_path=out, set_count=0)
+    pinctrl = _writes_to(mem, sm_reg(0, "pinctrl"))[0]
+    execctrl = _writes_to(mem, sm_reg(0, "execctrl"))[0]
+    assert (pinctrl >> 29) & 0x7 == 2, "SIDESET_COUNT must be the JSON size 2"
+    assert execctrl & (1 << 30), "SIDE_EN must be set (optional side-set)"
+    assert execctrl & (1 << 29), "SIDE_PINDIR must be set (pindirs true)"
+    funcsel_pins = {(a - 0x40028004) // 8 for a, v in mem.log
+                    if 0x40028004 <= a < 0x40028004 + 8 * 32 and v & 0x1F == 6}
+    assert funcsel_pins == {1} | set(range(8, 16)), "only the side-set data pin (1) is routed"
+    import json as _json
+    with open(out) as f:
+        cfg = _json.loads(f.readline())["program"]["config"]
+    assert cfg["sideset_size"] == 2 and cfg["sideset_data_pins"] == 1
+    assert cfg["sideset_pindirs"] is True and cfg["sideset_optional"] is True
 
 
 def test_optional_sideset_uart_tx_counts_enable_bit_once():
