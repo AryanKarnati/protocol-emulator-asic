@@ -1,8 +1,9 @@
-(lang dune 3.0)
+(lang dune 3.17)
 (generate_opam_files true)
 
 (package
  (name polyglot)
+ (allow_empty)
  (synopsis "Four RP2040-PIO-compatible protocol engines with line coding units")
  (depends
   ocaml
