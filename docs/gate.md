@@ -72,7 +72,7 @@ Writing `INT` or `FRAC` does not restart the divider. Tests load the divisor, th
 
 While `rst_n` is low, the outputs already show this reset state: `STATUS` reads `0x84` (`TICK` and `EMPTY`), and the head byte reads `0x00`.
 
-After `rst_n` rises, commands are ignored at the first two rising edges and executed from the third. Tests send only `NOP` for at least the first three rising edges after release.
+After `rst_n` rises, commands are ignored at the first two rising edges and executed from the third. This is exact, and tests may check it. Here "rises" means `rst_n` goes high between two rising edges, away from either edge.
 
 ## Clock divider behaviour
 
