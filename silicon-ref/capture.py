@@ -168,15 +168,21 @@ def _program_regs(p, pins, ov, offset=0):
         raise ValueError("fifo_join must be 'none', 'tx' or 'rx'")
 
     # Side-set: JSON object or null (null = no side-set). Explicit args override each field.
+    # ss_total is the JSON `size`, which pioasm defines as the side-set bits INCLUDING the
+    # enable bit when optional (json_output.cpp:159-162 writes sideset_bits_including_opt;
+    # pio_types.h:307). It is also the SIDESET_COUNT field value (pio.h
+    # PIO_SM0_PINCTRL_SIDESET_COUNT, "Inclusive of the enable bit, if present").
+    # The data pins are ss_total minus the enable bit.
     ss_json = p.get("sideset") or {"size": 0, "optional": False, "pindirs": False}
-    ss_size = _pick(ov["sideset_size"], ss_json["size"], 0)
+    ss_total = _pick(ov["sideset_size"], ss_json["size"], 0)
     ss_opt = bool(_pick(ov["sideset_optional"], ss_json["optional"], False))
     ss_pindirs = bool(_pick(ov["sideset_pindirs"], ss_json["pindirs"], False))
-    if not 0 <= ss_size <= 5:
-        raise ValueError("side-set size must be 0..5")
-    ss_count = ss_size + (1 if ss_opt else 0)     # SIDESET_COUNT includes the enable bit
-    if ss_count > 5:
-        raise ValueError("side-set too wide (size + optional bit > 5)")
+    if not 0 <= ss_total <= 5:
+        raise ValueError("side-set size (incl. enable bit) must be 0..5")
+    if ss_opt and ss_total < 1:
+        raise ValueError("optional side-set needs size >= 1 (the enable bit is part of size)")
+    ss_data = ss_total - (1 if ss_opt else 0)     # side-set data pins
+    ss_count = ss_total                           # SIDESET_COUNT, enable bit included
 
     # .in / .out settings: JSON object (only when the source has the directive) or null.
     inn = p.get("in") or {}
@@ -214,13 +220,13 @@ def _program_regs(p, pins, ov, offset=0):
         | ((pins["set_base"] & 0x1F) << 5) | (pins["out_base"] & 0x1F)
     clkdiv = ((cd_int & 0xFFFF) << 16) | ((cd_frac & 0xFF) << 8)
     return dict(clkdiv=clkdiv, execctrl=execctrl, shiftctrl=shiftctrl, pinctrl=pinctrl,
-                fifo=fifo, set_count=set_count, ss_size=ss_size, ss_optional=ss_opt,
-                ss_pindirs=ss_pindirs, in_right=in_right, out_right=out_right,
+                fifo=fifo, set_count=set_count, ss_size=ss_total, ss_data=ss_data,
+                ss_optional=ss_opt, ss_pindirs=ss_pindirs, in_right=in_right, out_right=out_right,
                 autopush=autopush, autopull=autopull, push_thresh=push_thr,
                 pull_thresh=pull_thr, clkdiv_int=cd_int, clkdiv_frac=cd_frac,
                 pin_span=(pins["out_base"], out_count),
                 set_span=(pins["set_base"], set_count),
-                side_span=(pins["sideset_base"], ss_size))
+                side_span=(pins["sideset_base"], ss_data))
 
 
 def _set_pio_function(pin):
@@ -305,6 +311,9 @@ def run(program_json, program_name, pins, capture_base, samples, out_path,
 
     fifo_join: "none", "tx" or "rx" (joins the program SM's FIFOs; the capture SM is always
         unjoined). clkdiv: (int, frac) tuple. set_count: 0..5.
+    sideset_size: the JSON `sideset.size` convention, which INCLUDES the enable bit when
+        sideset_optional is true. So `.side_set 1 opt` is sideset_size=2, sideset_optional=True.
+        Data pins = sideset_size - (1 if sideset_optional else 0). Do not add the bit yourself.
     tx_words: up to 4 words (8 with fifo_join "tx") written to the program SM's TX FIFO
         by the CPU before enable. Longer streams need TX DMA, which is not written.
     init_levels / init_dirs: dict pin -> 0/1, applied with `set pins` / `set pindirs`.
@@ -470,7 +479,8 @@ def run(program_json, program_name, pins, capture_base, samples, out_path,
                 "clkdiv": "%d.%d" % (pr["clkdiv_int"], pr["clkdiv_frac"]),
                 "fifo_join": pr["fifo"],
                 "set_count": pr["set_count"],
-                "sideset_size": pr["ss_size"],
+                "sideset_size": pr["ss_size"],          # JSON size: includes the enable bit
+                "sideset_data_pins": pr["ss_data"],
                 "sideset_optional": pr["ss_optional"],
                 "sideset_pindirs": pr["ss_pindirs"],
                 "in_shift_right": pr["in_right"],

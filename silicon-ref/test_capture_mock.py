@@ -49,6 +49,8 @@ RESTART_WRITE = 0x330             # SM_RESTART for SM0 and SM1, CLKDIV_RESTART f
 FJOIN_RX = 1 << 31
 
 EVENTS = []                       # ordered: ("w", addr, value), ("dma_arm", v), ("dma_close",)
+BUFFERS = {}                      # fake address -> bytearray, for uctypes.addressof
+SYNTH = None                      # optional fn(word_index) -> 32-bit RX word, else zeros
 
 
 def sm_reg(n, name):
@@ -111,6 +113,11 @@ class FakeDMA:
             return FakeDMA.busy_forever
         self.armed.append(value)
         EVENTS.append(("dma_arm", value))
+        if value and self.config_args and SYNTH is not None:
+            # Fill the destination buffer with synthetic RX words (the fixture generator only).
+            buf = BUFFERS[self.config_args["write"]]
+            for i in range(self.config_args["count"]):
+                buf[4 * i:4 * i + 4] = (SYNTH(i) & 0xFFFFFFFF).to_bytes(4, "little")
         return None
 
     def close(self):
@@ -135,8 +142,17 @@ class FakeClock:
         return a - b
 
 
-def _install_fakes(resets_held=0):
+def _addressof(buf):
+    addr = 0x20001000 + 0x1000 * len(BUFFERS)
+    BUFFERS[addr] = buf
+    return addr
+
+
+def _install_fakes(resets_held=0, synth=None):
     """Install fake MicroPython modules, reset the shared state, return (capture, mem)."""
+    global SYNTH
+    SYNTH = synth
+    BUFFERS.clear()
     mem = FakeMem(resets_held)
     machine = types.ModuleType("machine")
     machine.mem32 = mem
@@ -148,7 +164,7 @@ def _install_fakes(resets_held=0):
     time.ticks_add = FakeClock.ticks_add
     time.ticks_diff = FakeClock.ticks_diff
     uctypes = types.ModuleType("uctypes")
-    uctypes.addressof = lambda b: 0x20001000
+    uctypes.addressof = _addressof
     sys.modules["machine"] = machine
     sys.modules["rp2"] = rp2
     sys.modules["time"] = time
@@ -432,6 +448,98 @@ def test_override_path_write_sequence_is_exact():
     assert mem.log == EXPECTED_OVERRIDE_LOG, "override write sequence differs"
 
 
+UART_JSON = os.path.join(HERE, "..", "sw", "pgasm", "test", "corpus", "pico-examples",
+                         "pio", "uart_tx", "uart_tx.pio.json")
+
+
+def test_optional_sideset_uart_tx_counts_enable_bit_once():
+    """uart_tx is `.side_set 1 opt`: pioasm JSON size = 2 (enable bit included), one data pin.
+
+    SIDESET_COUNT (PINCTRL[31:29]) must be the JSON size, 2, not 3. The side-set pin span
+    must be one pin (pin 1). The set span is empty (set_count 0), and capture is on pins 8..15,
+    so the only program pads touched are 0 (out), 1 (side-set) and 8..15 (sampled).
+    """
+    capture, mem = _install_fakes()
+    d = tempfile.mkdtemp()
+    out = os.path.join(d, "t.jsonl")
+    capture.run(program_json=UART_JSON, program_name="uart_tx",
+                pins=dict(out_base=0, out_count=1, set_base=0, sideset_base=1,
+                          in_base=0, jmp_pin=0),
+                capture_base=8, samples=8, out_path=out, set_count=0)
+    pinctrl = _writes_to(mem, sm_reg(0, "pinctrl"))[0]
+    assert (pinctrl >> 29) & 0x7 == 2, "SIDESET_COUNT must be the JSON size 2 (enable bit included)"
+    assert (pinctrl >> 26) & 0x7 == 0, "set count 0"
+    execctrl = _writes_to(mem, sm_reg(0, "execctrl"))[0]
+    assert execctrl & (1 << 30), "SIDE_EN (optional side-set) must be set"
+    assert execctrl & (1 << 29) == 0, "side-set drives pins, not pindirs"
+    # pads routed to PIO0 (IO_BANK0 FUNCSEL writes): GPIO n at 0x40028004 + 8n
+    funcsel_pins = {(a - 0x40028004) // 8 for a, v in mem.log
+                    if 0x40028004 <= a < 0x40028004 + 8 * 32 and v & 0x1F == 6}
+    assert funcsel_pins == {0, 1} | set(range(8, 16)), \
+        "side-set span must be one pin (1), not two (1 and 2)"
+    import json as _json
+    with open(out) as f:
+        header = _json.loads(f.readline())
+    cfg = header["program"]["config"]
+    assert cfg["sideset_size"] == 2 and cfg["sideset_data_pins"] == 1
+    assert cfg["sideset_optional"] is True
+
+
+FIXTURE_PATH = os.path.join(HERE, "testdata", "uart_tx_example.jsonl")
+FIXTURE_SOURCE = "sw/pgasm/test/corpus/pico-examples/pio/uart_tx/uart_tx.pio.json"
+FIXTURE_SAMPLES = 1280            # 320 synthetic 32-bit words
+
+
+def _synth_word(i):
+    """Deterministic pseudo-random 32-bit RX word i (a fixed integer hash, no randomness)."""
+    x = (i * 0x9E3779B1 + 0x7F4A7C15) & 0xFFFFFFFF
+    x ^= x >> 15
+    x = (x * 0x85EBCA6B) & 0xFFFFFFFF
+    x ^= x >> 13
+    return x
+
+
+def make_fixture(out_path):
+    """Format-contract fixture for pgsim's trace loader.
+
+    The header is the one capture.run() builds (run under the mock, with the uart_tx program:
+    tx_words, init levels and dirs, side-set on pin 1). The synthetic RX words come from the mock
+    DMA. The file is written by trace.write_trace. Only program.source is rewritten, to the
+    repo-relative corpus path, so no workstation path is committed.
+    """
+    import trace as tr
+    capture, _ = _install_fakes(synth=_synth_word)
+    raw = os.path.join(tempfile.mkdtemp(), "raw.jsonl")
+    capture.run(program_json=UART_JSON, program_name="uart_tx",
+                pins=dict(out_base=0, out_count=1, set_base=0, sideset_base=1,
+                          in_base=0, jmp_pin=0),
+                capture_base=0, samples=FIXTURE_SAMPLES, out_path=raw, set_count=0,
+                tx_words=[0xA5, 0x5A], init_dirs={0: 1, 1: 1}, init_levels={0: 1, 1: 1})
+    t = tr.read_trace(raw)
+    header = t.header
+    header["program"]["source"] = FIXTURE_SOURCE
+    tr.write_trace(out_path, header, t.samples,
+                   rxstall_capture=bool(t.footer.get("rxstall_capture")))
+    return out_path
+
+
+def test_fixture_is_current_and_has_init_and_entry():
+    import trace as tr
+    fresh = make_fixture(os.path.join(tempfile.mkdtemp(), "f.jsonl"))
+    with open(fresh, "rb") as a, open(FIXTURE_PATH, "rb") as b:
+        assert a.read() == b.read(), \
+            "fixture is stale; regenerate with: python3 silicon-ref/test_capture_mock.py --write-fixture"
+    t = tr.read_trace(FIXTURE_PATH)
+    prog = t.header["program"]
+    assert prog["init"]["tx_words"] == ["0x000000a5", "0x0000005a"]
+    assert prog["init"]["levels"] == {"0": 1, "1": 1}
+    assert prog["init"]["dirs"] == {"0": 1, "1": 1}
+    assert "entry" in prog and prog["entry"] == 0, "uart_tx has no entry_point label, so entry 0"
+    assert prog["config"]["sideset_size"] == 2 and prog["config"]["sideset_data_pins"] == 1
+    assert len(t.samples) == FIXTURE_SAMPLES, "fixture carries 1280 samples (320 words)"
+    assert t.footer["complete"] is True and t.footer["words_total"] == FIXTURE_SAMPLES // 4
+
+
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
 
 
@@ -450,4 +558,8 @@ def run_all():
 
 
 if __name__ == "__main__":
+    if "--write-fixture" in sys.argv:
+        os.makedirs(os.path.dirname(FIXTURE_PATH), exist_ok=True)
+        print("wrote", make_fixture(FIXTURE_PATH))
+        sys.exit(0)
     sys.exit(1 if run_all() else 0)
