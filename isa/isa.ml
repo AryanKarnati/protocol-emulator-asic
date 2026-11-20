@@ -510,6 +510,23 @@ let decode w =
      | None -> illegal)
 ;;
 
+(* The single legality predicate for version 0, as DESIGN.md section 9.1 defines it. The
+   RTL decoder and pgsim must both use this, not their own tables.
+
+   [Illegal] is reserved and executes as a NOP that sets the ILLEGAL flag.
+
+   IN source 101 is special. pioasm 2.3.1 assembles [in status] to this encoding, and the
+   decoder keeps it as [In { source = In_status; _ }] so the disassembler can print it.
+   DESIGN.md section 9.1 lists 101 as reserved, and the RP2040 datasheet is not checked for
+   it, so for the chip and the model it is reserved: not legal. Whether silicon agrees is
+   what V1 on a Pico 2 will show. pgasm still accepts [in status] and emits 101, so its
+   output stays byte-identical to pioasm. *)
+let is_legal = function
+  | Illegal _ -> false
+  | In { source = In_status; _ } -> false
+  | _ -> true
+;;
+
 (* ---------- Disassembly ----------
 
    Output follows pioasm's disassembler: mnemonic padded to 7 columns, operands to 16, then

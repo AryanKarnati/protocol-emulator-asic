@@ -17,15 +17,16 @@ let test_exhaustive () =
   let illegal = ref 0 in
   for w = 0 to 0xFFFF do
     let t = Isa.decode w in
-    (match t with
-     | Isa.Illegal _ -> Int.incr illegal
-     | _ -> ());
+    if not (Isa.is_legal t) then Int.incr illegal;
     if Isa.encode t <> w
     then (
       incr failures;
       printf "FAIL: encode (decode 0x%04x) = 0x%04x\n" w (Isa.encode t))
   done;
-  printf "exhaustive: 65536 words round-trip; %d illegal in version 0\n" !illegal
+  (* 23040 Illegal words, plus the 1024 words with IN source 101 (in status), which are
+     decoded to In_status but are not legal in version 0 (see Isa.is_legal). *)
+  check "illegal count is 23040 + 1024" (!illegal = 23040 + 1024);
+  printf "exhaustive: 65536 words round-trip; %d not legal in version 0\n" !illegal
 ;;
 
 (* 2. Hand-checked encodings. Each word comes from the pioasm 2.3.1 assembler (oracle) for
@@ -84,6 +85,13 @@ let test_reserved () =
   check "irq prev (bit 3, v1) is illegal" (illegal 0xC009);
   check "push with bits 4:0 set (mov rxfifo, v1) is illegal" (illegal 0x8010);
   check "in src 100 is LCU, not illegal" (not (illegal 0x4080));
+  (* IN source 101: pioasm assembles `in status`, DESIGN.md 9.1 says reserved. The decoded
+     form stays In_status so it can be printed, but the legality predicate says reserved. *)
+  check "in src 101 decodes to In_status" (Isa.equal (Isa.decode 0x40A5) (Isa.In { delay_side = 0; source = Isa.In_status; bit_count = 5 }));
+  check "in src 101 is not legal in v0" (not (Isa.is_legal (Isa.decode 0x40A5)));
+  check "in status prints as pioasm does" (String.equal (Isa.to_string (Isa.decode 0x40A5)) "in     status, 5");
+  check "in lcu is legal" (Isa.is_legal (Isa.decode 0x4080));
+  check "reserved mov dst 011 is not legal" (not (Isa.is_legal (Isa.decode 0xA061)));
   check "mov src 100 is CRC, not illegal" (not (illegal 0xA024));
   check "set dst 011 is LCU, not illegal" (not (illegal 0xE060))
 ;;
@@ -155,11 +163,10 @@ let test_corpus () =
         let word = Int.of_string ("0x" ^ (ins |> member "hex" |> to_string)) in
         let text = ins |> member "instruction" |> to_string in
         let t = Isa.decode word in
-        (match t with
-         | Isa.Illegal _ ->
-           incr failures;
-           printf "FAIL: %s: 0x%04x decodes to illegal\n" file word
-         | _ -> ());
+        if not (Isa.is_legal t)
+        then (
+          incr failures;
+          printf "FAIL: %s: 0x%04x is not legal in v0\n" file word);
         if Isa.encode t <> word
         then (
           incr failures;
