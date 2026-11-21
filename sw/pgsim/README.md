@@ -136,6 +136,23 @@ Also on the V1 list: whether delay cycles, a disabled SM, and forced-instruction
 as non-OUT cycles for autopull. The model counts enabled, ticked, non-OUT cycles, including
 delay and stalled cycles, and does not count disabled or forced cycles.
 
+## Stall reason of a latched instruction
+
+A host-forced (SMx_INSTR) or EXEC instruction can stall, and so can the instruction the SM
+was executing before it (the IMEM instruction). The model keeps the two reasons apart:
+
+- The IMEM instruction's reason is `sm.stall`. Only an IMEM attempt writes it. An IMEM
+  completion sets it to none.
+- A latched instruction's reason is `sm.latch_stall`. Only a latched attempt writes it. Its
+  completion sets it to none. A latched instruction never writes `sm.stall`.
+- `debug.stall` (and `debug.stall_code`) report `latch_stall` while it is set, and the IMEM
+  reason otherwise.
+
+So when a forced instruction completes, the reported reason is the IMEM one on the same
+cycle, with no wait for the next SM tick. This also holds with the SM disabled, where the
+IMEM reason does not change again. The RTL must do the same: the block 2 lockstep compares
+`stall_code` every cycle.
+
 ## Not modelled
 
 - LCU instructions (`in lcu`, `mov ..., crc`, `set lcu`). They raise.

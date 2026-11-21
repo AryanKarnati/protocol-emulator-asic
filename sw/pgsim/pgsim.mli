@@ -108,6 +108,7 @@ type sm =
   ; mutable latch : latch
   ; mutable irq_wait : int option
   ; mutable latch_irq_wait : int option
+  ; mutable latch_stall : stall
   ; mutable acc : int
   ; mutable tx : Fifo.t
   ; mutable rx : Fifo.t
@@ -189,6 +190,7 @@ type debug =
   ; latch : latch
   ; irq_wait : int option
   ; latch_irq_wait : int option
+  ; latch_stall : stall
   ; side_done : bool
   ; host_side_done : bool
   ; sticky : int * int * int * int

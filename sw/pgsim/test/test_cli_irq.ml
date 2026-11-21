@@ -334,7 +334,7 @@ let%expect_test "--tx before --sm binds to the named SM (order-independent)" =
   let _, out, _ =
     cli [ "--program"; pull_program; "--config"; cfg; "--tx"; "5"; "--sm"; "1"; "--cycles"; "2"; "--trace" ]
   in
-  check "SM1 pulled 5 into its OSR" (contains out "osr=00000005")
+  check (Printf.sprintf "SM1 pulled 5 into its OSR; out=%S" out) (contains out "osr=00000005")
 ;;
 
 let%expect_test "a bad --at gives a clean error and status 2" =

@@ -242,6 +242,7 @@ type sm =
   ; mutable latch : latch
   ; mutable irq_wait : int option (* flag an IMEM IRQ instruction raised and waits on *)
   ; mutable latch_irq_wait : int option (* same, for a latched EXEC or host IRQ instruction *)
+  ; mutable latch_stall : stall (* stall reason of the latched EXEC or host instruction *)
   ; mutable acc : int (* clock divider accumulator, 1/256 units *)
   ; mutable tx : Fifo.t
   ; mutable rx : Fifo.t
@@ -293,6 +294,7 @@ let create () =
       ; latch = No_latch
       ; irq_wait = None
       ; latch_irq_wait = None
+      ; latch_stall = No_stall
       ; acc = 0
       ; tx = Fifo.create tx_d
       ; rx = Fifo.create rx_d
@@ -703,12 +705,16 @@ let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
   let set_flag b = if host then sm.host_side_done <- b else sm.side_done <- b in
   (match outcome with
    | Stalled r ->
-     sm.stall <- r;
+     (match src with
+      | Imem -> sm.stall <- r
+      | Exec | Host -> sm.latch_stall <- r);
      set_flag true
    | Done { jump; delay_applies; exec } ->
      (* A forced instruction that completes leaves the interrupted instruction's stall
         reason alone: it is still stalled, and the next tick re-evaluates it. *)
-     if not host then sm.stall <- No_stall;
+     (match src with
+      | Imem -> sm.stall <- No_stall
+      | Exec | Host -> sm.latch_stall <- No_stall);
      set_flag false;
      (match src, jump with
       | Imem, Some a -> sm.pc <- a
@@ -860,6 +866,7 @@ let write_instr t i w =
   let sm = t.sms.(i) in
   sm.latch <- Host_latch (w land 0xFFFF);
   sm.latch_irq_wait <- None;
+  sm.latch_stall <- No_stall;
   sm.host_side_done <- false
 ;;
 
@@ -881,6 +888,7 @@ let sm_restart t mask =
         sm.host_side_done <- false;
         sm.irq_wait <- None;
         sm.latch_irq_wait <- None;
+        sm.latch_stall <- No_stall;
         sm.stall <- No_stall;
         sm.sticky <- pinw_create ()))
     t.sms
@@ -926,6 +934,7 @@ type debug =
   ; latch : latch (* pending EXEC or host instruction *)
   ; irq_wait : int option (* IMEM IRQ instruction waiting on a flag *)
   ; latch_irq_wait : int option (* latched EXEC or host IRQ instruction waiting on a flag *)
+  ; latch_stall : stall (* stall of the latched instruction; [stall] reports it when set *)
   ; side_done : bool
   ; host_side_done : bool
   ; sticky : sticky_view
@@ -961,6 +970,9 @@ let stall_name = function
 
 let debug t i =
   let sm = t.sms.(i) in
+  (* A stalled latched instruction is the current one; otherwise the IMEM reason applies.
+     Completing a latched instruction never changes the IMEM reason (see README). *)
+  let effective = if sm.latch_stall <> No_stall then sm.latch_stall else sm.stall in
   { pc = sm.pc
   ; x = sm.x
   ; y = sm.y
@@ -974,8 +986,9 @@ let debug t i =
   ; rx_level = Fifo.level sm.rx
   ; delay = sm.delay
   ; acc = sm.acc
-  ; stall = sm.stall
-  ; stall_code = stall_code sm.stall
+  ; stall = effective
+  ; stall_code = stall_code effective
+  ; latch_stall = sm.latch_stall
   ; enabled = sm.enabled
   ; illegal = sm.illegal
   ; latch = sm.latch

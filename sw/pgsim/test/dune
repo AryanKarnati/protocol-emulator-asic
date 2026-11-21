@@ -1,6 +1,6 @@
 (library
  (name pgsim_tests)
- (modules test_pgsim test_cli_irq)
+ (modules test_pgsim test_cli_irq test_cli_paths)
  (inline_tests
   (deps
    (source_tree ../../pgasm/test/corpus)
