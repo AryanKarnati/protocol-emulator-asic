@@ -75,6 +75,13 @@ pin. `.side_set 1` gives size 1, one data pin. The trace header records `sideset
 | Push and pull thresholds | `in.threshold`, `out.threshold` (same condition) | to override | 32 | `push_thresh`, `pull_thresh` |
 | FIFO join | `fifoConfig` (only with `.fifo`) | to override | none | `fifo_join` = `"none"`, `"tx"` or `"rx"` |
 | SET count | `setCount` (null in corpus) | **yes** for any program that sets pins | 5 | `set_count` |
+
+When `setCount` is null and `set_count` is not passed, the default 5 applies. That routes
+`set_base..set_base+4` to PIO0, so those pads get the PIO function, even if the program only sets
+fewer pins or none. That changes the pads' function only. A pad with PIO0 function is not driven
+unless PIO sets its direction to output (the reset direction is input), so these pads are not driven
+by the default alone. Pass `set_count=0` (or the real count) to keep them out of PIO. The mock tests
+for `uart_tx` and `i2c` pass `set_count=0` for this reason.
 | Clock divider | `clockDiv` (null in corpus) | **yes** unless the divider is 1.0 | 1.0 | `clkdiv=(int, frac)` |
 | OUT, SET, side-set, IN base pins and OUT count, JMP pin | never | **yes** | n/a | `pins` dict (`out_base`, `out_count`, `set_base`, `sideset_base`, `in_base`, `jmp_pin`) |
 | Initial pin levels and directions | never | only if the program needs them | pins as reset | `init_levels`, `init_dirs` |
