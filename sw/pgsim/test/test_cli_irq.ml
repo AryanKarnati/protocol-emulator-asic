@@ -31,7 +31,11 @@ let irq ?(wait = false) ?(clear = false) ?(index = 0) () =
   enc (Isa.Irq { delay_side = 0; clear; wait; index; rel = false })
 ;;
 
-let write_file path text =
+(* A fresh temporary file on every call. Test modules are linked into several partition
+   processes that run concurrently in one directory, so no fixed file name may be shared
+   (and no module initialiser may write files). *)
+let write_file _name text =
+  let path = Filename.temp_file ~temp_dir:"." "pgsim_test" ".json" in
   let oc = open_out path in
   output_string oc text;
   close_out oc;
@@ -229,7 +233,7 @@ let%expect_test "out exec of an irq wait stalls in the latch slot, not the IMEM 
 (* ------------------------------------------------------------------------------------ *)
 (* The pgsim command (Runner.main) *)
 
-let cli args =
+let cli_raw args =
   let out = Buffer.create 256 in
   let err = Buffer.create 64 in
   let status =
@@ -237,6 +241,15 @@ let cli args =
       (Array.of_list ("pgsim" :: args))
   in
   status, Buffer.contents out, Buffer.contents err
+;;
+
+(* Every CLI test goes through here, so a nonzero exit status fails the test with the
+   command's stderr in the message. Only the error-path test uses [cli_raw]. *)
+let cli args =
+  let status, out, err = cli_raw args in
+  if status <> 0
+  then failwith (Printf.sprintf "pgsim exited %d for %s: %s" status (String.concat " " args) err);
+  status, out, err
 ;;
 
 (* "cycle pad" lines of --trace output, as (cycle, pad) pairs. *)
@@ -257,14 +270,14 @@ let contains s sub =
 ;;
 
 (* pull; set pins,1; jmp 0. *)
-let pull_program =
-  write_file "cli_pull.json"
+let pull_program () =
+  write_file "pull"
     {|{"programs":[{"name":"pull","pioVersion":0,"wrapTarget":0,"wrap":2,"instructions":[{"hex":"80a0","instruction":"pull"},{"hex":"e001","instruction":"set pins, 1"},{"hex":"0000","instruction":"jmp 0"}]}]}|}
 ;;
 
 let%expect_test "--at tx: a TX push at cycle 5 lets the pull run; the pin follows" =
   let status, out, _ =
-    cli [ "--program"; pull_program; "--init-instr"; "e081"; "--at"; "5:tx:0:1"; "--cycles"; "10"; "--trace" ]
+    cli [ "--program"; (pull_program ()); "--init-instr"; "e081"; "--at"; "5:tx:0:1"; "--cycles"; "10"; "--trace" ]
   in
   check "status 0" (status = 0);
   check "low before set pins runs" (pad_at out 6 = 0);
@@ -300,7 +313,7 @@ let%expect_test "--at instr: a forced set pins runs at its cycle" =
 let%expect_test "--pins: external pad levels from a cycle, with no PIO driving the pin" =
   let cfg = write_file "cli_pins_cfg.json" {|{"pinctrl":"0x00000000"}|} in
   let status, out, _ =
-    cli [ "--program"; pull_program; "--config"; cfg; "--pins"; "3:1"; "--cycles"; "6"; "--trace" ]
+    cli [ "--program"; (pull_program ()); "--config"; cfg; "--pins"; "3:1"; "--cycles"; "6"; "--trace" ]
   in
   check "status 0" (status = 0);
   check "low before 3" (pad_at out 2 = 0);
@@ -332,13 +345,13 @@ let%expect_test "multi-SM config: two SMs drive one pin, the higher-numbered win
 let%expect_test "--tx before --sm binds to the named SM (order-independent)" =
   let cfg = write_file "cli_sm1.json" {|{"sms":[{"sm":1}]}|} in
   let _, out, _ =
-    cli [ "--program"; pull_program; "--config"; cfg; "--tx"; "5"; "--sm"; "1"; "--cycles"; "2"; "--trace" ]
+    cli [ "--program"; (pull_program ()); "--config"; cfg; "--tx"; "5"; "--sm"; "1"; "--cycles"; "2"; "--trace" ]
   in
   check (Printf.sprintf "SM1 pulled 5 into its OSR; out=%S" out) (contains out "osr=00000005")
 ;;
 
 let%expect_test "a bad --at gives a clean error and status 2" =
-  let status, _, err = cli [ "--program"; pull_program; "--at"; "5:bogus" ] in
+  let status, _, err = cli_raw [ "--program"; (pull_program ()); "--at"; "5:bogus" ] in
   check "status 2" (status = 2);
   check (Printf.sprintf "error text %S" err) (contains err "pgsim: error: bad --at event")
 ;;

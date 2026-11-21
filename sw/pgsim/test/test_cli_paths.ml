@@ -27,14 +27,18 @@ let run t n =
 
 let set_pins d = enc (Isa.Set { delay_side = 0; dest = Set_pins; data = d })
 
-let write_file path text =
+(* A fresh temporary file on every call. Test modules are linked into several partition
+   processes that run concurrently in one directory, so no fixed file name may be shared
+   (and no module initialiser may write files). *)
+let write_file _name text =
+  let path = Filename.temp_file ~temp_dir:"." "pgsim_test" ".json" in
   let oc = open_out path in
   output_string oc text;
   close_out oc;
   path
 ;;
 
-let cli args =
+let cli_raw args =
   let out = Buffer.create 256 in
   let err = Buffer.create 64 in
   let status =
@@ -42,6 +46,15 @@ let cli args =
       (Array.of_list ("pgsim" :: args))
   in
   status, Buffer.contents out, Buffer.contents err
+;;
+
+(* Every CLI test goes through here, so a nonzero exit status fails the test with the
+   command's stderr in the message. Only the error-path test uses [cli_raw]. *)
+let cli args =
+  let status, out, err = cli_raw args in
+  if status <> 0
+  then failwith (Printf.sprintf "pgsim exited %d for %s: %s" status (String.concat " " args) err);
+  status, out, err
 ;;
 
 let trace_pads out =
@@ -102,8 +115,8 @@ let%expect_test "forced wait completion restores the IMEM reason at once, clkdiv
 (* CLI paths *)
 
 (* pull; set pins,1; jmp 0, as in test_cli_irq. *)
-let pull_program =
-  write_file "cli_paths_pull.json"
+let pull_program () =
+  write_file "pull"
     {|{"programs":[{"name":"pull","pioVersion":0,"wrapTarget":0,"wrap":2,"instructions":[{"hex":"80a0","instruction":"pull"},{"hex":"e001","instruction":"set pins, 1"},{"hex":"0000","instruction":"jmp 0"}]}]}|}
 ;;
 
@@ -113,7 +126,7 @@ let%expect_test "--at CYCLE:pin:N:V sets a known pad level from that cycle" =
   let cfg = write_file "cli_paths_pad_cfg.json" {|{"pinctrl":"0x00000000"}|} in
   let status, out, _ =
     cli
-      [ "--program"; pull_program; "--config"; cfg; "--at"; "3:pin:0:1"; "--at"; "6:pin:0:0"
+      [ "--program"; (pull_program ()); "--config"; cfg; "--at"; "3:pin:0:1"; "--at"; "6:pin:0:0"
       ; "--cycles"; "9"; "--trace" ]
   in
   check "status 0" (status = 0);
@@ -125,8 +138,8 @@ let%expect_test "--at CYCLE:pin:N:V sets a known pad level from that cycle" =
 
 (* wait 1 pin 5; set pins,1; jmp 0. Pin 5 is not driven by the program (set pins drives
    pins 0..4), so the external level from --at reaches the wait. *)
-let wait_program =
-  write_file "cli_paths_wait_pin5.json"
+let wait_program () =
+  write_file "wait"
     {|{"programs":[{"name":"w","pioVersion":0,"wrapTarget":0,"wrap":2,"instructions":[{"hex":"20a5","instruction":"wait 1 pin 5"},{"hex":"e001","instruction":"set pins, 1"},{"hex":"0000","instruction":"jmp 0"}]}]}|}
 ;;
 
@@ -137,7 +150,7 @@ let first_high_pad cfg_text =
   let cfg = write_file "cli_paths_sync_cfg.json" cfg_text in
   let _, out, _ =
     cli
-      [ "--program"; wait_program; "--config"; cfg; "--init-instr"; "e081"; "--at"; "2:pin:5:1"
+      [ "--program"; (wait_program ()); "--config"; cfg; "--init-instr"; "e081"; "--at"; "2:pin:5:1"
       ; "--cycles"; "12"; "--trace" ]
   in
   let rec first c = if c > 11 then -1 else if pad_at out c = 1 then c else first (c + 1) in

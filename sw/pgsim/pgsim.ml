@@ -710,8 +710,9 @@ let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
       | Exec | Host -> sm.latch_stall <- r);
      set_flag true
    | Done { jump; delay_applies; exec } ->
-     (* A forced instruction that completes leaves the interrupted instruction's stall
-        reason alone: it is still stalled, and the next tick re-evaluates it. *)
+     (* A latched instruction (EXEC or host) completes by clearing only [latch_stall]. The
+        IMEM reason in [stall] is never touched, so the reported reason is correct on the
+        same cycle (README, "Stall reason of a latched instruction"). *)
      (match src with
       | Imem -> sm.stall <- No_stall
       | Exec | Host -> sm.latch_stall <- No_stall);
