@@ -107,6 +107,7 @@ type sm =
   ; mutable host_side_done : bool
   ; mutable latch : latch
   ; mutable irq_wait : int option
+  ; mutable latch_irq_wait : int option
   ; mutable acc : int
   ; mutable tx : Fifo.t
   ; mutable rx : Fifo.t
@@ -187,6 +188,7 @@ type debug =
   ; illegal : bool
   ; latch : latch
   ; irq_wait : int option
+  ; latch_irq_wait : int option
   ; side_done : bool
   ; host_side_done : bool
   ; sticky : int * int * int * int

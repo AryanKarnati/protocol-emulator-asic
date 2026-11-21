@@ -112,9 +112,11 @@ layout differences apply (see below).
   data, with TX non-empty, and see whether the TX word is consumed.
 - **c. The first OUT after reset.** The OSR count resets to 32, so the first OUT with
   autopull and a TX word stalls once. Capture the cycle count of that first OUT.
-- **d. IRQ visibility, and set against clear in one cycle.** Two SMs, one raising a flag and
-  one clearing it in the same cycle, plus a WAIT on the flag in the next cycle. Capture
-  which cycle the wait completes in.
+- **d. IRQ visibility timing.** The datasheet settles set against clear in one cycle (set
+  wins, 3.2.7), so that is not on the list. What it does not say is when a set becomes
+  visible to a WAIT or IRQ. The model reads the flags as they were at the start of the cycle,
+  so a set is seen one cycle later. Capture a WAIT on a flag raised by another SM in the
+  previous cycle, and see which cycle the wait completes in.
 - **e. Pad and synchroniser latency.** Calibrate with the sampler, as silicon-ref's README
   says. Expected `trace_cmp --latency` about 3 with the synchroniser on (item 1).
 - **f. Forced instruction interactions.** Force a set pins during a delay, during a side-set
@@ -150,6 +152,15 @@ delay and stalled cycles, and does not count disabled or forced cycles.
 - `movStatus` in the pioasm JSON, and `fifoConfig` for PIO v1 TXPUT/TXGET/PUTGET.
 - `INT = 0` (divisor 65536) is modelled but not tested.
 
+## Configuration precedence
+
+`pgsim` builds the configuration in three layers. The reset values come first. The program
+JSON then sets the wrap addresses and the side-set (SIDESET_COUNT = the JSON `size`, which
+already includes the enable bit; SIDE_EN = `optional`). A register given in `--config`
+replaces the whole register. So an explicit `pinctrl` replaces the side-set count that the
+program JSON gives, as well as SET, OUT and IN base and count. Give `pinctrl` only when you
+mean to set all of PINCTRL.
+
 ## RP2350 register layout
 
 The traces come from a Pico 2 (RP2350). The header registers are in the RP2350 layout, which
@@ -161,10 +172,6 @@ pico-sdk cache.
 
 ## Findings for other lanes
 
-- `silicon-ref/capture.py` computes SIDESET_COUNT as `size + optional`. pioasm's JSON `size`
-  already includes the enable bit (uart_tx with `.side_set 1 opt` gives `size: 2`). The
-  fixture's pinctrl 0x40100400 has SIDESET_COUNT 2, which is the correct value. The
-  capture.py formula gives 3 for that program, so the capture script is wrong here.
 - DESIGN.md §8.2 says forced instructions run "on the next tick". The datasheet says
   "immediately, ignoring the clock divider" (item 8).
 - DESIGN.md §7 names `DBG_CNT.stall_reason` without an encoding (see Interface summary).

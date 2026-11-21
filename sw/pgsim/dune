@@ -1,5 +1,5 @@
 (library
  (name polyglot_pgsim)
  (wrapped false)
- (modules pgsim pioasm_json vcd silicon_trace)
+ (modules pgsim pioasm_json vcd silicon_trace runner)
  (libraries polyglot_isa yojson))

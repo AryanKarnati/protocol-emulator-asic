@@ -37,7 +37,7 @@ let () =
            m.Silicon_trace.silicon m.Silicon_trace.model;
          exit 1
      with
-     | Failure msg | Sys_error msg ->
+     | Silicon_trace.Bad_trace msg | Failure msg | Sys_error msg ->
        prerr_endline ("error: " ^ msg);
        exit 2)
   | _ ->

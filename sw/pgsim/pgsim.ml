@@ -240,7 +240,8 @@ type sm =
   ; mutable side_done : bool (* side-set already applied to the instruction in progress *)
   ; mutable host_side_done : bool (* same, for the forced instruction in the host latch *)
   ; mutable latch : latch
-  ; mutable irq_wait : int option (* flag this SM raised and is waiting to see cleared *)
+  ; mutable irq_wait : int option (* flag an IMEM IRQ instruction raised and waits on *)
+  ; mutable latch_irq_wait : int option (* same, for a latched EXEC or host IRQ instruction *)
   ; mutable acc : int (* clock divider accumulator, 1/256 units *)
   ; mutable tx : Fifo.t
   ; mutable rx : Fifo.t
@@ -291,6 +292,7 @@ let create () =
       ; host_side_done = false
       ; latch = No_latch
       ; irq_wait = None
+      ; latch_irq_wait = None
       ; acc = 0
       ; tx = Fifo.create tx_d
       ; rx = Fifo.create rx_d
@@ -375,6 +377,13 @@ let wrap_next (c : Config.t) pc = if pc = c.wrap_top then c.wrap_bottom else (pc
 (* ------------------------------------------------------------------------------------ *)
 (* Instruction bodies *)
 
+(* Where an instruction came from. Decides PC, delay, latch and IRQ-wait handling
+   (datasheet 3.2.2, 3.5.7). *)
+type src =
+  | Imem
+  | Exec
+  | Host
+
 type outcome =
   | Stalled of stall
   | Done of
@@ -387,7 +396,7 @@ let done_ ?jump ?(delay_applies = true) ?exec () = Done { jump; delay_applies; e
 
 (* Writes made by one instruction: body (OUT/SET/MOV) and side-set are kept apart because
    side-set wins on the same pin (datasheet 3.5.6). *)
-let body sm ins ~synced ~irq_snap ~(bodyw : pinw) ~(setw : int ref) ~(clrw : int ref) =
+let body sm ins ~src ~synced ~irq_snap ~(bodyw : pinw) ~(setw : int ref) ~(clrw : int ref) =
   let c = sm.cfg in
   let thr_pull = c.pull_thresh in
   let thr_push = c.push_thresh in
@@ -608,13 +617,26 @@ let body sm ins ~synced ~irq_snap ~(bodyw : pinw) ~(setw : int ref) ~(clrw : int
        done_ ())
   | Isa.Irq { clear; wait; index; rel; _ } ->
     let i = irq_index sm.index index rel in
-    (match sm.irq_wait with
+    (* An IMEM IRQ instruction and a latched (EXEC or host) one each have their own wait
+       slot, so a forced IRQ cannot take over the wait of the stalled instruction
+       (datasheet 3.2.2, 3.5.7). *)
+    let slot_get () =
+      match src with
+      | Imem -> sm.irq_wait
+      | Exec | Host -> sm.latch_irq_wait
+    in
+    let slot_set v =
+      match src with
+      | Imem -> sm.irq_wait <- v
+      | Exec | Host -> sm.latch_irq_wait <- v
+    in
+    (match slot_get () with
      | Some w ->
        (* Already raised; stall until the flag is lowered (datasheet 3.4.9.2). *)
        if bit irq_snap w = 1
        then Stalled Stall_irq_wait
        else (
-         sm.irq_wait <- None;
+         slot_set None;
          done_ ())
      | None ->
        if clear
@@ -625,7 +647,7 @@ let body sm ins ~synced ~irq_snap ~(bodyw : pinw) ~(setw : int ref) ~(clrw : int
          setw := !setw lor (1 lsl i);
          if wait
          then (
-           sm.irq_wait <- Some i;
+           slot_set (Some i);
            Stalled Stall_irq_wait)
          else done_ ()))
   | Isa.Set { dest; data; _ } ->
@@ -648,11 +670,6 @@ let body sm ins ~synced ~irq_snap ~(bodyw : pinw) ~(setw : int ref) ~(clrw : int
 (* Execute [word] for one attempt. [src] says where it came from, which decides the PC and
    latch update. [sidew] receives the side-set writes of the first attempt. *)
 (* Where an instruction came from. Decides PC and latch handling (datasheet 3.2.2, 3.5.7). *)
-type src =
-  | Imem
-  | Exec
-  | Host
-
 (* What one SM tick did, for the non-OUT autopull rule (datasheet 3.5.4.2). *)
 type tick_kind =
   | Idle (* no enable tick, or a forced instruction: AMBIGUITY, see README *)
@@ -673,7 +690,7 @@ let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
   let side, delay = split_side c ds in
   let ins_body = if Isa.is_legal ins then ins else Isa.Illegal word in
   let is_out = match ins with Isa.Out _ -> true | _ -> false in
-  let outcome = body sm ins_body ~synced ~irq_snap ~bodyw ~setw ~clrw in
+  let outcome = body sm ins_body ~src ~synced ~irq_snap ~bodyw ~setw ~clrw in
   (* Side-set is applied on the first attempt, even if the instruction stalls
      (datasheet 3.2.4 note, 3.5.1). It is written after the body, so it wins on a pin. *)
   (match side with
@@ -689,7 +706,9 @@ let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
      sm.stall <- r;
      set_flag true
    | Done { jump; delay_applies; exec } ->
-     sm.stall <- No_stall;
+     (* A forced instruction that completes leaves the interrupted instruction's stall
+        reason alone: it is still stalled, and the next tick re-evaluates it. *)
+     if not host then sm.stall <- No_stall;
      set_flag false;
      (match src, jump with
       | Imem, Some a -> sm.pc <- a
@@ -700,6 +719,7 @@ let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
         (datasheet 3.5.7: "Delay cycles are ignored on instructions written to the INSTR
         register"). OUT EXEC's own delay is ignored too (3.4.5.2). *)
      if not host then sm.delay <- (if delay_applies then delay else 0);
+     if src <> Imem then sm.latch_irq_wait <- None;
      sm.latch
      <- (match exec with
          | Some w -> Exec_latch w
@@ -839,6 +859,7 @@ let read_rx t i =
 let write_instr t i w =
   let sm = t.sms.(i) in
   sm.latch <- Host_latch (w land 0xFFFF);
+  sm.latch_irq_wait <- None;
   sm.host_side_done <- false
 ;;
 
@@ -859,6 +880,7 @@ let sm_restart t mask =
         sm.side_done <- false;
         sm.host_side_done <- false;
         sm.irq_wait <- None;
+        sm.latch_irq_wait <- None;
         sm.stall <- No_stall;
         sm.sticky <- pinw_create ()))
     t.sms
@@ -902,7 +924,8 @@ type debug =
   ; enabled : bool
   ; illegal : bool
   ; latch : latch (* pending EXEC or host instruction *)
-  ; irq_wait : int option (* flag an IRQ instruction raised and is waiting on *)
+  ; irq_wait : int option (* IMEM IRQ instruction waiting on a flag *)
+  ; latch_irq_wait : int option (* latched EXEC or host IRQ instruction waiting on a flag *)
   ; side_done : bool
   ; host_side_done : bool
   ; sticky : sticky_view
@@ -957,6 +980,7 @@ let debug t i =
   ; illegal = sm.illegal
   ; latch = sm.latch
   ; irq_wait = sm.irq_wait
+  ; latch_irq_wait = sm.latch_irq_wait
   ; side_done = sm.side_done
   ; host_side_done = sm.host_side_done
   ; sticky = pinw_to_tuple sm.sticky

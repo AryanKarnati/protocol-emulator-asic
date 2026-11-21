@@ -400,7 +400,8 @@ let _ = (mov, in_, run)
 (* Silicon trace comparison (silicon-ref/README.md format) *)
 
 (* Write a trace file in the documented format, with samples [samples] (one per cycle). *)
-let write_silicon_trace path samples =
+let write_silicon_trace ?(clkdiv = 0x0001_0000) ?(execctrl = 0x0001_F000)
+    ?(words = [ 0xE081; 0xE101; 0xE000; 0x0001 ]) ?(init_dirs = []) path samples =
   let n = Array.length samples in
   let nwords = (n + 3) / 4 in
   let word w =
@@ -431,12 +432,17 @@ let write_silicon_trace path samples =
             [ "name", `String "squarewave"
             ; "pio_version", `Int 0
             ; "entry", `Int 0
-            ; "init", `Assoc [ "levels", `Assoc []; "dirs", `Assoc []; "tx_words", `List [] ]
-            ; "words", `List (List.map (fun w -> `String (Printf.sprintf "0x%04x" w)) [ 0xE081; 0xE101; 0xE000; 0x0001 ])
+            ; ( "init"
+              , `Assoc
+                  [ "levels", `Assoc []
+                  ; "dirs", `Assoc (List.map (fun p -> string_of_int p, `Int 1) init_dirs)
+                  ; "tx_words", `List []
+                  ] )
+            ; "words", `List (List.map (fun w -> `String (Printf.sprintf "0x%04x" w)) words)
             ; ( "registers"
               , `Assoc
-                  [ "clkdiv", `String "0x00010000"
-                  ; "execctrl", `String "0x0001f000"
+                  [ "clkdiv", `String (Printf.sprintf "0x%08x" clkdiv)
+                  ; "execctrl", `String (Printf.sprintf "0x%08x" execctrl)
                   ; "shiftctrl", `String "0x000c0000"
                   ; "pinctrl", `String "0x04000000"
                   ] )

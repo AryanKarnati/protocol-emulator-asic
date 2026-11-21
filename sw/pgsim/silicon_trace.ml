@@ -82,7 +82,9 @@ let rp2350_execctrl_to_rp2040 execctrl =
    model does not have them, so they must be zero. *)
 let rp2350_shiftctrl_check shiftctrl =
   if (shiftctrl lsr 14) land 3 <> 0
-  then bad "SHIFTCTRL.FJOIN_RX_PUT/GET set: not modelled"
+  then bad "SHIFTCTRL.FJOIN_RX_PUT/GET set: not modelled";
+  if shiftctrl land 31 <> 0
+  then bad "SHIFTCTRL.IN_COUNT (bits 4:0) = %d: not modelled" (shiftctrl land 31)
 ;;
 
 let config_of_registers regs =
@@ -239,6 +241,8 @@ let load path : loaded =
      sample cycle, so it is one step before the enable. *)
   Pgsim.write_instr t 0 (0x0000 lor entry);
   ignore (Pgsim.step t);
+  (* CLKDIV_RESTART just before enable (capture.py step 11), so silicon starts at phase 0. *)
+  Pgsim.clkdiv_restart t 1;
   Pgsim.set_enabled t 0 true;
   { model = t
   ; samples
