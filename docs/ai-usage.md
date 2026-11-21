@@ -27,7 +27,25 @@ Git commit trailers also record AI co-authorship.
 | Pico 2 capture script (`silicon-ref/`) | Haiku 5.5 (ISA & tools lane); fixes by a second Haiku 5.5 worker | Sonnet checker: reviewed against the RP2350 register headers in pico-sdk 2.3.1, then independently decoded 33 of the 51 expected register writes | **Fix needed:** pads were left isolated, which would give a flat trace; stale FIFO data leaked into the next capture; DMA channels were never released; and the docs claimed a dry run that had no test behind it. All fixed, and the re-check passed. Still untested on hardware. |
 | Instruction set library (`isa/`) | Haiku 5.5 (ISA & tools lane) | Sonnet checker: compared 1321 words with pico-sdk's `pio_encode_*` functions and 74 instruction forms with the official `pioasm`; injected 5 bugs | 0 encoding mismatches; all 5 injected bugs caught. **Fix needed:** there was no single legality predicate (a common-mode risk), plus missing accessors and test guards. Fixed, and the re-check passed. |
 | Gate design cocotb test (`test/test.py`) | Haiku 5.5 (Model & tests lane) | Sonnet checker: mapped every spec rule to a test and wrote 7 mutants of its own | Pass, but 2 of the checker's 7 mutants escaped (`TICK` dropped after a restart, and an `INT_LO` write clearing the high byte), and several rules had no test. Fixed: 13 default tests and 2 long tests, and all 9 mutants are now caught. |
+| Assembler (`sw/pgasm`) | Haiku 5.5 (ISA & tools lane) | Sonnet checker: re-ran the corpus against the official `pioasm`; differential fuzzing of about 1,450 valid and 2,400 mutated programs; 207 hand-written probes; its own sweep of all 65,536 instruction words under 4 side-set configurations | Output was byte-identical on every valid program. **Fix needed:** 5 places where the two assemblers disagreed on what to accept (block comments, `0X`/`0B` prefixes, the U+2212 minus, `label: .word`, `.mov_status`), the text shown for `.word` of extension and v1 words, and a corpus test that would pass with an empty corpus. All fixed. The re-check found 0 disagreements apart from the documented `.pio_version 1` non-goal. |
+| Capture script side-set fix and format fixture | Haiku 5.5 (ISA & tools lane) | Sonnet checker: compared against the `pioasm` JSON writer source and the RP2350 `pio.h`; independently decoded the fixture's PINCTRL and EXECCTRL | The pgsim checker found this bug: optional side-set double-counted the enable bit, so every `opt` program would have been captured wrongly. Two earlier capture reviews had missed it because their example program had no optional side-set. Fixed, and the re-check passed. |
+| Datasheet page (`docs/info.md`) | Haiku 5.5 (Flow lane) | Reproduced the CI failure locally with tt-support-tools `--check-docs`; Sonnet checker compared the page with `gate.md` line by line | The CI failure was the template's placeholder text. Fixed; the page is accurate, with no invented features. |
 | Gate design RTL (Hardcaml: clock divider, FIFO, top, `project.v`) | Haiku 5.5 (RTL lane) | Sonnet checker: ran the independently written cocotb test against the RTL; regenerated the Verilog and diffed it; Verilator lint; yosys `check -assert`; line-by-line review | **The independent test passed first time:** 13/13 by default and 15/15 with the long tests. **Fix needed:** a build warning under dune 3.17, and `--` signal names attached to the wrong nets because of operator precedence. Both fixed. |
+
+## Hardcaml gate result
+
+On commit `5893f9f`, GitHub Actions ran the Tiny Tapeout flow on the Hardcaml-generated Verilog:
+
+- GDS: pass
+- precheck: pass
+- gate-level test (`gl_test`): pass
+- RTL cocotb test: pass
+- OCaml build, tests and regenerated-Verilog check: pass
+
+The Hardcaml gate (PLAN.md block 1, DESIGN.md §19) has passed, so the RTL stays in Hardcaml. Two jobs failed, and neither is part of the gate:
+
+- `docs` failed on the template's placeholder `info.md`. It is fixed in a later commit.
+- `viewer` failed on publishing the layout viewer to GitHub Pages.
 
 ## Rulings the orchestrator made
 
@@ -36,3 +54,5 @@ These are pending the project owner's approval, since only the owner changes DES
 1. **`in status` (IN source 101).** The official `pioasm` assembles it, but DESIGN.md §9.1 and the RP2040 datasheet list it as reserved. `pgasm` stays byte-compatible with `pioasm`. The chip and the model treat it as reserved: it executes as a NOP and sets `ILLEGAL`. V1 on the Pico 2 will show what silicon does.
 2. **WAIT irq index bit 3, IRQ bit 7 and IRQ index bit 3** are treated as reserved. These bits are RP2350 PIO v1's PREV and NEXT encodings, and `pioasm` never emits them for version 0. V1 will show what silicon does.
 3. **The three Polyglot extension slots** (IN source 100, MOV source 100, SET destination 011) are still unused in RP2350 PIO v1, according to `pioasm` 2.3.1's disassembler and the SDK's enums. The RP2350 datasheet itself has not been checked yet.
+4. **Host-forced instructions (`SMn_INSTR`) run immediately**, ignoring the clock divider and their own delay field, as RP2040 datasheet §3.5.7 says. DESIGN.md §8.2 says "on the next tick", and should be reworded to match.
+5. **`DBG_CNT.stall_reason` encoding.** DESIGN.md §7 names the field but gives no encoding. pgsim uses 0 none, 1 TX empty, 2 RX full, 3 autopull, 4 WAIT gpio, 5 WAIT pin, 6 WAIT irq, 7 IRQ wait. The RTL should adopt the same encoding in block 3.
