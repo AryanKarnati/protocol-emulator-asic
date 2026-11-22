@@ -1,0 +1,39 @@
+{
+  "format": "polyglot-lockstep-case",
+  "version": 1,
+  "num_sms": 1,
+  "load_cycles": 32,
+  "cycles": 9,
+  "imem": [
+    41026, 32768, 41026, 45057, 37120, 41026, 57614, 6883, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+  ],
+  "initial": [
+    {
+      "clkdiv": 65536,
+      "execctrl": 1073906067,
+      "shiftctrl": 786432,
+      "pinctrl": 2717894271
+    },
+    {
+      "clkdiv": 65536,
+      "execctrl": 50529942,
+      "shiftctrl": 236126208,
+      "pinctrl": 1347709286
+    },
+    {
+      "clkdiv": 1684992,
+      "execctrl": 1426278679,
+      "shiftctrl": 1411383296,
+      "pinctrl": 738670620
+    },
+    {
+      "clkdiv": 113664,
+      "execctrl": 168001541,
+      "shiftctrl": 2458910720,
+      "pinctrl": 344961770
+    }
+  ],
+  "initial_sync_bypass": 3620395151,
+  "events": [ { "cycle": 0, "op": "sm_enable", "mask": 5 } ]
+}

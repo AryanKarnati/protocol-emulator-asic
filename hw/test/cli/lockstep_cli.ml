@@ -103,6 +103,7 @@ let cmd_gen args =
 ;;
 
 let cmd_replay args file =
+  waive_fifo := List.mem "--waive-after-reset-fifo" args;
   let dut = dut_name_of (flag args "--dut" "pgsim") in
   let case = Case.normalise (Case.read_file file) in
   match check ~dut case with
