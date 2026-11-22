@@ -95,6 +95,8 @@ class FakeMem:
 class FakeDMA:
     instances = []
     busy_forever = False              # True forces the timeout path
+    busy_polls = 0                    # busy for this many polls, then done (host action tests)
+    polls = 0
 
     def __init__(self):
         self.armed = []
@@ -110,6 +112,12 @@ class FakeDMA:
 
     def active(self, value=None):
         if value is None:
+            # busy_polls > 0: busy for that many polls, 1 us of fake time per poll, so host
+            # actions at a given after_us can be tested. Default 0 keeps the old behaviour.
+            if FakeDMA.polls < FakeDMA.busy_polls:
+                FakeDMA.polls += 1
+                FakeClock.now += 1
+                return True
             return FakeDMA.busy_forever
         self.armed.append(value)
         EVENTS.append(("dma_arm", value))
@@ -171,6 +179,8 @@ def _install_fakes(resets_held=0, synth=None):
     sys.modules["uctypes"] = uctypes
     FakeDMA.instances = []
     FakeDMA.busy_forever = False
+    FakeDMA.busy_polls = 0
+    FakeDMA.polls = 0
     FakeClock.now = 0
     del EVENTS[:]
     if "capture" in sys.modules:
@@ -570,6 +580,129 @@ def test_fixture_is_current_and_has_init_and_entry():
     assert prog["config"]["sideset_size"] == 2 and prog["config"]["sideset_data_pins"] == 1
     assert len(t.samples) == FIXTURE_SAMPLES, "fixture carries 1280 samples (320 words)"
     assert t.footer["complete"] is True and t.footer["words_total"] == FIXTURE_SAMPLES // 4
+
+
+def test_out_sticky_sets_only_execctrl_bit_17():
+    """out_sticky=True sets EXECCTRL bit 17 (OUT_STICKY) and nothing else on the program SM."""
+    _, mem_off = _run_ws2812()
+    _, mem_on = _run_ws2812(out_sticky=True)
+    e_off = _writes_to(mem_off, sm_reg(0, "execctrl"))[0]
+    e_on = _writes_to(mem_on, sm_reg(0, "execctrl"))[0]
+    assert e_on == e_off | (1 << 17), "only OUT_STICKY (bit 17) may differ"
+    assert _writes_to(mem_on, sm_reg(1, "execctrl")) == _writes_to(mem_off, sm_reg(1, "execctrl")), \
+        "the capture SM is not affected"
+
+
+V1_JSON = os.path.join(HERE, "v1", "v1_items.pioasm.json")
+
+
+def _run_v1(name, busy_polls=200, **override):
+    """One V1 config, as batch_capture would run it, under the mock."""
+    import json as _json
+    cfg = _json.load(open(os.path.join(HERE, "v1", name + ".config.json")))
+    capture, mem = _install_fakes()
+    FakeDMA.busy_polls = busy_polls
+    args = dict(cfg)
+    for k in ("runnable", "reason"):
+        args.pop(k, None)
+    args.update(override)
+    import batch_capture as bc
+    args = bc._convert_args(args)
+    args.update(program_json=V1_JSON, program_name=cfg["program_name"],
+                out_path=os.path.join(tempfile.mkdtemp(), "t.jsonl"))
+    capture.run(**args)
+    return args["out_path"], mem
+
+
+def test_v1_host_actions_are_done_in_order_and_recorded():
+    out, mem = _run_v1("v1_a_autopush")
+    import json as _json
+    import trace as tr
+    header = _json.loads(open(out).readline())
+    assert header["host"]["log"] == [["gpio", 1, 1], ["rx", 5]], "actions in time order"
+    assert header["host"]["rx_words"] == ["0x00000000"] * 5, "five RX words read (mock RX is 0)"
+    assert header["host"]["pins"] == [[1, 0]]
+    # the gpio action writes SIO GPIO_OUT_SET for pin 1 (1 << 1)
+    assert (0xD0000000 + 0x018, 1 << 1) in mem.log
+    tr.read_trace(out)   # format still valid
+
+
+def test_v1_forced_instruction_is_written_to_sm0_instr():
+    out, mem = _run_v1("v1_f_irq_wait")
+    instr = [v for a, v in mem.log if a == sm_reg(0, "instr")]
+    assert 0xE002 in instr and 0xC000 in instr, "both forced instructions reach SM0_INSTR"
+    assert instr.index(0xE002) < instr.index(0xC000), "in the order of their after_us"
+
+
+def test_host_action_after_capture_end_is_an_error():
+    """A host action due after the DMA has finished must fail, not be dropped silently."""
+    capture, _ = _install_fakes()
+    FakeDMA.busy_polls = 0          # DMA finishes at once; the action at 20 us is never due
+    d = tempfile.mkdtemp()
+    try:
+        capture.run(program_json=WS2812_JSON, program_name="ws2812", pins=PINS, capture_base=0,
+                    samples=8, out_path=os.path.join(d, "t.jsonl"),
+                    host_actions=[(20, ("instr", 0xE001))])
+    except RuntimeError as e:
+        assert "host action" in str(e)
+    else:
+        raise AssertionError("a host action that never ran must raise")
+
+
+def test_host_pin_overlapping_program_pins_is_rejected():
+    capture, mem = _install_fakes()
+    d = tempfile.mkdtemp()
+    try:
+        capture.run(program_json=WS2812_JSON, program_name="ws2812", pins=PINS, capture_base=0,
+                    samples=8, out_path=os.path.join(d, "t.jsonl"), set_count=1,
+                    host_pins=[(0, 0)])     # pin 0 is the ws2812 side-set pin
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("host_pins on a pin the program drives must be rejected")
+    assert mem.log == [], "validation before any write"
+
+
+BATCH_EXPECTED_FAILED = {
+    # 32 instructions plus the capture instruction is 33 words, which IMEM (32 words) cannot hold.
+    "corpus__pio__quadrature_encoder_substep__quadrature_encoder_substep__quadrature_encoder_substep",
+}
+
+
+def test_batch_dry_run_over_all_corpus_and_v1_jobs():
+    """Stage the board tree in a temp dir, run every job under the mock, and read every trace
+    back with trace.py. Known failures are listed by name, so a new failure is a test failure."""
+    import json as _json
+    import shutil
+    import make_batch
+    import batch_capture as bc
+    import trace as tr
+    stage = tempfile.mkdtemp(prefix="stage_")
+    for name in ("capture.py", "batch_capture.py"):
+        shutil.copyfile(os.path.join(HERE, name), os.path.join(stage, name))
+    jobs = make_batch.corpus_jobs(stage) + make_batch.v1_jobs(stage)
+    with open(os.path.join(stage, "manifest.json"), "w") as f:
+        _json.dump({"jobs": jobs}, f)
+    out = tempfile.mkdtemp(prefix="batch_out_")
+
+    def per_job(job):
+        capture, _ = _install_fakes()
+        FakeDMA.busy_polls = 200 if job["args"].get("host_actions") else 0
+        return capture
+
+    summary = bc.run_batch(per_job, os.path.join(stage, "manifest.json"), stage, out)
+    assert set(summary["failed"]) == BATCH_EXPECTED_FAILED, summary["failed"]
+    assert set(summary["skipped"]) == {"v1__v1_h_pull_stall"}, summary["skipped"]
+    assert len(summary["ok"]) + len(summary["failed"]) + len(summary["skipped"]) == len(jobs)
+    n_corpus = sum(1 for j in jobs if j["name"].startswith("corpus__"))
+    ok_corpus = [n for n in summary["ok"] if n.startswith("corpus__")]
+    assert n_corpus == 36 and len(ok_corpus) == 35, (n_corpus, len(ok_corpus))
+    assert len([n for n in summary["ok"] if n.startswith("v1__")]) == 11
+    for name in summary["ok"]:
+        t = tr.read_trace(os.path.join(out, name + ".jsonl"))
+        want = 4000 if name.startswith("corpus__") else 40000
+        assert len(t.samples) == want, (name, len(t.samples))
+    assert _json.load(open(os.path.join(out, "summary.json"))) == summary
 
 
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

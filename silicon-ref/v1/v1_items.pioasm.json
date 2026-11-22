@@ -1,0 +1,344 @@
+{
+	"pioASMVersion": "2.3.1",
+	"publicSymbols": {
+	},
+	"programs": [
+		{
+			"name": "v1_a_autopush",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 6,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "4001", "instruction": "in     pins, 1"},
+				{"hex": "4001", "instruction": "in     pins, 1"},
+				{"hex": "4001", "instruction": "in     pins, 1"},
+				{"hex": "4001", "instruction": "in     pins, 1"},
+				{"hex": "4001", "instruction": "in     pins, 1"},
+				{"hex": "E001", "instruction": "set    pins, 1"},
+				{"hex": "20C0", "instruction": "wait   1 irq, 0"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		},
+		{
+			"name": "v1_b_pull_autopull",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 7,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "80A0", "instruction": "pull   block"},
+				{"hex": "6001", "instruction": "out    pins, 1"},
+				{"hex": "80A0", "instruction": "pull   block"},
+				{"hex": "6001", "instruction": "out    pins, 1"},
+				{"hex": "6001", "instruction": "out    pins, 1"},
+				{"hex": "6001", "instruction": "out    pins, 1"},
+				{"hex": "6001", "instruction": "out    pins, 1"},
+				{"hex": "20C0", "instruction": "wait   1 irq, 0"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		},
+		{
+			"name": "v1_c_first_out",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 0,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "6001", "instruction": "out    pins, 1"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		},
+		{
+			"name": "v1_d_irq_wait",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 4,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "C040", "instruction": "irq    clear 0"},
+				{"hex": "E000", "instruction": "set    pins, 0"},
+				{"hex": "C000", "instruction": "irq    nowait 0"},
+				{"hex": "20C0", "instruction": "wait   1 irq, 0"},
+				{"hex": "E001", "instruction": "set    pins, 1"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		},
+		{
+			"name": "v1_e_calib",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 1,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "E701", "instruction": "set    pins, 1                [7]"},
+				{"hex": "E700", "instruction": "set    pins, 0                [7]"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		},
+		{
+			"name": "v1_g_frac_div",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 1,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "E001", "instruction": "set    pins, 1"},
+				{"hex": "E000", "instruction": "set    pins, 0"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		},
+		{
+			"name": "v1_f_delay",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 1,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "FF01", "instruction": "set    pins, 1                [31]"},
+				{"hex": "FF00", "instruction": "set    pins, 0                [31]"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		},
+		{
+			"name": "v1_f_sideset",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 2,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 2, "optional": true, "pindirs": false},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "F000", "instruction": "set    pins, 0         side 0"},
+				{"hex": "38A5", "instruction": "wait   1 pin, 5        side 1"},
+				{"hex": "E000", "instruction": "set    pins, 0"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		},
+		{
+			"name": "v1_f_irq_wait",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 2,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "E000", "instruction": "set    pins, 0"},
+				{"hex": "20C0", "instruction": "wait   1 irq, 0"},
+				{"hex": "E000", "instruction": "set    pins, 0"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		},
+		{
+			"name": "v1_h_pull_stall",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 2,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "80A0", "instruction": "pull   block"},
+				{"hex": "E001", "instruction": "set    pins, 1"},
+				{"hex": "E000", "instruction": "set    pins, 0"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		},
+		{
+			"name": "v1_i_out_sticky",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 3,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": {"size": 2, "optional": true, "pindirs": false},
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "80A0", "instruction": "pull   block"},
+				{"hex": "6001", "instruction": "out    pins, 1"},
+				{"hex": "30A5", "instruction": "wait   1 pin, 5        side 0"},
+				{"hex": "E001", "instruction": "set    pins, 1"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		}
+	]
+}
