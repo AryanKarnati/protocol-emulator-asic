@@ -2,9 +2,9 @@
    parser.yy. Statements are processed one at a time in source order, as pioasm's grammar
    actions run, so the first error reported is the same one pioasm reports.
 
-   Scope: PIO version 0 only. Anything that needs version 1, and the directives .mov_status
-   and the c-sdk and python output formats, are rejected with an error. Polyglot extensions
-   (in lcu, mov crc, set lcu, .page, .lcu) are not part of pioasm and are rejected too. *)
+   Scope: PIO version 0 only. Anything that needs version 1 is rejected with an error. Polyglot
+   extensions (in lcu, mov crc, set lcu, .page, .lcu) are not part of pioasm and are rejected
+   too. The output writers are in pio_out.ml. *)
 
 open Core
 open Pio_lex

@@ -1,7 +1,7 @@
-(* pgasm: assembles pioasm syntax (PIO version 0) to hex or JSON. The output is byte-identical
-   to pioasm 2.3.1 for the programs in the golden corpus.
+(* pgasm: assembles pioasm syntax (PIO version 0) to hex, JSON, python or c-sdk. The output is
+   byte-identical to pioasm 2.3.1 for the programs in the golden corpus.
 
-   Usage: pgasm [-o json|hex] [--program NAME] INPUT [OUTPUT]
+   Usage: pgasm [-o json|hex|python|c-sdk] [--program NAME] INPUT [OUTPUT]
    INPUT and OUTPUT may be "-" for stdin and stdout. OUTPUT defaults to stdout.
    -o hex needs a single program, or --program NAME. *)
 
@@ -10,7 +10,7 @@ open Pgasm_lib
 
 let fail msg =
   Stdlib.prerr_endline ("pgasm: " ^ msg);
-  Stdlib.prerr_endline "usage: pgasm [-o json|hex] [--program NAME] INPUT [OUTPUT]";
+  Stdlib.prerr_endline "usage: pgasm [-o json|hex|python|c-sdk] [--program NAME] INPUT [OUTPUT]";
   Stdlib.exit 2
 ;;
 
@@ -49,7 +49,20 @@ let () =
   let emit s =
     match a.output with
     | None | Some "-" -> Out_channel.output_string Out_channel.stdout s
-    | Some o -> Out_channel.write_all o ~data:s
+    | Some o ->
+      (try Out_channel.write_all o ~data:s with
+       | Stdlib.Sys_error _ ->
+         Stdlib.prerr_endline ("pgasm: can't open output file '" ^ o ^ "'");
+         Stdlib.exit 1)
+  in
+  let warn_c_sdk_lang_opts progs =
+    (* pioasm's c-sdk writer ignores .lang_opt for its own language, and says so *)
+    List.iter progs ~f:(fun (p : Pio_asm.out_prog) ->
+      List.iter p.lang_opts ~f:(fun (lang, _) ->
+        if String.is_prefix lang ~prefix:"c-sdk"
+        then
+          Stdlib.prerr_endline
+            ("warning: c-sdk does not support output options; " ^ lang ^ " lang_opt ignored.")))
   in
   let file = if String.equal a.input "-" then "<stdin>" else a.input in
   match Pio_asm.assemble ~file text with
@@ -74,8 +87,12 @@ let () =
            Stdlib.exit 1
        in
        emit (Pio_out.to_hex chosen)
+     | "python" -> emit (Pio_out.to_python progs global_syms)
+     | "c-sdk" ->
+       warn_c_sdk_lang_opts progs;
+       emit (Pio_out.to_c_sdk progs global_syms)
      | f ->
        Stdlib.prerr_endline
-         ("pgasm: unsupported output format: " ^ f ^ " (supported: json, hex)");
+         ("pgasm: unsupported output format: " ^ f ^ " (supported: json, hex, python, c-sdk)");
        Stdlib.exit 1)
 ;;

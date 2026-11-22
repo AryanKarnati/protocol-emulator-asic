@@ -1,8 +1,8 @@
 (* pgasm regression tests. Run with: opam exec --switch=polyglot -- dune test --root .
 
    1. Corpus: every .pio in corpus/pico-examples is assembled, and the output is compared with
-      what the official pioasm 2.3.1 wrote (sw/pgasm/oracle/make_corpus.sh):
-      <file>.pio.json and <file>.pio.<prog>.hex, byte for byte.
+      what the official pioasm 2.3.1 wrote (sw/pgasm/oracle/make_corpus.sh), byte for byte:
+      <file>.pio.json, <file>.pio.<prog>.hex, <file>.pio.c-sdk.h and <file>.pio.python.py.
    2. Edge cases in edge/: each snippet has pioasm's JSON (<name>.pio.json, accepted) or a
       marker (<name>.pio.oracle-error, rejected). pgasm must agree.
    3. Isa consistency: every word that pgasm assembles from a non-.word source satisfies
@@ -38,6 +38,13 @@ let rec walk dir ~suffix =
 ;;
 
 let read path = In_channel.read_all path
+
+(* An expected output from pioasm. An empty one is a broken corpus, not a pass. *)
+let read_expected path =
+  let s = read path in
+  if String.is_empty s then failwith ("empty expected output: " ^ path);
+  s
+;;
 let failures = ref 0
 
 let fail fmt =
@@ -87,6 +94,8 @@ let () =
   let json_ok = ref 0 in
   let prog_ok = ref 0 in
   let prog_total = ref 0 in
+  let c_sdk_ok = ref 0 in
+  let python_ok = ref 0 in
   List.iter files ~f:(fun file ->
     let text = read file in
     match Pio_asm.assemble ~file text with
@@ -94,12 +103,18 @@ let () =
       fail "FAIL: %s: %s: %s" file (Pio_lex.loc_to_string loc) msg
     | progs, global_syms ->
       let json = Pio_out.to_json progs global_syms in
-      if String.equal json (read (file ^ ".json"))
+      if String.equal json (read_expected (file ^ ".json"))
       then Int.incr json_ok
       else fail "FAIL: %s: JSON differs from pioasm output" file;
+      if String.equal (Pio_out.to_c_sdk progs global_syms) (read_expected (file ^ ".c-sdk.h"))
+      then Int.incr c_sdk_ok
+      else fail "FAIL: %s: c-sdk output differs from pioasm output" file;
+      if String.equal (Pio_out.to_python progs global_syms) (read_expected (file ^ ".python.py"))
+      then Int.incr python_ok
+      else fail "FAIL: %s: python output differs from pioasm output" file;
       List.iter progs ~f:(fun (p : Pio_asm.out_prog) ->
         Int.incr prog_total;
-        if String.equal (Pio_out.to_hex p) (read (sprintf "%s.%s.hex" file p.name))
+        if String.equal (Pio_out.to_hex p) (read_expected (sprintf "%s.%s.hex" file p.name))
         then Int.incr prog_ok
         else fail "FAIL: %s [%s]: hex differs from pioasm output" file p.name;
         check_isa ~name:file p));
@@ -108,10 +123,14 @@ let () =
   if !prog_total <> expected_corpus_programs
   then fail "FAIL: corpus has %d programs, expected %d" !prog_total expected_corpus_programs;
   printf
-    "corpus: %d/%d programs byte-identical (hex); %d/%d files byte-identical (JSON)\n"
+    "corpus: %d/%d programs byte-identical (hex); %d/%d files (JSON), %d/%d (c-sdk), %d/%d (python)\n"
     !prog_ok
     !prog_total
     !json_ok
+    (List.length files)
+    !c_sdk_ok
+    (List.length files)
+    !python_ok
     (List.length files);
   (* 2. edge cases. The only known gap is .pio_version 1, which is a documented non-goal
      (see sw/pgasm/README.md). *)
