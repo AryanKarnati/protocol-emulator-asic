@@ -51,7 +51,9 @@ let create ~num_sms : Dut.port_dut =
   in
   let per name = Array.init 4 (fun i -> get (Printf.sprintf "%s%d" name i)) in
   let regs () : Ports.outputs =
-    Sim.cycle_check sim;
+    (* Settle the combinational outputs before reading: without this, cycle-0 reads of
+       FSTAT and DBG_CNT show zeros instead of the reset values (round 2). *)
+    Sim.cycle_before_clock_edge sim;
     { Ports.pins_out = get "pins_out"
     ; pins_oe = get "pins_oe"
     ; irq = get "irq"
