@@ -73,6 +73,8 @@ async def check_r0(dut, where):
             bad.append(f"{name}: got 0x{got:x}, R0 0x{want:x}")
     assert not bad, f"{where}: " + "; ".join(bad)
     dut._log.info("%s: all %d outputs at R0", where, len(r0_outputs()))
+    # Leave the ReadOnly phase before the next write.
+    await Timer(1, unit="ns")
 
 
 def drive_idle(dut):
