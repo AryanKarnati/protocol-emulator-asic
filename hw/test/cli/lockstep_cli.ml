@@ -1,21 +1,26 @@
 (* lockstep_cli: run the lockstep harness.
 
-   lockstep_cli gen [--count N] [--seed S] [--dut NAME] [--save DIR --save-n K]
-       Generate N random cases (Base_quickcheck, seed S), run each against the reference.
-       Stops at the first mismatch, shrinks it, prints the report and writes the shrunk case
-       to DIR/failure.json (default: the current directory).
+   lockstep_cli gen [--count N] [--seed S] [--sms K] [--dut NAME] [--save DIR --save-n K]
+       Generate N random cases, run each against the reference, stop at the first mismatch,
+       shrink it, and write the shrunk case to DIR/failure.json (--out DIR, default .).
+   lockstep_cli triage [--count N] [--seed S] [--sms K] [--dut NAME] [--out-dir DIR]
+       Run N cases without stopping, group the mismatches into classes (first failing port,
+       and whether a mid-run reset precedes it), shrink one case per class into DIR.
    lockstep_cli replay FILE [--dut NAME]
-       Run one case file (the JSON that gen and write-cases produce) against the reference.
+       Run one case file against the reference (the JSON that gen, triage and write-cases make).
    lockstep_cli corpus [--dir DIR] [--cycles N] [--dut NAME] [--write-dir DIR]
        Run every program of the pioasm corpus in lockstep.
    lockstep_cli mutants [--count N] [--seed S]
        Run gen against each faulty pgsim variant and report where it is caught.
    lockstep_cli write-cases DIR [--count N] [--seed S]
        Write the corpus cases and N generated cases as self-contained JSON files.
+   lockstep_cli rtl-probe [--sms N]
+       Print the RTL outputs after reset and across a mid-run reset.
 
-   DUT names: pgsim (the port-level pgsim DUT, pads from pins_in), and mut-NAME for the
-   faulty variants listed by mutants. The reference is always pgsim, pads from the stimulus.
-   The RTL DUT is in hw/test/rtl and is built separately (see its README comment). *)
+   DUT names: pgsim (the port-level pgsim DUT), rtl (the Cyclesim adapter of
+   hw/test/rtl, built into this executable), and the faulty variants named by mutants. The
+   reference is always pgsim, with pads from the stimulus. Example, the RTL at one SM:
+     _build/default/hw/test/cli/lockstep_cli.exe triage --count 10000 --seed 1 --sms 1 --dut rtl *)
 
 open Polyglot_lockstep
 
@@ -174,13 +179,18 @@ let port_base name =
   let i = cut n in
   if i < n && i > 0 && name.[i - 1] = '_' then name else String.sub name 0 i
 
-(* Event kinds in the window of run cycles that ends at the failing one. *)
+(* Class key helper: whether a mid-run reset (rst_n low) is at or before the failing run cycle.
+   Only the failing window is used otherwise, so one bug does not split into many classes. *)
 let window_kinds (case : Case.t) (run_cycle : int) =
-  case.Case.events
-  |> List.filter (fun (cy, _) -> cy >= run_cycle - 3 && cy <= run_cycle)
-  |> List.map (fun (_, ev) -> Case.kind_name ev)
-  |> List.sort_uniq compare
-  |> String.concat "+"
+  let reset_before = List.exists (fun (cy, ev) -> ev = Case.Reset_low && cy <= run_cycle) case.Case.events in
+  if reset_before
+  then "after-reset"
+  else
+    case.Case.events
+    |> List.filter (fun (cy, _) -> cy >= run_cycle - 3 && cy <= run_cycle)
+    |> List.map (fun (_, ev) -> Case.kind_name ev)
+    |> List.sort_uniq compare
+    |> String.concat "+"
 ;;
 
 let cmd_triage args =
@@ -258,6 +268,13 @@ let cmd_rtl_probe args =
     ignore (d.Dut.cycle (Ports.idle ~rst_n:true));
     show (Printf.sprintf "idle %d" c)
   done;
+  (* Mid-run reset: rst_n low for two cycles, then high. *)
+  for c = 0 to 1 do
+    ignore (d.Dut.cycle (Ports.idle ~rst_n:false));
+    show (Printf.sprintf "rst_n low %d" c)
+  done;
+  ignore (d.Dut.cycle (Ports.idle ~rst_n:true));
+  show "after reset";
   0
 ;;
 
