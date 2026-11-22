@@ -54,13 +54,19 @@ The reference is engine.md R10 (see K1 below).
 | D2 | After a restart, the first tick comes at cycle INT + 1 or earlier. | Checked on the block 2 netlist, unbounded, for all fixed INT and FRAC including INT = 0 (checker's `clkdiv_gap_harness.v`, k = 3). For block 1 it follows from the R10 equality. | Sanity check only. Under R10 the first tick is at cycle ceil(Dq/256) - 1, which is INT or less, so the direct check's antecedent (no tick yet, cycle INT + 1) never holds. |
 | D3 | After a restart, every gap between consecutive ticks is INT or INT + 1. | Checked on the block 2 netlist, unbounded, for all fixed INT and FRAC (`clkdiv_gap`, k = 3). For block 1, from the R10 equality. | Ghost counters g and B, with A == B + 256 g. Cover: gap INT + 1 with FRAC != 0 reached (`cover_1_255`). |
 | D4 | With FRAC = 0, every gap after a restart is exactly INT. | Checked on the block 2 netlist, unbounded, for all fixed INT (`clkdiv_gap`, k = 3). For block 1, from the R10 equality. | Cover: gap with FRAC = 0 reached (`cover_1_0`). |
-| D5 | After a restart, any 256 consecutive gaps sum to 256 x INT + FRAC. | Argued, plus a bounded direct check. | Argument below. Bounded direct check (`clkdiv_d5.sby`): divisor 1/0 to depth 300, PASS (abc bmc3), in CI. Divisor 1/255 to depth 540 is run by hand (`make -C formal d5_slow`): about 23 minutes, 1.2 GB, and it was not completed in this run, so it has no result. Bounded, not unbounded. |
+| D5 | After a restart, any 256 consecutive gaps sum to 256 x INT + FRAC. | Argued, plus bounded direct checks (manual only, not in CI). | Argument below. Bounded direct check (`clkdiv_d5.sby`, run by `make -C formal d5_slow`): divisor 1/0 to depth 300, PASS (abc bmc3, about 594 s); divisor 1/255 to depth 540 (about 23 minutes, 1.2 GB), which was not completed in the last run, so it has no result yet. Bounded, not unbounded. |
 
 **D5 argument.** Let Dq = 256 INT + FRAC. R10 gives 0 <= P < Dq in every cycle, so in cycle c the
 number of ticks so far is N_c = floor(256 c / Dq). Then N_{c + Dq} = N_c + 256, because
 256 (c + Dq) / Dq = 256 c / Dq + 256. So any Dq consecutive cycles contain exactly 256 ticks, and
 the gap sum over any 256 consecutive gaps is Dq. The argument is sound, and the unbounded form is
 not checked: an attempt at a ghost-counter induction did not close, because of a variable multiply.
+
+**Why the D5 bounded checks are manual only.** For divisor 1/0, D1 (TICK is 1 in every cycle,
+unbounded) already implies that 256 gaps sum to 256, so the 1/0 bounded run adds almost nothing,
+and it costs about 594 s in CI. The 1/255 run costs about 23 minutes and 1.2 GB. Both are kept
+for `make -C formal d5_slow` as evidence for the fractional case, and neither is part of
+`make -C formal prove` or the CI jobs.
 
 **K1 (the closed form).** K1 is the statement that, after a restart, N_c = floor(256 c / Dq) and
 TICK = (256 (c + 1) >= (N + 1) Dq). It is exactly R10 (engine.md R10: "This applies datasheet
