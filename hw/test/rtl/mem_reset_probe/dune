@@ -1,0 +1,4 @@
+(executable
+ (name mem_reset_probe)
+ (modules mem_reset_probe)
+ (libraries hardcaml))

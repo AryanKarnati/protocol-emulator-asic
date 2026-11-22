@@ -148,3 +148,15 @@ async def reset_mid_run(dut):
     dut.rst_n.value = 1
     await Timer(1, unit="ns")
     await check_r0(dut, "cycle 0 after the release")
+
+    # IMEM is not reset (engine.md R0): the program loaded before the reset must still run.
+    # Re-enable SM0 (reset cleared SM_ENABLE) and watch pins_out bit 0 toggle, SET PINS 1 and 0.
+    dut.sm_enable.value = 0x1
+    seen = set()
+    for _ in range(12):
+        await RisingEdge(dut.clock)
+        await ReadOnly()
+        seen.add(int(dut.pins_out.value) & 1)
+        await Timer(1, unit="ns")
+    assert seen == {0, 1}, f"program loaded before the reset did not run after it: pins_out bit 0 seen {seen}"
+    dut._log.info("program loaded before the reset runs after it: pins_out bit 0 toggled")

@@ -1,5 +1,5 @@
-(* The RTL against the pgsim reference: the corpus at 4 SMs, and a small generated batch at
-   1 and 4 SMs. Any mismatch fails this test, and its report is printed. The full runs
+(* The RTL against the pgsim reference: the corpus at 4 SMs, and 500 generated cases at 1 and 4
+   SMs (about 2 minutes in total, for CI). Any mismatch fails this test, and its report is printed. The full runs
    (10,000 cases, triage into classes, case files) are lockstep_cli triage; see the
    README in hw/test/cases/rtl. *)
 open Polyglot_lockstep
@@ -29,7 +29,7 @@ let () =
     (Corpus.cases ~cycles:3000 ~dir:"../../../../sw/pgasm/test/corpus" ());
   List.iter
     (fun sms ->
-      for i = 0 to 199 do
+      for i = 0 to 499 do
         let c = Gen.generate_one ~seed:(100 + sms) i in
         report (Printf.sprintf "gen %d (sms %d)" i sms) (run { c with Case.num_sms = sms })
       done)
