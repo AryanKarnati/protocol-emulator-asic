@@ -41,6 +41,7 @@ module I = struct
     ; rx_full : 'a
     ; rx_level : 'a [@bits 4]
     ; irq_q : 'a [@bits 8]
+    ; imem_abandon : 'a
     }
   [@@deriving hardcaml]
 end
@@ -621,25 +622,18 @@ let create (scope : Scope.t) (i : _ I.t) =
   in
   (* IMEM flags are cleared on restart, on a PC write by a latched instruction (the
      instruction they belong to is abandoned), and on completion. *)
-  let imem_ss_next =
-    mux2 i.restart gnd (mux2 pc_write_latch gnd (mux2 attempt_imem stall imem_ss))
-    -- "imem_ss_next"
-  in
+  (* F7: an IMEM write to the PC (imem_abandon) abandons the IMEM instruction, and clears
+     its flags after the attempt of that cycle. *)
+  let imem_clr = (i.restart |: pc_write_latch |: i.imem_abandon) -- "imem_clr" in
+  let imem_ss_next = mux2 imem_clr gnd (mux2 attempt_imem stall imem_ss) -- "imem_ss_next" in
   let imem_irqw_next =
-    mux2
-      i.restart
-      gnd
-      (mux2 pc_write_latch gnd (mux2 attempt_imem irqw_next imem_irqw))
-    -- "imem_irqw_next"
+    mux2 imem_clr gnd (mux2 attempt_imem irqw_next imem_irqw) -- "imem_irqw_next"
   in
   let stall_reason_now = mux2 stall stall_code (zero 4) -- "stall_reason_now" in
   (* F6: a latched instruction that writes the PC abandons the IMEM instruction, and its
      stall reason goes with it. *)
   let imem_stall_next =
-    mux2
-      i.restart
-      (zero 4)
-      (mux2 pc_write_latch (zero 4) (mux2 attempt_imem stall_reason_now imem_stall))
+    mux2 imem_clr (zero 4) (mux2 attempt_imem stall_reason_now imem_stall)
     -- "imem_stall_next"
   in
   let latch_stall_next =
