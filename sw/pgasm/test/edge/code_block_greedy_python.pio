@@ -1,0 +1,5 @@
+.program a
+nop
+% python { a { b
+line2
+%}

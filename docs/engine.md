@@ -112,7 +112,7 @@ These are outside this contract, and the generator never produces them:
 | `legal` | 1 | `Isa.is_legal (Isa.decode instr)` |
 | `is_jmp` `is_wait` `is_in` `is_out` `is_push` `is_pull` `is_mov` `is_irq` `is_set` | 1 each | The constructor of `Isa.decode instr`. All are 0 when `legal` is 0. |
 | `uses_lcu` | 1 | The word is `In_lcu`, `Ms_crc` or `Set_lcu` |
-| `side_valid`, `side_value` [5], `delay` [5] | | `Isa.Side.split {count; enable} (bits 12:8)`. Defined for every word, illegal ones included. |
+| `side_valid`, `side_value` [5], `delay` [5] | | `Isa.Side.split {count; enable} (bits 12:8)`. Defined for every word, illegal ones included. `side_value` is compared only when `side_valid` is 1. |
 | `bit_count` | 6 | 1 to 32 for a legal IN or OUT, otherwise 0 |
 
 The equivalence holds for every 16-bit word and every valid side-set configuration: count 0 to 5, and enable only with count ≥ 1. The engine may slice other fields (condition, source, destination, index and so on) straight from the instruction bits.
@@ -144,7 +144,7 @@ The equivalence holds for every 16-bit word and every valid side-set configurati
   `irq_next = (irq & ~(SM clears | irq_clear)) | SM sets | irq_force`
 
   A set always beats a clear in the same cycle (datasheet §3.2.7).
-- **H6. FIFO flush.** Both FIFOs are empty at the end of the cycle, overriding host and SM FIFO activity in that cycle. A word an SM popped in that cycle still reaches its OSR.
+- **H6. FIFO flush.** Both FIFOs are empty at the end of the cycle, overriding host and SM FIFO activity in that cycle. A word an SM popped in that cycle still reaches its OSR. The flush empties only the storage. TXOVER, RXUNDER, TXSTALL and RXSTALL still follow H1, H2, R5 and R7 in that cycle, and the SM's instruction completes or stalls exactly as it would without the flush.
 - **H7. INSTR write.** The instruction is latched at the end of the cycle and runs from cycle k+1 (F1). It overwrites any latched instruction, EXEC or forced (datasheet §3.5.7 caution). If a stalled forced instruction is being retried in cycle k, that retry still runs in cycle k, and the new write replaces the latch at the end of the cycle.
 - **H8. FDEBUG clear.** `flag_next = (flag & ~clear) | set in cycle k`, so a set wins.
 - **H9. IMEM write.** The new word can be fetched from cycle k+1.
@@ -175,11 +175,11 @@ Each ruling cites the datasheet text it settles. Items marked V1 are to be check
 - Across SMs, the highest-numbered SM wins.
 - A pin nobody writes keeps its value.
 
-**OUT_STICKY.** With OUT_STICKY set, an enabled SM re-asserts its last OUT, SET or MOV pin write in every cycle in which it makes no new one. This covers level and direction, as masks. It stops on SM_RESTART, and is not asserted while the SM is disabled. Writes by forced instructions count as new writes, and are recorded whether or not the SM is enabled. **V1 item i.**
+**OUT_STICKY.** With OUT_STICKY set, an enabled SM re-asserts its most recent OUT, SET or MOV pin write in every cycle in which it makes no new one (datasheet §3.7: "the most recent OUT/SET"). The record is one write, whether to levels or to directions, kept as masks. A new write replaces the whole record. So a `set pindirs` after an `out pins` leaves only the direction write sticky. It stops on SM_RESTART, and is not asserted while the SM is disabled. Writes by forced instructions count as new writes, and are recorded whether or not the SM is enabled. **V1 item i.**
 
 **R3. `!OSRE`** is true when OSR count < PULL_THRESH (datasheet §3.4.2.2). A threshold field of 0 means 32, for both thresholds.
 
-**R4. PULL with autopull.** The PULL is a no-op while OSR count < PULL_THRESH (datasheet §3.4.7.2 note, §3.5.4.2). Otherwise it behaves like a normal PULL. **V1 item b.**
+**R4. PULL with autopull.** The PULL is a no-op when the OSR is full, which means OSR count = 0. Otherwise it behaves like a normal PULL, with IfEmpty and Block as usual. The datasheet defines "full" as a count of 0 (the §3.5.4 table "OSR Count (0=full)", and §3.4.8.2 "reset to 0, i.e. full"), and §3.5.4.2 says a PULL under autopull "becomes a no-op if the OSR is full". An OSR that is partly shifted out is not full, so a PULL then loads a fresh word, or stalls on an empty FIFO. This replaces the block 1 reading ("no-op while count < threshold"). **V1 items b and b2.**
 
 **R5. OUT with autopull.** This follows the §3.5.4.2 pseudocode.
 
@@ -223,11 +223,12 @@ Each ruling cites the datasheet text it settles. Items marked V1 are to be check
   - It changes the PC only if it writes the PC (JMP, OUT PC, MOV PC). Otherwise the PC stays where it was.
 - **F2. EXEC instructions.** `OUT EXEC` and `MOV EXEC` complete in their own cycle, ignore their own delay field, and latch the new instruction. That instruction runs on the SM's next enabled tick, uses its own delay, and does not advance the PC unless it writes it. It can stall and be retried on later ticks like any instruction.
 - **F3. Stall reasons.** The engine keeps two:
-  - The **IMEM reason** is written only by attempts of IMEM instructions: the stall's code on a stall, 0 on completion.
+  - The **IMEM reason** is written only by attempts of IMEM instructions (the stall's code on a stall, 0 on completion), and cleared by F6.
   - The **latch reason** is written only by attempts of latched (EXEC or forced) instructions, in the same way. A new INSTR write sets it to 0.
   - `DBG_CNT.stall_reason` shows the latch reason while it is non-zero, and the IMEM reason otherwise. So when a forced instruction completes, the IMEM reason shows in the same cycle.
   - The codes are in DESIGN §7. Codes 1 to 3 also cover the autopush and autopull stalls in R5 and R6.
 - **F4. `EXEC_STALLED`** is 1 while a forced (INSTR) instruction is latched and its latest attempt stalled. It is 0 for EXEC-latched instructions.
+- **F6. Abandoning the IMEM instruction.** Suppose a latched instruction (forced or EXEC) writes the PC: a taken JMP, OUT PC or MOV PC. Then the IMEM instruction that was in progress is abandoned. At the end of that cycle its side-set-done flag, its IRQ wait state and the IMEM stall reason are cleared, so the instruction at the new PC starts fresh. The delay counter is not touched (F1). This is how host code breaks an SM out of a stalled `wait` or `pull` with a forced `jmp`. **V1 item f.**
 - **F5. IRQ wait states.** IMEM and latched instructions each have their own IRQ wait state, so a forced IRQ never takes over the wait of an IMEM IRQ instruction. Completing a latched instruction, or a new INSTR write, clears the latched one.
 
 **Delay counter.** When an instruction completes on a tick with delay d, `DBG_CNT.delay` becomes d. Each later enabled tick with delay > 0 decrements it and executes nothing else. The next instruction is attempted on the first enabled tick on which delay is 0.
