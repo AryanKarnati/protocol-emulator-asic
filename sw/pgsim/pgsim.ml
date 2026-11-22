@@ -727,6 +727,15 @@ let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
       | Imem -> sm.stall <- No_stall
       | Exec | Host -> sm.latch_stall <- No_stall);
      set_flag false;
+     (* OUT_STICKY (ruling, engine.md): a completed OUT, SET or MOV pin write replaces the
+        sticky record even when its pin mask is empty (SET_COUNT 0, OUT_COUNT 0). The record
+        is then empty, so nothing is re-asserted. Side-set writes never touch the record. *)
+     (match ins_body with
+      | Isa.Out { dest = Out_pins | Out_pindirs; _ }
+      | Isa.Set { dest = Set_pins | Set_pindirs; _ }
+      | Isa.Mov { dest = Mov_pins; _ } ->
+        if c.out_sticky then sm.sticky <- pinw_copy bodyw
+      | _ -> ());
      (match src, jump with
       | Imem, Some a -> sm.pc <- a
       | Imem, None -> sm.pc <- wrap_next c sm.pc

@@ -500,3 +500,43 @@ let%test_unit "F7: the delay counter is untouched" =
   step ~host:[ H.Imem_write { addr = 1; data = set_x 9 } ] b;
   check "delay identical with and without the write" ((dbg a 0).Pgsim.delay = (dbg b 0).Pgsim.delay)
 ;;
+
+(* ------------------------------------------------------------------------------------ *)
+(* OUT_STICKY ruling (engine.md): a completed OUT, SET or MOV pin write replaces the sticky
+   record even when its pin mask is empty. The record is then empty. *)
+
+let mov_pins_x = enc (Isa.Mov { delay_side = 0; dest = Mov_pins; op = Op_none; source = Ms_x })
+
+(* Family R: a forced OUT PINDIRS leaves a direction record; a later SET PINS with SET_COUNT 0
+   completes and writes no pin, so the record must be empty afterwards. *)
+let%test_unit "OUT_STICKY: a completed SET PINS with SET_COUNT 0 empties a direction record" =
+  let cfg = { C.reset with set_count = 0; out_count = 15; out_base = 0; out_sticky = true } in
+  let t = make ~cfg [ set_pins 18; jmp 1 ] in
+  Pgsim.set_enabled t 0 false;
+  step ~host:[ H.Instr_write { sm = 0; data = enc (Isa.Out { delay_side = 0; dest = Out_pindirs; bit_count = 15 }) } ] t;
+  step t;
+  check "forced OUT PINDIRS records a direction write" ((dbg t 0).Pgsim.sticky = (0, 0, 0x7FFF, 0));
+  Pgsim.set_enabled t 0 true;
+  step t;
+  check "completed SET PINS with count 0 empties the record" ((dbg t 0).Pgsim.sticky = (0, 0, 0, 0))
+;;
+
+(* Family C: SM0 writes pin levels with MOV PINS (the record asserts them), then SET PINDIRS
+   with SET_COUNT 0 completes and writes no pin: the record must be empty. *)
+let%test_unit "OUT_STICKY: a completed SET PINDIRS with SET_COUNT 0 empties a level record" =
+  let cfg = { C.reset with set_count = 0; out_count = 1; out_base = 0; out_sticky = true } in
+  let t = make ~cfg [ mov_pins_x; set_pindirs 1; jmp 2 ] in
+  t.Pgsim.sms.(0).Pgsim.x <- 1;
+  step t;
+  check "MOV PINS records the level" ((dbg t 0).Pgsim.sticky = (1, 1, 0, 0));
+  step t;
+  check "completed SET PINDIRS with count 0 empties the record" ((dbg t 0).Pgsim.sticky = (0, 0, 0, 0))
+;;
+
+(* A completed write with a non-empty mask still replaces the record (no regression). *)
+let%test_unit "OUT_STICKY: a completed SET PINS with a non-empty mask replaces the record" =
+  let cfg = { C.reset with set_count = 1; out_sticky = true } in
+  let t = make ~cfg [ set_pins 1; jmp 1 ] in
+  step t;
+  check "record holds the level write" ((dbg t 0).Pgsim.sticky = (1, 1, 0, 0))
+;;
