@@ -1,0 +1,12 @@
+ (rule
+ (targets pgsim.ml)
+ (deps ../../../../sw/pgsim/pgsim.ml)
+ (action
+  (run %{exe:../tool/mutate.exe} ../../../../sw/pgsim/pgsim.ml pgsim.ml "(t.hist.(3) land lnot t.sync_bypass)" "(t.hist.(2) land lnot t.sync_bypass)")))
+
+(rule (targets pgsim.mli) (deps ../../../../sw/pgsim/pgsim.mli) (action (copy ../../../../sw/pgsim/pgsim.mli pgsim.mli)))
+
+(library
+ (name pgsim_mut_input_latency_2)
+ (modules pgsim)
+ (libraries polyglot_isa))

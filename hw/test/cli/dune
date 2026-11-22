@@ -1,0 +1,12 @@
+(executable
+ (name lockstep_cli)
+ (modules lockstep_cli)
+ (libraries
+  polyglot_lockstep
+  polyglot_pgsim
+  pgsim_mut_delay_off_by_one
+  pgsim_mut_sideset_loses_to_out
+  pgsim_mut_autopull_no_refill_non_out
+  pgsim_mut_irq_clear_beats_set
+  pgsim_mut_input_latency_2
+  pgsim_mut_host_push_same_cycle))

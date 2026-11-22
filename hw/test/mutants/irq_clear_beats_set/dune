@@ -1,0 +1,12 @@
+ (rule
+ (targets pgsim.ml)
+ (deps ../../../../sw/pgsim/pgsim.ml)
+ (action
+  (run %{exe:../tool/mutate.exe} ../../../../sw/pgsim/pgsim.ml pgsim.ml "  t.irq <- (irq_snap land lnot (!clrw lor !irq_clr)) lor !setw lor !irq_frc land 0xFF;" "  t.irq <- ((irq_snap lor !setw lor !irq_frc) land lnot (!clrw lor !irq_clr)) land 0xFF;")))
+
+(rule (targets pgsim.mli) (deps ../../../../sw/pgsim/pgsim.mli) (action (copy ../../../../sw/pgsim/pgsim.mli pgsim.mli)))
+
+(library
+ (name pgsim_mut_irq_clear_beats_set)
+ (modules pgsim)
+ (libraries polyglot_isa))
