@@ -16,3 +16,4 @@ _build/
 .claude/
 __pycache__/
 *.pyc
+formal/build/

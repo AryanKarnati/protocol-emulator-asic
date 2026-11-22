@@ -1,0 +1,28 @@
+[tasks]
+flags_prove
+token_bmc
+cover_all
+
+[options]
+flags_prove: mode prove
+flags_prove: depth 4
+token_bmc: mode bmc
+token_bmc: depth 40
+cover_all: mode cover
+cover_all: depth 40
+
+[engines]
+flags_prove: smtbmc z3
+token_bmc: smtbmc boolector
+cover_all: smtbmc boolector
+
+[script]
+flags_prove: read_verilog -formal fifo_harness.v
+token_bmc: read_verilog -formal -DTOKEN fifo_harness.v
+cover_all: read_verilog -formal -DTOKEN fifo_harness.v
+read_verilog -formal fifo_4x32.v
+prep -top fifo_harness
+
+[files]
+build/fifo_4x32.v
+fifo_harness.v

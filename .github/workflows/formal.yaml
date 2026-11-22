@@ -1,0 +1,37 @@
+name: formal
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  proofs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v6
+
+      - name: Set up OCaml
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: 5.3.0
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -f polyglot.opam.locked ]; then
+            opam install . --deps-only --with-test --locked
+          else
+            opam install . --deps-only --with-test
+          fi
+
+      - name: Set up OSS CAD Suite (pinned release)
+        uses: YosysHQ/setup-oss-cad-suite@v4
+        with:
+          version: '2026-11-17'
+
+      - name: Generate Verilog, run proofs and mutant checks
+        shell: bash
+        run: |
+          make -C formal all OPAM_EXEC="opam exec --"
