@@ -729,7 +729,9 @@ let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
      set_flag false;
      (* OUT_STICKY (ruling, engine.md): a completed OUT, SET or MOV pin write replaces the
         sticky record even when its pin mask is empty (SET_COUNT 0, OUT_COUNT 0). The record
-        is then empty, so nothing is re-asserted. Side-set writes never touch the record. *)
+        is then empty, so nothing is re-asserted. Side-set writes never touch the record. The
+        record is kept whether or not OUT_STICKY is set; it is only asserted while set. This is
+        the one site where the record is written. *)
      (match ins_body with
       | Isa.Out { dest = Out_pins | Out_pindirs; _ }
       | Isa.Set { dest = Set_pins | Set_pindirs; _ }
@@ -1006,9 +1008,6 @@ let step_ex ?(host = []) t =
       (* OUT_STICKY (datasheet 3.7): the last OUT, SET or MOV pin write is kept, forced
          writes included. It is asserted only while the SM is enabled, in the cycles that
          make no new write. *)
-      (* The record tracks the most recent write whether or not OUT_STICKY is set (engine.md
-         OUT_STICKY; the record is only asserted while OUT_STICKY is set and enabled). *)
-      if not (pinw_empty bodyw) then sm.sticky <- pinw_copy bodyw;
       let eff =
         if sm.cfg.out_sticky && sm.enabled && pinw_empty bodyw
         then pinw_copy sm.sticky

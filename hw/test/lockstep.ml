@@ -18,15 +18,7 @@ type outcome =
 let history_len = 16
 
 (* Run [case] (normalised by the caller, see [Case.normalise]) on both. *)
-(* [waive_cycle0_fstat]: skip the FSTAT comparison in global cycle 0 only. Used to triage
-   past a reset-visibility question on the RTL (see the round 2 report); it is off by
-   default and every use is labelled in the report. *)
-(* A port is waived when it is FSTAT or FLEVEL after a mid-run reset, with [waive_after_reset_fifo]
-   set. The RTL shows a zero-capacity FIFO after a mid-run reset (round 2 triage); the waiver
-   lets later mismatches in the same case show. Every use is labelled in the report. *)
-let fifo_port_after_reset name = name = "fstat" || name = "flevel"
-
-let run ?(waive_cycle0_fstat = false) ?(waive_after_reset_fifo = false) ~(reference : Dut.port_dut) ~(dut : Dut.port_dut) (case : Case.t) : outcome =
+let run ~(reference : Dut.port_dut) ~(dut : Dut.port_dut) (case : Case.t) : outcome =
   let inputs = Case.dense case in
   let rst = Ports.idle ~rst_n:false in
   ignore (reference.cycle rst);
@@ -35,7 +27,6 @@ let run ?(waive_cycle0_fstat = false) ?(waive_after_reset_fifo = false) ~(refere
   let result = ref None in
   let n = ref 0 in
   let total = Array.length inputs in
-  let reset_seen = ref false in
   (* The loop runs one compare past the last cycle: the state after the last clock edge is
      compared too (engine.md 5). Inputs are only driven for cycles below [total]. *)
   while Option.is_none !result && !n <= total do
@@ -50,15 +41,7 @@ let run ?(waive_cycle0_fstat = false) ?(waive_after_reset_fifo = false) ~(refere
     let d = dut.regs inp0 in
     let rf = Ports.fields r in
     let df = Ports.fields d in
-    let waived ((name, _) : string * int) =
-      (waive_cycle0_fstat && !n = 0 && name = "fstat")
-      || (waive_after_reset_fifo && !reset_seen && fifo_port_after_reset name)
-    in
-    let pairs =
-      if inp0.Ports.rst_n
-      then List.filter (fun (a, _) -> not (waived a)) (List.combine rf df)
-      else []
-    in
+    let pairs = if inp0.Ports.rst_n then List.combine rf df else [] in
     (match List.find_opt (fun ((_, a), (_, b)) -> a <> b) pairs with
      | Some ((name, a), (_, b)) ->
        result
@@ -78,7 +61,6 @@ let run ?(waive_cycle0_fstat = false) ?(waive_after_reset_fifo = false) ~(refere
            ~ext:inputs.(!n).Ports.pins_ext
        in
        let inp = { (inputs.(!n)) with Ports.pins_in } in
-       if not inp.Ports.rst_n then reset_seen := true;
        if Queue.length hist = history_len then ignore (Queue.pop hist);
        Queue.push (!n, rf) hist;
        let rx_ref = reference.cycle inp in

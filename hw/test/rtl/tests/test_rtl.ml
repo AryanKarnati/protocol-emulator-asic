@@ -34,6 +34,11 @@ let () =
         report (Printf.sprintf "gen %d (sms %d)" i sms) (run { c with Case.num_sms = sms })
       done)
     [ 1; 4 ];
+  (* Checked after the runs: the adapter records a port only when it is accessed. A port
+     missing from the circuit reads as 0, which would hide a deleted port whenever its reference
+     value is 0. Every port must be present. *)
+  let missing = Polyglot_rtl_dut.Rtl_dut.missing_ports () in
+  if missing <> [] then failwith ("RTL ports missing from the circuit: " ^ String.concat " " missing);
   Printf.printf "rtl lockstep: %d mismatching cases\n" !failures;
   if !failures > 0 then exit 1
 ;;

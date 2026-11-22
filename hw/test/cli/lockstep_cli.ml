@@ -42,14 +42,12 @@ let dut_name_of n =
 ;;
 
 (* Run [case] (normalised) on the reference and on the named DUT. *)
-let waive = ref false
-let waive_fifo = ref false
 
 let check ~dut case =
   let num_sms = case.Case.num_sms in
   let reference = Dut.pgsim (module Pgsim : Dut.PGSIM) ~name:"pgsim-ref" ~pads_from_pins_in:false ~num_sms in
   let dut = dut_of_name dut ~num_sms in
-  Lockstep.run ~waive_cycle0_fstat:!waive ~waive_after_reset_fifo:!waive_fifo ~reference ~dut case
+  Lockstep.run ~reference ~dut case
 ;;
 
 let print_failure ~label (case : Case.t) (f : Lockstep.failure) =
@@ -71,7 +69,6 @@ let flag args name default =
 let int_flag args name default = int_of_string (flag args name (string_of_int default))
 
 let cmd_gen args =
-  waive := List.mem "--waive-cycle0-fstat" args;
   let count = int_flag args "--count" 1000 in
   let seed = int_flag args "--seed" 1 in
   let dut = dut_name_of (flag args "--dut" "pgsim") in
@@ -103,7 +100,6 @@ let cmd_gen args =
 ;;
 
 let cmd_replay args file =
-  waive_fifo := List.mem "--waive-after-reset-fifo" args;
   let dut = dut_name_of (flag args "--dut" "pgsim") in
   let case = Case.normalise (Case.read_file file) in
   match check ~dut case with
@@ -124,7 +120,6 @@ let write_cases dir cases =
 ;;
 
 let cmd_corpus args =
-  waive := List.mem "--waive-cycle0-fstat" args;
   let dir = flag args "--dir" "sw/pgasm/test/corpus" in
   let cycles = int_flag args "--cycles" 3000 in
   let dut = dut_name_of (flag args "--dut" "pgsim") in
@@ -196,7 +191,6 @@ let window_kinds (case : Case.t) (run_cycle : int) =
 ;;
 
 let cmd_triage args =
-  waive_fifo := List.mem "--waive-after-reset-fifo" args;
   let count = int_flag args "--count" 1000 in
   let seed = int_flag args "--seed" 1 in
   let dut = dut_name_of (flag args "--dut" "rtl") in
