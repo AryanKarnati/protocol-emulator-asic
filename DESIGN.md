@@ -7,7 +7,7 @@
 | **Process**      | IHP 130nm CMOS5L (Tiny Tapeout March 2027 shuttle)                    |
 | **Area**         | 8x4 tiles = 1724.16 × 710.64 µm (1.225 mm²)                           |
 | **Clock**        | 60 MHz target. 50 MHz fallback, which loses 10BASE-T (see §13).       |
-| **Status**       | Design baseline v0.2, 2026-11-19. This is the reference for the RTL, the model, the toolchain and the tests. |
+| **Status**       | Design baseline v0.3, 2026-11-21 (block 1 rulings folded in). This is the reference for the RTL, the model, the toolchain and the tests. |
 | **Built with**   | Hardcaml (OCaml) for the RTL, OCaml for the tools and tests, MicroPython on the host. AI tools write all the code under human direction (§17.1). |
 
 The document has two parts:
@@ -286,7 +286,7 @@ Per-SM block, with offsets from 0x200 + 0x40·n:
 | +0x24 | `LCU_RXCFG` | `[4:0]` RX_PIN. `[27:8]` PERIOD (cycles per bit, 16.4 fixed-point). |
 | +0x28 | `LCU_CRC` | Current CRC value (read/write) |
 | +0x2C–0x38 | `DBG_X`, `DBG_Y`, `DBG_ISR`, `DBG_OSR` | Architectural state (read-only) |
-| +0x3C | `DBG_CNT` | ISR and OSR shift counts, delay counter, stall reason (read-only) |
+| +0x3C | `DBG_CNT` | Read-only. `[5:0]` ISR shift count (0–32). `[13:8]` OSR shift count (0–32). `[20:16]` delay ticks still to run. `[27:24]` stall reason: 0 none, 1 TX empty (blocking `PULL`), 2 RX full (blocking `PUSH` or autopush), 3 autopull (`OUT` waiting for TX data), 4 `WAIT gpio`, 5 `WAIT pin`, 6 `WAIT irq`, 7 `IRQ wait` (waiting for its flag to clear), 8 `IN LCU` (§10.3), 9–15 reserved. |
 
 ### 8. Engine (state machine)
 
@@ -311,7 +311,8 @@ Per-SM block, with offsets from 0x200 + 0x40·n:
 - **Side-set** takes effect on the first tick of an instruction, even when the instruction stalls. This is PIO semantics.
 - **Delay** cycles start only after the instruction completes. They never run while a stalled instruction is waiting.
 - **Output priority** across SMs follows PIO: when several SMs write the same pin in the same cycle, the highest-numbered SM wins. The side-set, OUT/SET and pin-direction priority rules within one SM follow RP2040 datasheet §3.5.6 **[verify]**.
-- **`OUT EXEC` / `MOV EXEC`** and host writes to `INSTR` run the given instruction on the next tick. This is the technique pico-examples I2C uses.
+- **`OUT EXEC` / `MOV EXEC`** run the given instruction on the SM's next tick. The delay field of the `OUT` or `MOV` itself is ignored, and the executed instruction's own delay applies (RP2040 datasheet §3.4.5.2, §3.4.8.2). This is the technique pico-examples I2C uses.
+- **Host writes to `INSTR`** run the instruction in the next system clock cycle, ignoring the clock divider, `SM_ENABLE` and the instruction's own delay field. The PC does not advance unless the instruction writes it. A forced instruction that stalls is latched and retried until it completes, and `EXECCTRL.EXEC_STALLED` shows this (RP2040 datasheet §3.5.7). Host setup code uses this to set pins and jump while the SM is disabled.
 
 #### 8.3 Stall conditions
 
@@ -323,7 +324,7 @@ These are the only cases where an instruction takes more than 1 + delay ticks:
 - **`IN LCU, n`:** until the LCU has at least *n* decoded bits (§10.3).
 - **Host debug:** HALT.
 
-The `DBG_CNT.stall_reason` field reports which condition is active.
+The `DBG_CNT.stall_reason` field (§7) reports which condition is active. HALT and a disabled SM are not stall reasons: the field keeps the value from the last attempt.
 
 ### 9. Instruction set
 
@@ -348,15 +349,22 @@ Field values. Extensions are in **bold**:
 | Field | Values |
 | --- | --- |
 | JMP condition | 000 always, 001 `!X`, 010 `X--`, 011 `!Y`, 100 `Y--`, 101 `X!=Y`, 110 `PIN`, 111 `!OSRE` |
-| WAIT source | 00 GPIO (absolute), 01 PIN (relative to IN_BASE), 10 IRQ, 11 JMPPIN (RP2350 v1, optional) |
-| IN source | 000 PINS, 001 X, 010 Y, 011 NULL, **100 LCU**, 101 reserved, 110 ISR, 111 OSR |
+| WAIT source | 00 GPIO (absolute), 01 PIN (relative to IN_BASE), 10 IRQ, 11 reserved |
+| IN source | 000 PINS, 001 X, 010 Y, 011 NULL, **100 LCU**, 101 reserved (official `pioasm` assembles `in status` to it), 110 ISR, 111 OSR |
 | OUT destination | 000 PINS, 001 X, 010 Y, 011 NULL, 100 PINDIRS, 101 PC, 110 ISR, 111 EXEC |
-| MOV destination | 000 PINS, 001 X, 010 Y, 011 PINDIRS (RP2350 v1, optional), 100 EXEC, 101 PC, 110 ISR, 111 OSR |
+| MOV destination | 000 PINS, 001 X, 010 Y, 011 reserved, 100 EXEC, 101 PC, 110 ISR, 111 OSR |
 | MOV op | 00 none, 01 invert, 10 bit-reverse, 11 reserved |
 | MOV source | 000 PINS, 001 X, 010 Y, 011 NULL, **100 CRC**, 101 STATUS, 110 ISR, 111 OSR |
 | SET destination | 000 PINS, 001 X, 010 Y, **011 LCU**, 100 PINDIRS, 101–111 reserved |
 
-Any other reserved encoding executes as a NOP and sets the sticky `FDEBUG.ILLEGAL` flag. Before RTL starts, check that the three extension encodings are still reserved in RP2350 PIO version 1 **[verify]**. If one is not, move it to another reserved slot.
+Any other reserved encoding executes as a NOP and sets the sticky `FDEBUG.ILLEGAL` flag. The NOP keeps the word's delay and side-set field. Reserved words include:
+
+- IN source 101, even though the official `pioasm` assembles `in status` to it. `pgasm` stays byte-compatible with `pioasm`, and the chip flags the word.
+- WAIT IRQ index bit 3, IRQ index bit 3 and IRQ bit 7. RP2350 PIO version 1 gives these bits meanings (PREV and NEXT), and `pioasm` never sets them for version 0.
+- Every other RP2350 PIO version 1 encoding: WAIT JMPPIN, MOV PINDIRS and the RX FIFO MOVs. Polyglot is binary-compatible with version 0 only, so version 1 programs fail loudly instead of running wrongly.
+- The three extension encodings (IN 100, MOV source 100, SET 011) when the LCU is absent: in blocks 2 to 4, or in a build with `LCU present` off.
+
+Before the LCU RTL starts (block 5), check that the three extension encodings are still reserved in RP2350 PIO version 1 **[verify]**. If one is not, move it to another reserved slot.
 
 #### 9.2 Extensions
 

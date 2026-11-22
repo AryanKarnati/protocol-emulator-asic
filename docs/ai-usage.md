@@ -50,7 +50,7 @@ The Hardcaml gate (PLAN.md block 1, DESIGN.md §19) has passed, so the RTL stays
 
 ## Rulings the orchestrator made
 
-These are pending the project owner's approval, since only the owner changes DESIGN.md.
+On 2026-11-21 the owner delegated these five decisions to the orchestrator, with the instruction to do what gives the best chance of winning. All five were adopted as written below and folded into DESIGN.md v0.3 (§7, §8.2, §8.3, §9.1). The deciding reason was compatibility: Polyglot claims binary compatibility with RP2040 PIO version 0, so it follows the RP2040 datasheet wherever the datasheet speaks. It flags anything else as ILLEGAL rather than guessing. The block 2 contract ([engine.md](engine.md)) adopts `pgsim`'s 15 ambiguity choices as spec, each marked with the V1 capture that will check it.
 
 1. **`in status` (IN source 101).** The official `pioasm` assembles it, but DESIGN.md §9.1 and the RP2040 datasheet list it as reserved. `pgasm` stays byte-compatible with `pioasm`. The chip and the model treat it as reserved: it executes as a NOP and sets `ILLEGAL`. V1 on the Pico 2 will show what silicon does.
 2. **WAIT irq index bit 3, IRQ bit 7 and IRQ index bit 3** are treated as reserved. These bits are RP2350 PIO v1's PREV and NEXT encodings, and `pioasm` never emits them for version 0. V1 will show what silicon does.
