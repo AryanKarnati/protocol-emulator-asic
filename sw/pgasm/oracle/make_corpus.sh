@@ -6,6 +6,7 @@
 #   - copies the source into sw/pgasm/test/corpus/pico-examples/<relative path>
 #   - writes <file>.pio.json      (pioasm -o json: all programs, config, instructions)
 #   - writes <file>.pio.c-sdk.h   (pioasm -o c-sdk: wrap, side-set, clock config)
+#   - writes <file>.pio.python.py (pioasm -o python: MicroPython source)
 #   - writes <file>.pio.<prog>.hex, one per program, one 16-bit word per line
 #     (for single-program files this is checked byte-for-byte against pioasm -o hex;
 #     pioasm refuses -o hex for multi-program files, so those are derived from the JSON)
@@ -142,6 +143,7 @@ for rel in "${PIO_FILES[@]}"; do
     base="${src}"
     "${PIOASM}" -v "${gen_ver}" -o json "${src}" "${base}.json"
     "${PIOASM}" -v "${gen_ver}" -o c-sdk "${src}" "${base}.c-sdk.h"
+    "${PIOASM}" -v "${gen_ver}" -o python "${src}" "${base}.python.py"
 
     # Single-program files: also keep pioasm's own -o hex output as the cross-check.
     direct="-"
@@ -191,6 +193,7 @@ w("## pioasm options used")
 w("")
 w("- `pioasm -v <0|1> -o json <file.pio> <file.pio.json>` (all programs, instructions as 4-digit hex, pioVersion, wrap, side-set, clock divider, FIFO config)")
 w("- `pioasm -v <0|1> -o c-sdk <file.pio> <file.pio.c-sdk.h>` (wrap, side-set and clock config as the C SDK sees them)")
+w("- `pioasm -v <0|1> -o python <file.pio> <file.pio.python.py>` (MicroPython source: `@rp2.asm_pio` arguments, `wrap_target()`/`wrap()` and numeric labels)")
 w("- `pioasm -v <0|1> -o hex <file.pio> <out>`: run only for single-program files, as a cross-check. pioasm refuses `-o hex` for multi-program input.")
 w("- Multi-program files get `<file.pio>.<program>.hex`, derived from the JSON `instructions[].hex` values (one word per line, lowercase, 4 digits, the same layout as `-o hex`). The script checks that this derivation equals pioasm's own `-o hex` for every single-program file.")
 w("- `-v 0` (the pioasm default) is used unless a file needs PIO version 1, which then gets `-v 1` (see detection below). No other options are passed.")
@@ -210,6 +213,8 @@ w(f"- `.pio` files: {n_files}")
 w(f"- Programs: {n_progs}")
 w(f"- Files that use PIO v1: {n_v1} (programs: {n_v1_progs})")
 w(f"- Files pioasm rejected: 0 (the script stops on any rejection)")
+if n_v1 == 0:
+    w(f"- pico-examples sdk-{sdk_tag} contains no PIO v1 `.pio` files: confirmed by assembling all {n_files} with `pioasm -v 0` (pioasm {pioasm_ver}, all {n_files} accepted).")
 w("")
 w("## Per file")
 w("")

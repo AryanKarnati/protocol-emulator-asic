@@ -1,16 +1,19 @@
 (* pgasm regression tests. Run with: opam exec --switch=polyglot -- dune test --root .
 
    1. Corpus: every .pio in corpus/pico-examples is assembled, and the output is compared with
-      what the official pioasm 2.3.1 wrote (sw/pgasm/oracle/make_corpus.sh):
-      <file>.pio.json and <file>.pio.<prog>.hex, byte for byte.
-   2. Edge cases in edge/: each snippet has pioasm's JSON (<name>.pio.json, accepted) or a
-      marker (<name>.pio.oracle-error, rejected). pgasm must agree.
+      what the official pioasm 2.3.1 wrote (sw/pgasm/oracle/make_corpus.sh), byte for byte:
+      <file>.pio.json, <file>.pio.<prog>.hex, <file>.pio.c-sdk.h and <file>.pio.python.py.
+   2. Edge cases in edge/: each snippet is either rejected by pioasm (marker
+      <name>.pio.oracle-error; pgasm must reject it too) or accepted, with pioasm's JSON,
+      python and c-sdk outputs (<name>.pio.json, <name>.pio.python.py, <name>.pio.c-sdk.h),
+      which pgasm must reproduce byte for byte. All are written by oracle/make_edge.sh.
    3. Isa consistency: every word that pgasm assembles from a non-.word source satisfies
       Isa.encode (Isa.decode w) = w, and Isa.is_legal, except IN source 101 (in status), which
       pioasm accepts and the chip treats as reserved.
-   4. Word sweep: all 65536 words, 32 per program (2048 programs). The per-chunk MD5 of pgasm's
-      JSON is compared with the MD5 of pioasm -v 0's JSON stored in word_sweep.md5, one line
-      per chunk of 8 programs (256 words). Produced by oracle/word_sweep.py. *)
+   4. Word sweep: all 65536 words, 32 per program (2048 programs). The per-chunk MD5s of pgasm's
+      JSON, python and c-sdk outputs are compared with those of pioasm -v 0, stored in
+      word_sweep.md5, one line per chunk of 8 programs (256 words). Produced by
+      oracle/word_sweep.py. *)
 
 open Core
 open Pgasm_lib
@@ -21,7 +24,7 @@ let edge_dir = "edge"
 (* Exact counts. A corpus or edge directory that is missing or empty fails here. *)
 let expected_corpus_files = 26
 let expected_corpus_programs = 36
-let expected_edge_cases = 71
+let expected_edge_cases = 79
 let expected_sweep_chunks = 256
 
 let rec walk dir ~suffix =
@@ -38,6 +41,13 @@ let rec walk dir ~suffix =
 ;;
 
 let read path = In_channel.read_all path
+
+(* An expected output from pioasm. An empty one is a broken corpus, not a pass. *)
+let read_expected path =
+  let s = read path in
+  if String.is_empty s then failwith ("empty expected output: " ^ path);
+  s
+;;
 let failures = ref 0
 
 let fail fmt =
@@ -70,15 +80,21 @@ let sweep_source k =
   Buffer.contents b
 ;;
 
-let sweep_chunk_digest c =
-  let b = Buffer.create 8192 in
+(* The MD5s of one chunk of 8 sweep programs, in the order of word_sweep.md5's columns:
+   JSON, python, c-sdk. Each program is assembled alone, as oracle/word_sweep.py runs pioasm. *)
+let sweep_chunk_digests c =
+  let outputs = List.init 3 ~f:(fun _ -> Buffer.create 8192) in
   for k = 8 * c to (8 * c) + 7 do
     match Pio_asm.assemble ~file:"<word sweep>" (sweep_source k) with
     | exception Pio_lex.Error (loc, msg) ->
       fail "FAIL: sweep program %d: %s: %s" k (Pio_lex.loc_to_string loc) msg
-    | progs, global_syms -> Buffer.add_string b (Pio_out.to_json progs global_syms)
+    | progs, global_syms ->
+      List.iter2_exn
+        [ Pio_out.to_json; Pio_out.to_python; Pio_out.to_c_sdk ]
+        outputs
+        ~f:(fun out b -> Buffer.add_string b (out progs global_syms))
   done;
-  Stdlib.Digest.to_hex (Stdlib.Digest.string (Buffer.contents b))
+  List.map outputs ~f:(fun b -> Stdlib.Digest.to_hex (Stdlib.Digest.string (Buffer.contents b)))
 ;;
 
 let () =
@@ -87,6 +103,8 @@ let () =
   let json_ok = ref 0 in
   let prog_ok = ref 0 in
   let prog_total = ref 0 in
+  let c_sdk_ok = ref 0 in
+  let python_ok = ref 0 in
   List.iter files ~f:(fun file ->
     let text = read file in
     match Pio_asm.assemble ~file text with
@@ -94,12 +112,18 @@ let () =
       fail "FAIL: %s: %s: %s" file (Pio_lex.loc_to_string loc) msg
     | progs, global_syms ->
       let json = Pio_out.to_json progs global_syms in
-      if String.equal json (read (file ^ ".json"))
+      if String.equal json (read_expected (file ^ ".json"))
       then Int.incr json_ok
       else fail "FAIL: %s: JSON differs from pioasm output" file;
+      if String.equal (Pio_out.to_c_sdk progs global_syms) (read_expected (file ^ ".c-sdk.h"))
+      then Int.incr c_sdk_ok
+      else fail "FAIL: %s: c-sdk output differs from pioasm output" file;
+      if String.equal (Pio_out.to_python progs global_syms) (read_expected (file ^ ".python.py"))
+      then Int.incr python_ok
+      else fail "FAIL: %s: python output differs from pioasm output" file;
       List.iter progs ~f:(fun (p : Pio_asm.out_prog) ->
         Int.incr prog_total;
-        if String.equal (Pio_out.to_hex p) (read (sprintf "%s.%s.hex" file p.name))
+        if String.equal (Pio_out.to_hex p) (read_expected (sprintf "%s.%s.hex" file p.name))
         then Int.incr prog_ok
         else fail "FAIL: %s [%s]: hex differs from pioasm output" file p.name;
         check_isa ~name:file p));
@@ -108,10 +132,14 @@ let () =
   if !prog_total <> expected_corpus_programs
   then fail "FAIL: corpus has %d programs, expected %d" !prog_total expected_corpus_programs;
   printf
-    "corpus: %d/%d programs byte-identical (hex); %d/%d files byte-identical (JSON)\n"
+    "corpus: %d/%d programs byte-identical (hex); %d/%d files (JSON), %d/%d (c-sdk), %d/%d (python)\n"
     !prog_ok
     !prog_total
     !json_ok
+    (List.length files)
+    !c_sdk_ok
+    (List.length files)
+    !python_ok
     (List.length files);
   (* 2. edge cases. The only known gap is .pio_version 1, which is a documented non-goal
      (see sw/pgasm/README.md). *)
@@ -133,30 +161,44 @@ let () =
       then fail "FAIL: edge %s: pgasm accepts, pioasm rejects" name
       else if is_known_gap
       then fail "FAIL: edge %s: listed as a known gap but pgasm accepts it now" name
-      else if String.equal (Pio_out.to_json progs global_syms) (read (file ^ ".json"))
-      then (
-        Int.incr edge_ok;
-        if not (String.is_substring text ~substring:".word")
-        then List.iter progs ~f:(check_isa ~name:file))
-      else fail "FAIL: edge %s: JSON differs from pioasm" name);
+      else (
+        let same = ref true in
+        let check label got expected_file =
+          if not (String.equal got (read_expected expected_file))
+          then (
+            same := false;
+            fail "FAIL: edge %s: %s differs from pioasm" name label)
+        in
+        check "JSON" (Pio_out.to_json progs global_syms) (file ^ ".json");
+        check "python" (Pio_out.to_python progs global_syms) (file ^ ".python.py");
+        check "c-sdk" (Pio_out.to_c_sdk progs global_syms) (file ^ ".c-sdk.h");
+        if !same
+        then (
+          Int.incr edge_ok;
+          if not (String.is_substring text ~substring:".word")
+          then List.iter progs ~f:(check_isa ~name:file))));
   if List.length edge <> expected_edge_cases
   then fail "FAIL: %d edge cases, expected %d" (List.length edge) expected_edge_cases;
   printf "edge: %d/%d cases agree with pioasm (%d known gap)\n" !edge_ok (List.length edge) (List.length known_gaps);
   (* 4. word sweep *)
+  (* word_sweep.md5: "<chunk> <json md5> <python md5> <c-sdk md5>" per line *)
   let stored =
     In_channel.read_lines "word_sweep.md5"
     |> List.filter_map ~f:(fun l ->
       match String.split l ~on:' ' with
-      | [ idx; md5 ] -> Some (Int.of_string idx, md5)
+      | [ idx; json; python; c_sdk ] -> Some (Int.of_string idx, [ json; python; c_sdk ])
       | _ -> None)
   in
   if List.length stored <> expected_sweep_chunks
   then fail "FAIL: word_sweep.md5 has %d chunks, expected %d" (List.length stored) expected_sweep_chunks;
   let sweep_ok = ref 0 in
-  List.iter stored ~f:(fun (c, md5) ->
-    if String.equal (sweep_chunk_digest c) md5 then Int.incr sweep_ok
-    else fail "FAIL: word sweep chunk %d differs from pioasm" c);
-  printf "word sweep: %d/%d chunks of 256 words agree with pioasm (65536 words)\n" !sweep_ok (List.length stored);
+  List.iter stored ~f:(fun (c, md5s) ->
+    if List.equal String.equal (sweep_chunk_digests c) md5s then Int.incr sweep_ok
+    else fail "FAIL: word sweep chunk %d differs from pioasm (json, python or c-sdk)" c);
+  printf
+    "word sweep: %d/%d chunks of 256 words agree with pioasm, in JSON, python and c-sdk (65536 words)\n"
+    !sweep_ok
+    (List.length stored);
   if !failures > 0
   then (
     printf "%d failure(s)\n" !failures;
