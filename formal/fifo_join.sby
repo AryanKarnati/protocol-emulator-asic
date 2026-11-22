@@ -1,14 +1,11 @@
 [tasks]
 flags_prove
-token_bmc
 token_kill
 cover_all
 
 [options]
 flags_prove: mode prove
 flags_prove: depth 4
-token_bmc: mode bmc
-token_bmc: depth 20
 token_kill: mode bmc
 token_kill: depth 8
 cover_all: mode cover
@@ -16,13 +13,11 @@ cover_all: depth 20
 
 [engines]
 flags_prove: smtbmc boolector
-token_bmc: abc bmc3
 token_kill: smtbmc boolector
 cover_all: smtbmc boolector
 
 [script]
 flags_prove: read_verilog -formal fifo_join_harness.v
-token_bmc: read_verilog -formal -DTOKEN fifo_join_harness.v
 token_kill: read_verilog -formal -DTOKEN fifo_join_harness.v
 cover_all: read_verilog -formal -DTOKEN fifo_join_harness.v
 read_verilog -formal fifo_join.v

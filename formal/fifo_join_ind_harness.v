@@ -1,10 +1,15 @@
-// STATUS: OPEN. This k-induction attempt does not close. Every join mode fails at the slot
-// check, at induction depth 2 and at depth 4, and the counterexample is an arbitrary queued
-// word that equals tv (the token value) at a slot that is not the token. The invariant that
-// rules this out has not been found. It is not part of `make -C formal`. The tracked-token
-// property for fifo_join is bounded: fifo_join.sby token_bmc (depth 20, abc bmc3, PASS) and
-// token_kill (depth 8, boolector) for the kill-checks. See PROPERTIES.md (FJ5).
-//
+// Written by the checker (the checker's harness, copied into formal/ unchanged; credited in PROPERTIES.md).
+// STATUS: PROVED (checker, k-induction k=2, z3, <1 s, all three join modes, unbounded).
+// Fix to the OPEN attempt: two missing invariants, both added in the "Level" block below.
+//   (a) level <= capacity (cap_tx / cap_rx; a capacity-0 FIFO stays at level 0);
+//   (b) level equals np - nq as an exact 8-bit difference, not only mod 16. With only the
+//       4-bit form the induction state may have np - nq = 16 + level, so the ordinals
+//       (nq + j) used by the slot check are inconsistent with the queued words. That was the
+//       spurious counterexample ("an arbitrary queued word equals tv").
+// Needs the debug netlist from tools/add_fifo_join_debug.py (not yet a Makefile target).
+// Kill-checks run against it: the six fifo_join__*.sed mutants (the four that touch
+// storage, pointers or flush are killed; tx_dropped_without_full and underflow_masked_by_push
+// are flag mutants outside this harness), plus rd_wrap_3, rxbase_const4, txlast_const3.
 // Attempted unbounded tracked-token proof for fifo_join (engine.md sections 2, 3, 5: H1, H2,
 // H6 and the F1 to F4 analogue), by k-induction.
 //
@@ -147,9 +152,15 @@ module fifo_join_ind_harness (input clk);
   reg [2:0] p;
   always @(*) begin
     if (started) begin
+      // Level never exceeds the capacity (a capacity-0 FIFO stays at 0).
+      assert (tx_level <= cap_tx);
+      assert (rx_level <= cap_rx);
       // Level is the count difference.
       assert (tx_level == tx_np[3:0] - tx_nq[3:0]);
       assert (rx_level == rx_np[3:0] - rx_nq[3:0]);
+      // Exact (8-bit) count difference: the 4-bit form alone lets np - nq be 16 + level.
+      assert ({4'b0, tx_level} == tx_np - tx_nq);
+      assert ({4'b0, rx_level} == rx_np - rx_nq);
 
       // Pointers are the counts modulo the capacity (a capacity-0 side has no pointer rule).
       if (cap_tx != 4'd0) begin

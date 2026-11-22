@@ -4,28 +4,106 @@ on:
   push:
     paths:
       - 'hw/**'
+      - 'isa/**'
       - 'formal/**'
       - 'flow/**'
       - '.github/workflows/formal.yaml'
   pull_request:
     paths:
       - 'hw/**'
+      - 'isa/**'
       - 'formal/**'
       - 'flow/**'
       - '.github/workflows/formal.yaml'
   workflow_dispatch:
 
+# Three jobs, each with its own setup, so they run in parallel. Each has a 30-minute limit.
+#   proofs:   SymbiYosys proofs and covers.
+#   decoder:  the exhaustive decoder check (Cyclesim test and Verilator).
+#   mutants:  every kill-check (mutants of the netlists).
+# The estimate for a 2-core runner is 17 to 26 minutes for the whole run, so a single job
+# with a 20-minute limit is not safe; the split keeps each job well inside 30 minutes.
+
 jobs:
   proofs:
-    # Measured locally: `make -C formal all` from a clean build takes about 7 minutes (410 s).
-    # The token BMC (fifo_join token_bmc, 297 s) is most of it.
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: checkout repo
         uses: actions/checkout@v6
 
-      - name: Set up OCaml
+      - name: Set up OCaml (caches ~/.opam)
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: 5.3.0
+
+      - name: Cache dune build
+        uses: actions/cache@v4
+        with:
+          path: _build
+          key: dune-proofs-${{ hashFiles('hw/**', 'isa/**', 'formal/**', 'polyglot.opam') }}
+          restore-keys: dune-proofs-
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -f polyglot.opam.locked ]; then
+            opam install . --deps-only --with-test --locked
+          else
+            opam install . --deps-only --with-test
+          fi
+
+      - name: Set up OSS CAD Suite (pinned release)
+        uses: YosysHQ/setup-oss-cad-suite@v4
+        with:
+          version: '2026-11-17'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate Verilog and run the proofs
+        shell: bash
+        run: |
+          make -C formal prove OPAM_EXEC="opam exec --"
+
+  decoder:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v6
+
+      - name: Set up OCaml (caches ~/.opam)
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: 5.3.0
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -f polyglot.opam.locked ]; then
+            opam install . --deps-only --with-test --locked
+          else
+            opam install . --deps-only --with-test
+          fi
+
+      - name: Set up OSS CAD Suite (pinned release, for Verilator)
+        uses: YosysHQ/setup-oss-cad-suite@v4
+        with:
+          version: '2026-11-17'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run the decoder check (Cyclesim and Verilator)
+        shell: bash
+        run: |
+          make -C formal decode OPAM_EXEC="opam exec --"
+
+  mutants:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v6
+
+      - name: Set up OCaml (caches ~/.opam)
         uses: ocaml/setup-ocaml@v3
         with:
           ocaml-compiler: 5.3.0
@@ -45,7 +123,7 @@ jobs:
           version: '2026-11-17'
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate Verilog, run proofs and mutant checks
+      - name: Generate Verilog and run every kill-check
         shell: bash
         run: |
-          make -C formal all OPAM_EXEC="opam exec --"
+          make -C formal mutants OPAM_EXEC="opam exec --"

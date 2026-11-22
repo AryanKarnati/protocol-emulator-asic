@@ -23,7 +23,11 @@ export SBY
 
 DUNE = cd $(ROOT) && $(OPAM_EXEC) dune
 
-.PHONY: all gen prove decode mutants clean
+.PHONY: all gen prove decode mutants d5_slow clean
+
+# The slow bounded D5 check for divisor 1/255 (not part of CI; about 23 minutes).
+d5_slow: gen
+	$(SBY) -f clkdiv_d5.sby d5_1_255 -d build/d5_1_255
 
 all: gen prove decode mutants
 
@@ -38,6 +42,7 @@ gen:
 	$(DUNE) exec --root . --display=quiet ./formal/decode/dump_expected.exe > $(CURDIR)/build/decode_expected.txt
 	$(PYTHON) tools/add_fifo_debug.py build/fifo_4x32.v build/fifo_4x32_dbg.v
 	$(PYTHON) tools/add_clkdiv_debug.py build/clkdiv.v build/clkdiv_dbg_b1.v
+	$(PYTHON) tools/add_fifo_join_debug.py build/fifo_join.v build/fifo_join_dbg.v
 
 prove: gen
 	# Block 1 FIFO: flags by k-induction, the tracked token unbounded, covers.
@@ -50,13 +55,16 @@ prove: gen
 	$(SBY) -f clkdiv_dbg.sby cover -d build/clkdiv_dbg_cover
 	$(SBY) -f clkdiv_gap.sby prove -d build/clkdiv_gap
 	$(SBY) -f clkdiv_d1.sby prove -d build/clkdiv_d1
+	$(SBY) -f clkdiv_d5.sby d5_1_0 -d build/d5_1_0
+	# d5_1_255 (about 23 minutes, 1.2 GB) is run by hand with `make -C formal d5_slow`.
 	$(SBY) -f clkdiv.sby bmc_1_255 -d build/clkdiv_bmc_1_255
 	$(SBY) -f clkdiv.sby cover_1_0 -d build/clkdiv_cover_1_0
 	$(SBY) -f clkdiv.sby cover_1_255 -d build/clkdiv_cover_1_255
-	# Block 2 FIFO join: flags by k-induction, covers, tracked token.
+	# Block 2 FIFO join: flags, reset state and mid-run reset by k-induction; the tracked
+	# token, unbounded, k = 2, on the debug netlist; covers.
 	$(SBY) -f fifo_join.sby flags_prove -d build/fj_flags
 	$(SBY) -f fifo_join.sby cover_all -d build/fj_cover_all
-	$(SBY) -f fifo_join.sby token_bmc -d build/fj_token_bmc
+	$(SBY) -f fifo_join_ind.sby prove -d build/fj_ind
 
 # The decoder: exhaustive Cyclesim test (dune test), then the generated Verilog through
 # Verilator on the same table, then the decoder's own kill-checks.

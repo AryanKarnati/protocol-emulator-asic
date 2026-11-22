@@ -1,3 +1,4 @@
+// Written by the checker (the checker's harness, copied into formal/ unchanged; credited in PROPERTIES.md).
 // Formal harness for fifo_join (the TX and RX FIFOs of one SM with FIFO join).
 //
 // Sources: docs/engine.md section 2 (capacities), section 3 (fifo_join ports and the
@@ -23,7 +24,8 @@ module fifo_join_harness (input clk);
   // Reset: rst_n is low in the first step only, then high for the rest of the run.
   reg started = 1'b0;
   always @(posedge clk) started <= 1'b1;
-  wire rst_n = started;
+  (* anyseq *) wire rst_req;
+  wire rst_n = started && !rst_req;
 
   (* anyseq *) wire host_tx_push;
   (* anyseq *) wire [31:0] host_tx_data;
@@ -140,9 +142,12 @@ module fifo_join_harness (input clk);
 `endif
   end
 
-  // Properties. Checked from the first step after reset.
+  // R1 (outside the gate below): while rst_n is low both FIFOs read empty, level 0.
+  always @(*) if (!rst_n) assert (tx_level == 4'd0 && rx_level == 4'd0 && tx_empty && rx_empty);
+
+  // Properties. Checked while rst_n is high (the counters reset at the edge, the DUT at once).
   always @(*) begin
-    if (started) begin
+    if (started && rst_n) begin
       // P1. Each LEVEL is the accepted pushes minus the accepted pops since the last flush
       //     (the counters are exact: LEVEL is at most 8 and they are compared mod 16).
       assert (tx_level == tx_np[3:0] - tx_nq[3:0]);
