@@ -1,0 +1,120 @@
+; V1 capture programs (DESIGN.md §17 V1; sw/pgsim/README.md "V1: what the silicon capture must settle").
+; Each .program is one item. Configs are in the matching *.config.json, notes in README.md.
+; Assemble with the official tool: pioasm -o json v1_items.pio v1_items.pioasm.json
+
+; ---- a. IN with autopush into a full RX FIFO. Pin 1 is host-driven (gpio action).
+.program v1_a_autopush
+.wrap_target
+    in pins, 1          ; pushes 1..4 fill the 4-deep RX FIFO of the program SM
+    in pins, 1
+    in pins, 1
+    in pins, 1
+    in pins, 1          ; push 5: RX full, autopush stalls until the host reads RX
+    set pins, 1         ; marker on pin 2 after the stall
+    wait 1 irq 0        ; halt
+.wrap
+
+; ---- b. PULL under autopull, OSR with 1 bit shifted out (count 1, not empty).
+;      Contract R4 (docs/engine.md): PULL is a no-op only when the OSR is FULL (count 0), so
+;      here the second PULL should take TX word 1. Old block 1 pgsim (ambiguity 3) says no-op.
+;      The capture decides which one silicon does.
+.program v1_b_pull_autopull
+.wrap_target
+    pull block          ; loads TX word 0 (0x00000002)
+    out pins, 1         ; shifts bit 0 (0)
+    pull block          ; count 1: R4 says TX word 1 is taken; old block 1 pgsim says no-op
+    out pins, 1         ; R4: bit 0 of word 1 (0); old pgsim: bit 1 of word 0 (1)
+    out pins, 1
+    out pins, 1
+    out pins, 1
+    wait 1 irq 0        ; halt
+.wrap
+
+; ---- b2. PULL under autopull with count 0 (nothing shifted yet).
+;      Three rules, five pin bits each (see silicon-ref/v1/README.md, "b and b2"):
+;        R4 (no-op only at count 0)            : 0,1,0,1,0
+;        old pgsim (no-op while count < thresh) : 0,1,0,1,0
+;        PULL always consumes                   : 1,1,1,1,1
+;      Word 0 = 0x0000000A (bits 0..4 = 0,1,0,1,0), word 1 = 0x0000001F (all ones).
+.program v1_b2_pull_full
+.wrap_target
+    pull block          ; loads TX word 0 (0x0000000A: bits 0..4 = 0,1,0,1,0)
+    pull block          ; count 0: R4 and old pgsim: no-op; always-consume: takes TX word 1 (0x0000001F)
+    out pins, 1
+    out pins, 1
+    out pins, 1
+    out pins, 1
+    out pins, 1
+    wait 1 irq 0        ; halt
+.wrap
+
+; ---- c. First OUT after reset with autopull and one TX word.
+.program v1_c_first_out
+.wrap_target
+    out pins, 1         ; OSR count is 32 after reset: does this stall once?
+.wrap
+
+; ---- d. WAIT on an IRQ flag set one cycle earlier (same SM, see README: cross-SM not done).
+.program v1_d_irq_wait
+.wrap_target
+    irq clear 0         ; flag starts clear each round
+    set pins, 0         ; marker: pin 0 low
+    irq set 0           ; raise the flag at cycle t
+    wait 1 irq 0        ; model: passes at t+1 (set visible one cycle later)
+    set pins, 1         ; marker: pin 0 high at t+2 (model)
+.wrap
+
+; ---- e. Calibration: a square wave on pin 0, 8 cycles high and 8 low.
+.program v1_e_calib
+.wrap_target
+    set pins, 1 [7]
+    set pins, 0 [7]
+.wrap
+
+; ---- g. Divider phase after restart with a fractional divisor (2.5 at clkdiv (2,128)).
+.program v1_g_frac_div
+.wrap_target
+    set pins, 1         ; pin 0 toggles on every PIO tick, so the edges are the tick times
+    set pins, 0
+.wrap
+
+; ---- f. Forced instructions. set pins with set count 2: pin 0 = bit 0, pin 1 = bit 1.
+;      The program writes pin 1 low on every instruction, so pin 1 marks each program tick.
+.program v1_f_delay
+.wrap_target
+    set pins, 1 [31]   ; pin 0 = 1, pin 1 = 0
+    set pins, 0 [31]
+.wrap
+
+.program v1_f_sideset
+.side_set 1 opt
+.wrap_target
+    set pins, 0 side 0   ; pin 0 low, pin 1 low
+    wait 1 pin 5 side 1  ; stall until host raises pin 5; side-set pin 0 high on first attempt
+    set pins, 0          ; pin 1 low when the wait completes
+.wrap
+
+.program v1_f_irq_wait
+.wrap_target
+    set pins, 0         ; pin 1 low
+    wait 1 irq 0        ; host forces `set pins, 2` (pin 1 high) and then `irq set 0`
+    set pins, 0         ; pin 1 low when the wait completes: the wait survived if this comes late
+.wrap
+
+; ---- h. Blocking PULL stalled on an empty TX FIFO; the host writes TX (not observable on pins).
+.program v1_h_pull_stall
+.wrap_target
+    pull block
+    set pins, 1         ; marker: pin 0 high when the PULL completes
+    set pins, 0
+.wrap
+
+; ---- i. OUT_STICKY. out pin 0 = 1, then a stalled wait sets side-set pin 0 low on its first attempt.
+.program v1_i_out_sticky
+.side_set 1 opt
+.wrap_target
+    pull block
+    out pins, 1         ; pin 0 = last OUT value 1
+    wait 1 pin 5 side 0 ; stall (pin 5 held low); side-set pin 0 low on the first attempt only
+    set pins, 1
+.wrap
