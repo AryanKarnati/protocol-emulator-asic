@@ -419,6 +419,8 @@ let create (scope : Scope.t) (i : _ I.t) =
   let pin_mask = rotl_var (thermo32 pin_count) pin_base -- "pin_mask" in
   let pin_val = (rotl_var pin_data pin_base &: pin_mask) -- "pin_val" in
   let m_of f m = repeat f 32 &: m in
+  (* A completed pin write replaces the OUT_STICKY record even when its pin count is 0
+     (the record is then empty). *)
   let lvl_write_now = (out_pins |: mov_pins |: set_pins) -- "lvl_write_now" in
   let lvl_new_mask = m_of lvl_write_now pin_mask -- "lvl_new_mask" in
   let lvl_new_val = m_of lvl_write_now pin_val -- "lvl_new_val" in

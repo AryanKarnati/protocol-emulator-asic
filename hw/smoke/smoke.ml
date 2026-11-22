@@ -1624,7 +1624,67 @@ let side_level_disjoint () =
     ()
 ;;
 
+(* ---------- 15. Round 6: a completed pin write with pin count 0 replaces the OUT_STICKY
+   record, leaving it empty (contract, main 2dc00c7). ---------- *)
+
+(* Shared set-up. SM0 (lower): sticky on, pin 0 is the OUT pin. SM1 (higher) lowers pin 0
+   once: it runs JMP 9 with side-set 0 on pin 0 (side enable on) at address 8, then JMP 9
+   without side-set. Side-set never touches the record. SM1 is enabled in c4, so its side-set
+   is visible from c5. The record decides what SM0 re-asserts afterwards. *)
+let zero_count_setup ~sm0_prog ~sm0_pinctrl =
+  let tb = make ~num_sms:2 in
+  List.iteri (fun a w -> load_imem tb a w) sm0_prog;
+  load_imem tb 8 0x1009 (* JMP 9, side 0 (enable set) *);
+  load_imem tb 9 0x0009 (* JMP 9, no side-set *);
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:(execctrl_default lor (1 lsl 17))
+    ~shiftctrl:shiftctrl_default ~pinctrl_v:sm0_pinctrl;
+  configure tb ~sm:1 ~clkdiv:clkdiv_1 ~execctrl:(execctrl_default lor (1 lsl 30))
+    ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ~set_count:0 ~sideset_count:2 ~sideset_base:0 ());
+  force_jmp tb ~sm:1 ~addr:8;
+  tb
+
+(* A: MOV PINS,~OSR (OUT_COUNT 1) in c0 records pin 0 = 1. SET PINDIRS,31 with SET_COUNT 0
+   in c1 is a completed pin write with no pins, so it replaces the record with an empty one.
+   SM1 lowers pin 0 in c4. Nothing is re-asserted afterwards, so pin 0 stays 0 from c5. (With
+   the record kept, SM0 would re-assert 1 from c6.) *)
+let zero_count_set_pindirs () =
+  let tb =
+    zero_count_setup
+      ~sm0_prog:[ 0xA00F (* MOV PINS,~OSR *); 0xE09F (* SET PINDIRS,31 *); 0x0002 (* JMP 2 *) ]
+      ~sm0_pinctrl:(pinctrl ~out_count:1 ~set_count:0 ())
+  in
+  run tb 8
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      if c = 4 then set tb "sm_enable" 3)
+    ~check:(fun c () ->
+      check_arr "zero SET pin0" tb ~name:"pins_out" ~mask:1 [| 0; 1; 1; 1; 1; 0; 0; 0 |] c)
+    ()
+;;
+
+(* B: the same with OUT PINS,1 and OUT_COUNT 0. MOV PINS,~OSR (OUT_COUNT 1) records pin 0 = 1
+   in c0. OUT_COUNT is then changed to 0 (a level input, so it applies in c1). OUT PINS,1 in c1
+   is a completed pin write with no pins: the record is empty. Pin 0 stays 0 from c5 as in A. *)
+let zero_count_out_pins () =
+  let tb =
+    zero_count_setup
+      ~sm0_prog:[ 0xA00F; 0x6001 (* OUT PINS,1 *); 0x0002 ]
+      ~sm0_pinctrl:(pinctrl ~out_count:1 ())
+  in
+  run tb 8
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      if c = 1 then set tb "pinctrl0" (pinctrl ~out_count:0 ());
+      if c = 4 then set tb "sm_enable" 3)
+    ~check:(fun c () ->
+      check_arr "zero OUT pin0" tb ~name:"pins_out" ~mask:1 [| 0; 1; 1; 1; 1; 0; 0; 0 |] c)
+    ()
+;;
+
 let () =
+  zero_count_set_pindirs ();
+  zero_count_out_pins ();
   f7_irq_wait_rewritten ();
   f7_wait_rewritten ();
   f7_other_address ();
