@@ -88,7 +88,7 @@ Ports exist for 4 SMs whatever `num_sms` is. For an SM `i ≥ num_sms` there is 
 | `dbg_exec_stalled0`…`3` | 1 | EXECCTRL.EXEC_STALLED (§6, F4) |
 | `dbg_phase0`…`3` | 25 | Clock divider phase register, in units of 1/256 cycle (§6, R10) |
 
-A FIFO that is disabled because the other one is joined (datasheet §3.7 FJOIN) has capacity 0. It reads as both full and empty, with level 0.
+A FIFO that is disabled because the other one is joined (datasheet §3.7 FJOIN) has capacity 0. It reads as both full and empty, with level 0. Capacity is always a function of the FJOIN inputs in the current cycle. It is not state, and reset does not change it.
 
 For an SM `i ≥ num_sms`, every bit that belongs to it in `fstat`, `flevel` and `fdebug` is 0. So is each of its `dbg_*` outputs.
 
@@ -122,6 +122,8 @@ The equivalence holds for every 16-bit word and every valid side-set configurati
 ## 5. Cycle conventions
 
 **Numbering.** Cycle 0 is the first cycle in which `rst_n` is high.
+
+**Reset in simulation.** Hardcaml's Cyclesim does not apply the asynchronous `rst_n` at clock edges. It resets registers only through `Cyclesim.reset`. So the lockstep harness resets the RTL with `Cyclesim.reset` and resets `pgsim` at the same point, and the path through the `rst_n` pin is checked in Verilog simulation. During `rst_n` low the outputs are not compared.
 
 - During cycle k, the register outputs hold the state after k clock edges since reset. That is `pgsim`'s state after k calls to `step`.
 - Every register resets to the value in §6, R0.
@@ -177,7 +179,7 @@ Each ruling cites the datasheet text it settles. Items marked V1 are to be check
 - Across SMs, the highest-numbered SM wins.
 - A pin nobody writes keeps its value.
 
-**OUT_STICKY.** With OUT_STICKY set, an enabled SM re-asserts its most recent OUT, SET or MOV pin write in every cycle in which it makes no new one (datasheet §3.7: "the most recent OUT/SET"). The record is one write, whether to levels or to directions, kept as masks. A new write replaces the whole record. So a `set pindirs` after an `out pins` leaves only the direction write sticky. It stops on SM_RESTART, and is not asserted while the SM is disabled. Writes by forced instructions count as new writes, and are recorded whether or not the SM is enabled. **V1 item i.**
+**OUT_STICKY.** With OUT_STICKY set, an enabled SM re-asserts its most recent OUT, SET or MOV pin write in every cycle in which it makes no new one (datasheet §3.7: "the most recent OUT/SET"). The record is one write, whether to levels or to directions, kept as masks. A new write replaces the whole record. So a `set pindirs` after an `out pins` leaves only the direction write sticky. Side-set writes are not OUT, SET or MOV writes. They never change the record. The re-asserted record counts as an OUT/SET/MOV write for R2, so a side-set write to the same pin in the same cycle beats it. It stops on SM_RESTART, and is not asserted while the SM is disabled. Writes by forced instructions count as new writes, and are recorded whether or not the SM is enabled. **V1 item i.**
 
 **R3. `!OSRE`** is true when OSR count < PULL_THRESH (datasheet §3.4.2.2). A threshold field of 0 means 32, for both thresholds.
 
@@ -231,6 +233,7 @@ Each ruling cites the datasheet text it settles. Items marked V1 are to be check
   - The codes are in DESIGN §7. Codes 1 to 3 also cover the autopush and autopull stalls in R5 and R6.
 - **F4. `EXEC_STALLED`** is 1 while a forced (INSTR) instruction is latched and its latest attempt stalled. It is 0 for EXEC-latched instructions.
 - **F6. Abandoning the IMEM instruction.** Suppose a latched instruction (forced or EXEC) writes the PC: a taken JMP, OUT PC or MOV PC. Then the IMEM instruction that was in progress is abandoned. At the end of that cycle its side-set-done flag, its IRQ wait state and the IMEM stall reason are cleared, so the instruction at the new PC starts fresh. The delay counter is not touched (F1). This is how host code breaks an SM out of a stalled `wait` or `pull` with a forced `jmp`. **V1 item f.**
+- **F7. Rewriting the word at the PC.** An IMEM write (H9) to the address equal to an SM's PC abandons that SM's IMEM instruction as in F6. At the end of the write cycle its side-set-done flag, its IRQ wait state and the IMEM stall reason are cleared. This overrides anything the SM's own attempt in that cycle did to those three items. The SM then attempts the new word fresh. The address is compared with the PC at the start of the cycle, the delay counter is untouched, and the written value does not matter. Programs never rewrite a running instruction. The rule only makes the behaviour defined.
 - **F5. IRQ wait states.** IMEM and latched instructions each have their own IRQ wait state, so a forced IRQ never takes over the wait of an IMEM IRQ instruction. Completing a latched instruction, or a new INSTR write, clears the latched one.
 
 **Delay counter.** When an instruction completes on a tick with delay d, `DBG_CNT.delay` becomes d. Each later enabled tick with delay > 0 decrements it and executes nothing else. The next instruction is attempted on the first enabled tick on which delay is 0.
