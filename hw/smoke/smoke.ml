@@ -595,6 +595,409 @@ let autopull_out () =
     ()
 ;;
 
+(* ---------- 11. Further cases (engine.md R2, R4, R6, F6, H3, OUT_STICKY, MOV, FIFO) ---------- *)
+
+(* Forced JMP to [addr] on a disabled SM, then one idle cycle, so that pc is [addr] from the
+   next cycle (F1). *)
+(* Two idle cycles, so that the input synchronisers hold the pin levels set so far. *)
+let preload tb =
+  cyc tb ();
+  cyc tb ()
+;;
+
+let force_jmp tb ~sm ~addr =
+  cyc tb
+    ~f:(fun () ->
+      set tb "instr_write" 1;
+      set tb "instr_sm" sm;
+      set tb "instr_data" addr)
+    ();
+  cyc tb ()
+;;
+
+let cfg_all tb ~sms ~execctrl ~shiftctrl ~pinctrl_v =
+  List.iter
+    (fun sm ->
+      configure tb ~sm ~clkdiv:clkdiv_1 ~execctrl ~shiftctrl ~pinctrl_v)
+    sms
+;;
+
+let check_arr what tb ~name ~mask arr c =
+  if c < Array.length arr then expect what ~cyc:c (get tb name land mask) arr.(c)
+;;
+
+(* IRQ with REL (R14): flag = (index & 4) | ((index + sm) & 3). IRQ set 4 REL (0xC014).
+   SM0 sets flag 4 (bit 4, 0x10); SM1 sets flag 5 (bit 5, 0x20). Both at pc 0 in c0. *)
+let irq_rel () =
+  let tb = make ~num_sms:2 in
+  load_imem tb 0 0xC014;
+  load_imem tb 1 0x0001;
+  cfg_all tb ~sms:[ 0; 1 ] ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  let want = [| 0; 0x30; 0x30; 0x30 |] in
+  run tb 4
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 3)
+    ~check:(fun c () -> check_arr "irq_rel irq" tb ~name:"irq" ~mask:0xFF want c)
+    ()
+;;
+
+(* OUT_STICKY, one record (datasheet 3.7 "the most recent OUT/SET"). SM1 (higher) sets
+   pin 0 direction to 1 in c0 and then loops, so its record is a direction write and
+   re-asserts pin 0 direction = 1 each cycle. SM0 loops on SET PINDIRS,0 (writes at even
+   cycles), but SM1 wins. In c5 the host forces SET PINS,1 on SM1, which is a new level
+   write: it replaces the record, so direction is no longer sticky. SM0's next direction
+   write (c6) then takes effect, and pin 0 is driven high by the sticky level.
+   pins_oe: c0 0, c1..c6 1, c7 on 0. pins_out: 0 until c6, 1 from c7. *)
+let sticky_one_record () =
+  let tb = make ~num_sms:2 in
+  load_imem tb 0 0xE080 (* SET PINDIRS,0 *);
+  load_imem tb 1 0x0000 (* JMP 0 *);
+  load_imem tb 8 0xE081 (* SET PINDIRS,1 *);
+  load_imem tb 9 0x0009 (* JMP 9 *);
+  let execctrl = execctrl_default lor (1 lsl 17) in
+  cfg_all tb ~sms:[ 0; 1 ] ~execctrl ~shiftctrl:shiftctrl_default ~pinctrl_v:(pinctrl ());
+  force_jmp tb ~sm:1 ~addr:8;
+  let want_oe = [| 0; 1; 1; 1; 1; 1; 1; 0; 0; 0 |] in
+  let want_out = [| 0; 0; 0; 0; 0; 0; 0; 1; 1; 1 |] in
+  run tb 10
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 3;
+      if c = 5
+      then (
+        set tb "instr_write" 1;
+        set tb "instr_sm" 1;
+        set tb "instr_data" 0xE001))
+    ~check:(fun c () ->
+      check_arr "sticky pins_oe" tb ~name:"pins_oe" ~mask:1 want_oe c;
+      check_arr "sticky pins_out" tb ~name:"pins_out" ~mask:1 want_out c)
+    ()
+;;
+
+(* MOV (datasheet 3.4.8.2), one SM, enabled in c0. STATUS_N 1 with TXLEVEL.
+     0 SET X,5           1 MOV Y,~X         2 MOV ISR,::X     3 MOV OSR,Y
+     4 MOV X,STATUS      5 PULL block      6 MOV EXEC,OSR    7 JMP 7
+   The host pushes 0xE001 in c4, so TX is empty in c4 (STATUS is all ones) and the PULL
+   in c5 gets it. MOV EXEC in c6 latches SET PINS,1, which runs in c7 and drives pin 0 from
+   c8. Writes made in cycle k show from k+1. *)
+let mov_ops () =
+  let tb = make ~num_sms:1 in
+  List.iteri
+    (fun a w -> load_imem tb a w)
+    [ 0xE025; 0xA049; 0xA0D1; 0xA0E2; 0xA025; 0x80A0; 0xA087; 0x0007 ];
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:(execctrl_default lor 1)
+    ~shiftctrl:shiftctrl_default ~pinctrl_v:(pinctrl ());
+  let want_pc = [| 0; 1; 2; 3; 4; 5; 6; 7; 7; 7 |] in
+  let want_x = [| 0; 5; 5; 5; 5; 0xFFFFFFFF; 0xFFFFFFFF; 0xFFFFFFFF; 0xFFFFFFFF; 0xFFFFFFFF |] in
+  let want_y = Array.init 10 (fun c -> if c >= 2 then 0xFFFFFFFA else 0) in
+  let want_isr = Array.init 10 (fun c -> if c >= 3 then 0xA0000000 else 0) in
+  let want_osr = [| 0; 0; 0; 0; 0xFFFFFFFA; 0xFFFFFFFA; 0xE001; 0xE001; 0xE001; 0xE001 |] in
+  let want_out = [| 0; 0; 0; 0; 0; 0; 0; 0; 1; 1 |] in
+  run tb 10
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      if c = 4
+      then (
+        set tb "txf_push" 1;
+        set tb "txf_data" 0xE001))
+    ~check:(fun c () ->
+      check_arr "mov pc" tb ~name:"dbg_pc0" ~mask:31 want_pc c;
+      check_arr "mov X" tb ~name:"dbg_x0" ~mask:0xFFFFFFFF want_x c;
+      check_arr "mov Y" tb ~name:"dbg_y0" ~mask:0xFFFFFFFF want_y c;
+      check_arr "mov ISR" tb ~name:"dbg_isr0" ~mask:0xFFFFFFFF want_isr c;
+      check_arr "mov OSR" tb ~name:"dbg_osr0" ~mask:0xFFFFFFFF want_osr c;
+      check_arr "mov pins_out" tb ~name:"pins_out" ~mask:1 want_out c)
+    ()
+;;
+
+(* IN with autopush on a full RX FIFO (R6). Threshold 8, pins 0x5A, all synchronisers
+   bypassed. IN PINS,8 pushes its word at c0 to c3, which fills the RX FIFO. In c4 the
+   next IN would reach the threshold with RX full: it stalls with reason 2, RXSTALL, and no
+   shift (ISR stays 0). The host pops in c7. The stalled IN completes in c8 (RX has space
+   from c8), so pc is 1 from c9. *)
+let in_autopush_stall () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0x4008 (* IN PINS,8 *);
+  set tb "pins_in" 0x5A;
+  set tb "sync_bypass" 0xFFFF_FFFF;
+  preload tb;
+  (* execctrl 0: wrap top and bottom both 0, so pc stays 0 and the IN repeats. *)
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:0
+    ~shiftctrl:(shiftctrl_default lor (1 lsl 16) lor (8 lsl 20)) ~pinctrl_v:(pinctrl ());
+  let want_stall = [| 0; 0; 0; 0; 0; 2; 2; 2; 2 |] in
+  let want_rxstall = Array.init 9 (fun c -> if c >= 5 then 1 else 0) in
+  let want_rxlevel = [| 0; 1; 2; 3; 4; 4; 4; 4; 3 |] in
+  run tb 9
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      if c = 7
+      then (
+        set tb "rxf_pop" 1;
+        set tb "rxf_sm" 0))
+    ~check:(fun c () ->
+      check_arr "autopush pc" tb ~name:"dbg_pc0" ~mask:31 (Array.make 9 0) c;
+      check_arr "autopush stall reason" tb ~name:"dbg_cnt0" ~mask:0x0F00_0000
+        (Array.map (fun r -> r lsl 24) want_stall) c;
+      check_arr "autopush RXSTALL" tb ~name:"fdebug" ~mask:1 want_rxstall c;
+      check_arr "autopush rx level" tb ~name:"flevel" ~mask:0xF0
+        (Array.map (fun l -> l lsl 4) want_rxlevel) c;
+      check_arr "autopush isr" tb ~name:"dbg_isr0" ~mask:0xFFFFFFFF (Array.make 9 0) c;
+      if c = 7 then expect "autopush popped word" ~cyc:c (get tb "rxf_data") 0x5A00_0000)
+    ()
+;;
+
+(* PUSH IFFULL (datasheet 3.4.6.2): a no-op below the threshold, a push at it. Threshold 8,
+   pins 0xF. c0 IN PINS,4: ISR 0xF0000000, count 4. c1 PUSH IFFULL is a no-op (count 4 < 8).
+   c2 IN PINS,4: ISR 0xFF000000, count 8. c3 PUSH IFFULL pushes it and clears ISR. *)
+let push_iffull () =
+  let tb = make ~num_sms:1 in
+  List.iteri (fun a w -> load_imem tb a w)
+    [ 0x4004 (* IN PINS,4 *); 0x8060 (* PUSH IFFULL block *); 0x4004; 0x8060; 0x0004 (* JMP 4 *) ];
+  set tb "pins_in" 0xF;
+  set tb "sync_bypass" 0xFFFF_FFFF;
+  preload tb;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default
+    ~shiftctrl:(shiftctrl_default lor (8 lsl 20)) ~pinctrl_v:(pinctrl ());
+  let want_pc = [| 0; 1; 2; 3; 4 |] in
+  let want_isr = [| 0; 0xF000_0000; 0xF000_0000; 0xFF00_0000; 0 |] in
+  let want_cnt = [| 0; 4; 4; 8; 0 |] in
+  let want_empty = [| 1; 1; 1; 1; 0 |] in
+  run tb 5
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      if c = 4
+      then (
+        set tb "rxf_pop" 1;
+        set tb "rxf_sm" 0))
+    ~check:(fun c () ->
+      check_arr "iffull pc" tb ~name:"dbg_pc0" ~mask:31 want_pc c;
+      check_arr "iffull isr" tb ~name:"dbg_isr0" ~mask:0xFFFFFFFF want_isr c;
+      check_arr "iffull isr count" tb ~name:"dbg_cnt0" ~mask:63 want_cnt c;
+      check_arr "iffull RXEMPTY" tb ~name:"fstat" ~mask:0x100 (Array.map (fun e -> e * 0x100) want_empty) c;
+      if c = 4 then expect "iffull popped word" ~cyc:c (get tb "rxf_data") 0xFF00_0000)
+    ()
+;;
+
+(* PUSH noblock into a full RX FIFO (datasheet 3.4.6.2, R7). IN PINS,1 with pin 0 high
+   gives ISR 0x80000000 in one bit, and PUSH noblock pushes it each time. Pushes at c1, c3,
+   c5, c7 fill RX. The push at c9 is into a full FIFO: the data is dropped, RXSTALL is set,
+   and ISR is cleared. The program wraps between 0 and 1. *)
+let push_noblock () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0x4001 (* IN PINS,1 *);
+  load_imem tb 1 0x8000 (* PUSH noblock *);
+  set tb "pins_in" 1;
+  set tb "sync_bypass" 0xFFFF_FFFF;
+  preload tb;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:0x0000_1000 (* wrap top 1, bottom 0 *)
+    ~shiftctrl:shiftctrl_default ~pinctrl_v:(pinctrl ());
+  let want_pc = Array.init 11 (fun c -> c land 1) in
+  let want_rx = [| 0; 0; 1; 1; 2; 2; 3; 3; 4; 4; 4 |] in
+  let want_rxstall = Array.init 11 (fun c -> if c >= 10 then 1 else 0) in
+  let want_isr = Array.init 11 (fun c -> if c land 1 = 1 && c <= 9 then 0x8000_0000 else 0) in
+  run tb 11
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 1)
+    ~check:(fun c () ->
+      check_arr "noblock pc" tb ~name:"dbg_pc0" ~mask:31 want_pc c;
+      check_arr "noblock rx level" tb ~name:"flevel" ~mask:0xF0 (Array.map (fun l -> l lsl 4) want_rx) c;
+      check_arr "noblock RXSTALL" tb ~name:"fdebug" ~mask:1 want_rxstall c;
+      check_arr "noblock isr" tb ~name:"dbg_isr0" ~mask:0xFFFFFFFF want_isr c)
+    ()
+;;
+
+(* SM_RESTART (H3). IMEM: SET X,7; IN PINS,4 (pins 0xF); JMP 2. Restart in c5 clears ISR
+   and its count; PC and X keep their values, and the OSR count is back at 32. *)
+let sm_restart () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0xE027 (* SET X,7 *);
+  load_imem tb 1 0x4004 (* IN PINS,4 *);
+  load_imem tb 2 0x0002 (* JMP 2 *);
+  set tb "pins_in" 0xF;
+  set tb "sync_bypass" 0xFFFF_FFFF;
+  preload tb;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default
+    ~shiftctrl:shiftctrl_default ~pinctrl_v:(pinctrl ());
+  let want_pc = [| 0; 1; 2; 2; 2; 2; 2 |] in
+  let want_isr = [| 0; 0; 0xF000_0000; 0xF000_0000; 0xF000_0000; 0xF000_0000; 0 |] in
+  let want_cnt = [| 0; 0; 4; 4; 4; 4; 0 |] in
+  let want_x = [| 0; 7; 7; 7; 7; 7; 7 |] in
+  run tb 7
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      if c = 5 then set tb "sm_restart" 1)
+    ~check:(fun c () ->
+      check_arr "restart pc" tb ~name:"dbg_pc0" ~mask:31 want_pc c;
+      check_arr "restart isr" tb ~name:"dbg_isr0" ~mask:0xFFFFFFFF want_isr c;
+      check_arr "restart isr count" tb ~name:"dbg_cnt0" ~mask:63 want_cnt c;
+      check_arr "restart X" tb ~name:"dbg_x0" ~mask:0xFFFFFFFF want_x c;
+      check_arr "restart osr count" tb ~name:"dbg_cnt0" ~mask:0x3F00 (Array.make 7 0x2000) c)
+    ()
+;;
+
+(* Shifting left (IN_SHIFTDIR and OUT_SHIFTDIR 0). IN part: pins 0x5, IN PINS,4 twice:
+   ISR 0x5 then 0x55. OUT part: PULL 0x12345678, OUT X,8 twice. The OUT takes the top 8
+   bits, so X becomes 0x12 then 0x34, and OSR shifts left, count 8 then 16. *)
+let shift_left () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0x4004;
+  load_imem tb 1 0x4004;
+  load_imem tb 2 0x0002;
+  set tb "pins_in" 0x5;
+  set tb "sync_bypass" 0xFFFF_FFFF;
+  preload tb;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:0
+    ~pinctrl_v:(pinctrl ());
+  run tb 4
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 1)
+    ~check:(fun c () ->
+      check_arr "shl isr" tb ~name:"dbg_isr0" ~mask:0xFFFFFFFF [| 0; 5; 0x55; 0x55 |] c;
+      check_arr "shl isr count" tb ~name:"dbg_cnt0" ~mask:63 [| 0; 4; 8; 8 |] c)
+    ()
+;;
+
+let out_shift_left () =
+  let tb = make ~num_sms:1 in
+  List.iteri (fun a w -> load_imem tb a w)
+    [ 0x80A0 (* PULL block *); 0x6028 (* OUT X,8 *); 0x6028; 0x0003 (* JMP 3 *) ];
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:0
+    ~pinctrl_v:(pinctrl ());
+  run tb 5
+    ~f:(fun c () ->
+      if c = 0
+      then (
+        set tb "sm_enable" 1;
+        set tb "txf_push" 1;
+        set tb "txf_data" 0x1234_5678))
+    ~check:(fun c () ->
+      check_arr "oshl pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 0; 1; 2; 3 |] c;
+      check_arr "oshl X" tb ~name:"dbg_x0" ~mask:0xFFFFFFFF [| 0; 0; 0; 0x12; 0x34 |] c;
+      check_arr "oshl OSR" tb ~name:"dbg_osr0" ~mask:0xFFFFFFFF
+        [| 0; 0; 0x1234_5678; 0x3456_7800; 0x5678_0000 |] c;
+      check_arr "oshl OSR count" tb ~name:"dbg_cnt0" ~mask:0x3F00
+        (Array.map (fun n -> n lsl 8) [| 32; 32; 0; 8; 16 |]) c)
+    ()
+;;
+
+(* Pin priority (R2): both engines write pin 0 level in c0. SM0 sets 1, SM1 (higher) sets
+   0. The pin reads 0 from c1 on and stays there. *)
+let pin_priority () =
+  let tb = make ~num_sms:2 in
+  load_imem tb 0 0xE001 (* SET PINS,1 *);
+  load_imem tb 1 0x0001;
+  load_imem tb 8 0xE000 (* SET PINS,0 *);
+  load_imem tb 9 0x0009;
+  cfg_all tb ~sms:[ 0; 1 ] ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  force_jmp tb ~sm:1 ~addr:8;
+  run tb 4
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 3)
+    ~check:(fun c () -> check_arr "priority pins_out" tb ~name:"pins_out" ~mask:1 [| 0; 0; 0; 0 |] c)
+    ()
+;;
+
+(* F6 (engine.md). Side-set on pin 5 (SIDESET_COUNT 1 at base 5). IMEM 0: PULL block side 1
+   (stalls, TX empty). IMEM 5: SET PINS,1 side 0. In c2 the host forces JMP 5 with side 1
+   (0x1005). The forced JMP runs in c3 and abandons the PULL: its stall reason and side-set
+   flag are cleared at the end of c3. So IMEM 5 side-sets pin 5 to 0 in c4, which
+   it would not do if the old flag were still set. *)
+let f6_abandon () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0x90A0 (* PULL block side 1 *);
+  load_imem tb 5 0xE001 (* SET PINS,1 side 0 *);
+  load_imem tb 6 0x0006 (* JMP 6 *);
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ~sideset_count:1 ~sideset_base:5 ());
+  let want_pc = [| 0; 0; 0; 0; 5; 6; 6 |] in
+  let want_stall = [| 0; 1; 1; 1; 0; 0; 0 |] in
+  let want_p5 = [| 0; 1; 1; 1; 1; 0; 0 |] in
+  let want_p0 = [| 0; 0; 0; 0; 0; 1; 1 |] in
+  run tb 7
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      if c = 2
+      then (
+        set tb "instr_write" 1;
+        set tb "instr_sm" 0;
+        set tb "instr_data" 0x1005))
+    ~check:(fun c () ->
+      check_arr "f6 pc" tb ~name:"dbg_pc0" ~mask:31 want_pc c;
+      check_arr "f6 stall reason" tb ~name:"dbg_cnt0" ~mask:0x0F00_0000
+        (Array.map (fun r -> r lsl 24) want_stall) c;
+      check_arr "f6 pin5" tb ~name:"pins_out" ~mask:0x20 (Array.map (fun b -> b * 0x20) want_p5) c;
+      check_arr "f6 pin0" tb ~name:"pins_out" ~mask:1 want_p0 c)
+    ()
+;;
+
+(* PULL under autopull (R4, changed). OSR count 32 at reset. PULL loads W1 (count 0). OUT
+   X,8 shifts it to count 8. The next PULL: count is not 0, so it is not a no-op: it loads
+   W2 at once. Under the old rule it would have been a no-op and OUT would have read W1. *)
+let pull_r4 () =
+  let tb = make ~num_sms:1 in
+  List.iteri (fun a w -> load_imem tb a w)
+    [ 0x80A0 (* PULL block *); 0x6028 (* OUT X,8 *); 0x80A0; 0x6028; 0x0004 (* JMP 4 *) ];
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default
+    ~shiftctrl:(shiftctrl_default lor (1 lsl 17)) ~pinctrl_v:(pinctrl ());
+  run tb 6
+    ~f:(fun c () ->
+      if c = 0
+      then (
+        set tb "sm_enable" 1;
+        set tb "txf_push" 1;
+        set tb "txf_data" 0x1111_1111)
+      else if c = 1
+      then (
+        set tb "txf_push" 1;
+        set tb "txf_data" 0x2222_2222))
+    ~check:(fun c () ->
+      check_arr "r4 pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 0; 1; 2; 3; 4 |] c;
+      check_arr "r4 X" tb ~name:"dbg_x0" ~mask:0xFFFFFFFF [| 0; 0; 0; 0x11; 0x11; 0x22 |] c;
+      check_arr "r4 OSR" tb ~name:"dbg_osr0" ~mask:0xFFFFFFFF
+        [| 0; 0; 0x1111_1111; 0x0011_1111; 0x2222_2222; 0x0022_2222 |] c;
+      check_arr "r4 OSR count" tb ~name:"dbg_cnt0" ~mask:0x3F00
+        (Array.map (fun n -> n lsl 8) [| 32; 32; 0; 8; 0; 8 |]) c)
+    ()
+;;
+
+(* Absent engines (num_sms 1): host operations aimed at engines 1 to 3 do nothing, and
+   every bit that belongs to them reads 0 (engine.md section 3, clarification). *)
+let absent_engines () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0x0000;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  let dbg =
+    List.concat_map
+      (fun k ->
+        List.map
+          (fun p -> Printf.sprintf "%s%d" p k)
+          [ "dbg_pc"; "dbg_x"; "dbg_y"; "dbg_isr"; "dbg_osr"; "dbg_cnt"; "dbg_exec_stalled"; "dbg_phase" ])
+      [ 1; 2; 3 ]
+  in
+  run tb 4
+    ~f:(fun c () ->
+      set tb "sm_enable" 1;
+      if c = 0
+      then (
+        set tb "txf_push" 1;
+        set tb "txf_sm" 1;
+        set tb "txf_data" 0x1234);
+      if c = 1
+      then (
+        set tb "instr_write" 1;
+        set tb "instr_sm" 2;
+        set tb "instr_data" 0xE001);
+      if c = 2
+      then (
+        set tb "rxf_pop" 1;
+        set tb "rxf_sm" 3))
+    ~check:(fun c () ->
+      expect "absent fstat" ~cyc:c (get tb "fstat" land 0x0E0E_0E0E) 0;
+      expect "absent flevel" ~cyc:c (get tb "flevel" land 0xFFFF_FF00) 0;
+      expect "absent fdebug" ~cyc:c (get tb "fdebug" land 0xEE0E_0E0E) 0;
+      if c = 2 then expect "absent rxf_data" ~cyc:c (get tb "rxf_data") 0;
+      List.iter (fun n -> expect ("absent " ^ n) ~cyc:c (get tb n) 0) dbg)
+    ()
+;;
+
 let () =
   decoder_exhaustive ();
   set_pins_loop ();
@@ -607,6 +1010,19 @@ let () =
   clock_divider ();
   fifo_status ();
   autopull_out ();
+  irq_rel ();
+  sticky_one_record ();
+  mov_ops ();
+  in_autopush_stall ();
+  push_iffull ();
+  push_noblock ();
+  sm_restart ();
+  shift_left ();
+  out_shift_left ();
+  pin_priority ();
+  f6_abandon ();
+  pull_r4 ();
+  absent_engines ();
   Printf.printf "smoke: %d checks, %d failures\n%!" !checks !failures;
   if !failures > 0 then exit 1
 ;;
