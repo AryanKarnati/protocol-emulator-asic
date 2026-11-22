@@ -48,6 +48,9 @@ PIO_CTRL = 0x000                  # pio.h PIO_CTRL_OFFSET
 CTRL_SM_ENABLE_LSB = 0            # PIO_CTRL_SM_ENABLE_LSB, bits [3:0]
 CTRL_SM_RESTART_LSB = 4           # PIO_CTRL_SM_RESTART_LSB, bits [7:4] (self-clearing)
 CTRL_CLKDIV_RESTART_LSB = 8       # PIO_CTRL_CLKDIV_RESTART_LSB, bits [11:8] (self-clearing)
+PIO_IRQ = 0x030                   # pio.h PIO_IRQ_OFFSET (checked in pico-sdk 2.3.1 rp2350 regs);
+                                  # IRQ flags [7:0], write 1 to clear. Cleared before each run,
+                                  # so a flag left by an earlier job cannot release a WAIT IRQ.
 PIO_FDEBUG = 0x008                # pio.h PIO_FDEBUG_OFFSET; RXSTALL [3:0], RXUNDER [11:8],
                                   # TXOVER [19:16], TXSTALL [27:24]; write 1 to clear
 FDEBUG_CLEAR_ALL = 0x0F0F0F0F     # all four sticky fields, one nibble each
@@ -427,6 +430,7 @@ def run(program_json, program_name, pins, capture_base, samples, out_path,
     # 2. Both SMs disabled. The restart happens later, after all configuration.
     _stop_both(ctrl_addr, en_mask)
     _w(PIO0_BASE + PIO_FDEBUG, FDEBUG_CLEAR_ALL)
+    _w(PIO0_BASE + PIO_IRQ, 0xFF)          # all eight IRQ flags, write 1 to clear
     # 3. Instruction memory: program at 0, capture instruction after it.
     for i, w in enumerate(words):
         _w(PIO0_BASE + PIO_INSTR_MEM0 + 4 * i, w)
@@ -448,8 +452,8 @@ def run(program_json, program_name, pins, capture_base, samples, out_path,
     # enabled; see README).
     for p in sorted(pin_set | (set(cap_pins) - host_set)):
         _set_pio_function(p)
-    for p in sorted(set(cap_pins) | {pins["jmp_pin"] & 31, pins["in_base"] & 31}):
-        _enable_input(p)
+    for p in sorted(set(cap_pins) | {pins["jmp_pin"] & 31, pins["in_base"] & 31} | host_set):
+        _enable_input(p)                   # ISO resets to 1 on RP2350: clear it on every input
     # Host-driven pins: SIO function, output enabled, level set before the run. Input enable
     # is already set above, so the PIO input path sees them.
     for p, v in host_pins:

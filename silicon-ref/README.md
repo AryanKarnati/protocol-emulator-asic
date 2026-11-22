@@ -332,76 +332,103 @@ Neither test file covers silicon behaviour, which needs the calibration run.
 ## Batch (every corpus program and every V1 config)
 
 `make_batch.py` builds `manifest.json` and stages the board tree. `batch_capture.py` runs it on the
-board. The job list is 36 corpus programs and 12 V1 configs. 11 V1 configs are runnable; `v1_h_pull_stall`
+board. The job list is 36 corpus programs and 13 V1 configs. 12 V1 configs are runnable; `v1_h_pull_stall`
 is marked `runnable: false` and skipped (see `v1/README.md`). Corpus jobs use a generic smoke setting
 (pin 0 out, set count 0, clock divider 1.0, 4000 samples), so they are a first capture, not a checked
 reference.
+
+On the board, `run_batch` takes `groups` (`['v1']` or `['corpus']`), writes `summary.json` after every
+job, removes the partial trace of a failed job, calls `gc.collect()` between jobs, and stops before a job
+when free space is below `min_free_bytes` (default 300000), recording why in `summary.stopped`.
 
 Dry run on the PC (the mock, no hardware):
 
 ```
 python3 silicon-ref/make_batch.py                    # stages silicon-ref/board_stage/
-python3 silicon-ref/batch_capture.py --dry-run       # 46 ok, 1 failed, 1 skipped (as of this commit)
+python3 silicon-ref/batch_capture.py --dry-run       # 47 ok, 1 failed, 1 skipped (as of this commit)
+python3 silicon-ref/batch_capture.py --dry-run --groups v1   # 12 ok, 1 skipped
 ```
 
 The one failure is `corpus__pio__quadrature_encoder_substep__...`. Its 32 instructions plus the
 capture instruction do not fit the 32-word instruction memory. `capture.py` rejects it (ValueError)
-and the batch goes on. It needs another capture method (a smaller capture program, or a sampler on
-fewer words), which is not written.
+and the batch goes on. This is a documented known failure, not fixed. The fix would be the sampler on
+PIO1 with both blocks started in one write (RP2350 `CTRL_NEXTPREV_SM_ENABLE`), which is not written.
 
 The mock dry run checks the register writes and the trace format. It does not check the silicon.
 
 ## When the Pico 2 arrives
 
-Status: nothing below has been run on a board. Each step is a checklist to run once; the
-[verify on hardware] items are the ones it must confirm.
+Status: nothing below has been run on a board. Work through it once. The [verify on hardware] items
+are what the first run must confirm.
 
-1. **Attach the Pico 2 to WSL2 (usbipd, on Windows, in an admin PowerShell).**
+1. **Flash MicroPython first, on Windows.** The Pico 2 is an RP2350, so the BOOTSEL drive is called
+   `RP2350`, not `RPI-RP2`. Hold BOOTSEL while plugging in, then copy the MicroPython UF2 to that
+   drive. Use the RPI_PICO2 build from micropython.org (the Pico 2 build), not the Pico (RP2040)
+   build. Doing this from Windows, before the board is attached to WSL, is simpler. The board reboots
+   by itself. [verify on hardware: the UF2 file name, and that the build has `rp2.DMA`]
+2. **Attach the Pico 2 to WSL2 (usbipd, Windows, admin PowerShell).**
    ```
-   usbipd list                          # find the BUSID of the Raspberry Pi device
+   usbipd list                          # find the BUSID of the Raspberry Pi device (vendor 2e8a)
    usbipd bind --busid <BUSID>          # once per device
-   usbipd attach --wsl --busid <BUSID>  # every time it is plugged in
+   usbipd attach --wsl --busid <BUSID>  # each time it is plugged in
    ```
-   In WSL, check it appears: `lsusb | grep -i 2e8a` (the Raspberry Pi vendor ID is 2e8a).
-   The serial port is `/dev/ttyACM0`. Your user needs access to it: add yourself to `dialout`
-   (`sudo usermod -aG dialout $USER`, then log in again) if `mpremote` cannot open it.
-2. **Flash MicroPython (RP2350).** Hold BOOTSEL while plugging in, so the board shows as a drive
-   (RPI-RP2). Copy the MicroPython UF2 for the Pico 2 (RP2350) from micropython.org to it. The board
-   reboots by itself. Record the MicroPython version: `mpremote connect auto exec "import sys; print(sys.version)"`.
-   [verify on hardware: the UF2 name and that `rp2.DMA` exists in that build]
-3. **Install mpremote (on the PC or in WSL):** `pip install mpremote`.
-4. **Calibrate first (V1 item e).** Stage and copy the tree, then run the calibration job only:
+   In WSL: `lsusb | grep -i 2e8a` should show the board, and `/dev/ttyACM0` should exist. If
+   mpremote cannot open the port, add your user to `dialout` (`sudo usermod -aG dialout $USER`) and
+   log in again.
+3. **Install mpremote** (in WSL): `pip install mpremote`. Check the MicroPython version:
+   `mpremote connect auto exec "import sys; print(sys.version)"`. Write the version in the record (step 8).
+4. **Stage and copy the files, explicitly.** `mpremote fs cp -r` on a whole directory is not used,
+   because a recursive copy into an existing destination nests the folder. Copy each file:
    ```
    python3 silicon-ref/make_batch.py
-   mpremote connect auto fs cp -r silicon-ref/board_stage/. :
+   mpremote connect auto fs cp silicon-ref/board_stage/capture.py :capture.py
+   mpremote connect auto fs cp silicon-ref/board_stage/batch_capture.py :batch_capture.py
+   mpremote connect auto fs cp silicon-ref/board_stage/manifest.json :manifest.json
+   mpremote connect auto fs mkdir :prog
+   mpremote connect auto fs mkdir :prog/v1
+   mpremote connect auto fs mkdir :prog/corpus
+   mpremote connect auto fs cp silicon-ref/board_stage/prog/v1/v1_items.pioasm.json :prog/v1/v1_items.pioasm.json
+   mpremote connect auto fs cp silicon-ref/board_stage/prog/corpus/*.json :prog/corpus/   # only if the shell expands the glob
+   ```
+   If the shell does not expand the glob, copy the corpus files one by one (the manifest lists them).
+   Check the free flash first: `mpremote connect auto exec "import os; print(os.statvfs('/'))"`.
+   Free space is `f_frsize * f_bavail`. Each V1 trace is about 140 KB and the whole V1 run is about 1.5 MB.
+5. **Calibrate first (V1 item e).** One capture, run by hand:
+   ```
    mpremote connect auto exec "import capture; capture.run(program_json='/prog/v1/v1_items.pioasm.json', program_name='v1_e_calib', pins=dict(out_base=0,out_count=0,set_base=0,sideset_base=0,in_base=0,jmp_pin=0), capture_base=0, samples=40000, out_path='/calib.jsonl', set_count=1, clkdiv=(1,0), init_dirs={0:1}, init_levels={0:0})"
    mpremote connect auto fs cp :calib.jsonl silicon-ref/traces/calib.jsonl
    python3 silicon-ref/trace.py silicon-ref/traces/calib.jsonl --head 16 --pin 0
    ```
-   The first rise of pin 0 is at sample `1 + L` in the model's convention, so `L` is that sample minus 1.
-   Record `L` in `silicon-ref/v1/README.md` (item e). Do not use the value 3 unless the trace shows it.
-5. **Run the whole batch.** Check the free flash first, since each 40000-sample trace is about 140 KB:
-   `mpremote connect auto exec "import os; print(os.statvfs('/'))"`
+   The first rise of pin 0 is at sample `1 + L`, so `L` is that sample minus 1. Record it in
+   `silicon-ref/v1/README.md` (item e). Do not use the value 3 unless the trace shows it.
+6. **Run the V1 group first, on its own.** It is small, so it can be fetched and deleted before the
+   corpus run:
    ```
-   mpremote connect auto exec "import capture, batch_capture; print(batch_capture.run_batch(capture, '/manifest.json', '', '/traces'))"
+   mpremote connect auto exec "import capture, batch_capture; print(batch_capture.run_batch(capture, '/manifest.json', '', '/traces', groups=['v1']))"
    ```
-   It runs 47 jobs. Timing has not been measured on a board. Watch the output for a `failed` entry.
-   Expect the one known failure (quadrature_encoder_substep).
-   If `exec` times out, run it as a script (`mpremote connect auto run run_batch.py`) with a
-   one-line file that makes the same call.
-6. **Copy the traces back:** `mpremote connect auto fs cp -r :traces silicon-ref/traces/` and
-   `mpremote connect auto fs cp :traces/summary.json silicon-ref/traces/`.
-7. **Compare with the model.** Build the comparison tool once, then run it per trace. Only traces
-   that use no host actions or host pins (`v1__v1_b_pull_autopull`, `v1__v1_c_first_out`,
-   `v1__v1_d_irq_wait`, `v1__v1_e_calib`, `v1__v1_g_frac_div`, `v1__v1_i_out_sticky_*`, and the corpus) are
-   compared by `trace_cmp`:
+   Expect 12 `ok` and 1 `skipped` (`v1__v1_h_pull_stall`, by design). Any `failed` entry must be
+   written up. If `exec` times out, put the same call in a one-line file and run it with
+   `mpremote connect auto run <file>`.
+7. **Fetch V1 and free the flash:**
+   ```
+   mpremote connect auto fs cp -r :traces silicon-ref/
+   mpremote connect auto fs rm -r :traces
+   ```
+   `silicon-ref/traces/` then holds `v1__*.jsonl` and `summary.json`. Then run the corpus group
+   (same call with `groups=['corpus']`), fetch it the same way, and delete it.
+   The corpus group has 35 runnable jobs and one known failure, `corpus__pio__quadrature_encoder_substep__...`,
+   which does not fit IMEM. Corpus traces use a generic smoke setting, so they are not a checked
+   reference yet.
+8. **Compare with the model** (V1 traces without host actions or host pins). Build the tool once:
    ```
    ~/.local/bin/opam exec --switch=polyglot -- dune build --root . ./sw/pgsim/tools/trace_cmp.exe
    ./_build/default/sw/pgsim/tools/trace_cmp.exe --latency L silicon-ref/traces/v1__v1_g_frac_div.jsonl
    ```
-   `L` is the value from step 4. Exit 0 means no mismatch in the compared samples. Exit 1 prints the
-   first mismatch (sample, pin, silicon and model values). Exit 2 means the trace was rejected.
-   Traces with host actions (`v1__v1_a_autopush`, `v1__v1_f_*`) are read by hand, as `v1/README.md`
-   says. Their pad values after the host action are not in the model.
-8. **Record the result** in `silicon-ref/v1/README.md` for each item, with the trace file name, the
-   MicroPython version, and `L`.
+   `L` is from step 5. Exit 0 means no mismatch in the compared samples. Exit 1 prints the first
+   mismatch (sample, pin, silicon and model values). Exit 2 means the trace was rejected. Run it on
+   `v1__v1_b_pull_autopull`, `v1__v1_b2_pull_full`, `v1__v1_c_first_out`, `v1__v1_d_irq_wait`,
+   `v1__v1_e_calib`, `v1__v1_g_frac_div`, `v1__v1_i_out_sticky_on`, `v1__v1_i_out_sticky_off`, and the
+   corpus traces. Traces with host actions (`v1__v1_a_autopush`, `v1__v1_f_*`) are read by hand, as
+   `silicon-ref/v1/README.md` says. `trace_cmp` does not model their host writes.
+9. **Record the result** in `silicon-ref/v1/README.md` for each item: the trace file, the MicroPython
+   version (step 3), `L`, and which row of the table matched.

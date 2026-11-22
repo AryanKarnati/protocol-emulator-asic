@@ -55,7 +55,7 @@ def corpus_jobs(stage):
             doc = json.load(f)
         stem = flat(rel)[: -len(".pio.json")]
         for p in doc["programs"]:
-            jobs.append(dict(name="corpus__%s__%s" % (stem, p["name"]),
+            jobs.append(dict(name="corpus__%s__%s" % (stem, p["name"]), group="corpus",
                              program_json=dest_rel.replace(os.sep, "/"),
                              program_name=p["name"], runnable=True, args=dict(CORPUS_ARGS)))
     return jobs
@@ -70,7 +70,7 @@ def v1_jobs(stage):
         with open(path) as f:
             cfg = json.load(f)
         args = {k: v for k, v in cfg.items() if k not in V1_DROP}
-        jobs.append(dict(name="v1__" + name, program_json="prog/v1/v1_items.pioasm.json",
+        jobs.append(dict(name="v1__" + name, group="v1", program_json="prog/v1/v1_items.pioasm.json",
                          program_name=cfg["program_name"],
                          runnable=cfg.get("runnable", True),
                          reason=cfg.get("reason", ""), args=args))
@@ -86,11 +86,13 @@ def main():
     os.makedirs(stage, exist_ok=True)
     for name in ("capture.py", "batch_capture.py"):
         shutil.copyfile(os.path.join(HERE, name), os.path.join(stage, name))
-    jobs = corpus_jobs(stage) + v1_jobs(stage)
+    # V1 first: it is small, so it can be fetched and deleted before the corpus run.
+    jobs = v1_jobs(stage) + corpus_jobs(stage)
     with open(os.path.join(stage, "manifest.json"), "w") as f:
         json.dump({"jobs": jobs}, f, indent=1, sort_keys=True)
         f.write("\n")
     n_run = sum(1 for j in jobs if j["runnable"])
+    print("groups: v1 (run first), corpus (run second); run each with groups=[...]")
     print("staged %d jobs (%d runnable) in %s" % (len(jobs), n_run, stage))
 
 

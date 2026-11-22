@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | Clock divider | 2.0 (`clkdiv` 0x00020000) | Shows the divider: one PIO tick is two sysclk cycles |
 | PINCTRL | 0x44100000 | SIDESET_COUNT 2 (one data pin plus the enable bit), SET_COUNT 1, OUT_COUNT 1, all bases 0 |
-| SHIFTCTRL | reset (0x000c0000) | OUT shifts right, no autopull. Matches the C SDK's `sm_config_set_out_shift(&c, true, false, 32)` |
+| SHIFTCTRL | reset (0x000c0000) | OUT shifts right, no autopull. Matches the C SDK's `sm_config_set_out_shift(&c, true, false, 32)`. **Not a full SDK match:** the SDK also sets `sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX)` (8-deep TX FIFO). This config leaves the FIFO unjoined (4 deep), which is enough for the two bytes here. |
 | EXECCTRL | from the JSON | Wrap, and SIDE_EN from `optional` |
 | Output pin | GPIO 0 | OUT pin and side-set pin, as in the C SDK init |
 

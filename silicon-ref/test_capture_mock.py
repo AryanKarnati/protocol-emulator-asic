@@ -211,7 +211,7 @@ def _writes_to(mem, addr):
 # the header bit positions in capture.py. [verify on hardware]
 EXPECTED_LOG = [
     # PIO0 CTRL off, FDEBUG clear, instruction memory (ws2812 at 0..3, `in pins, 8` at 4)
-    (0x50200000, 0x00000000), (0x50200008, 0x0f0f0f0f),
+    (0x50200000, 0x00000000), (0x50200008, 0x0f0f0f0f), (0x50200030, 0x000000ff),
     (0x50200048, 0x00006321), (0x5020004c, 0x00001223), (0x50200050, 0x00001200),
     (0x50200054, 0x0000a242), (0x50200058, 0x00004008),
     # SM0 (program): CLKDIV 1.0, EXECCTRL wrap 3..0, SHIFTCTRL out/in right, PINCTRL side 1,
@@ -363,6 +363,7 @@ EXPECTED_OVERRIDE_LOG = [
     # set pins, 2 TX words, pads with ISO cleared (0x016) and IE (0x056)
     (0x50200000, 0x00000000),
     (0x50200008, 0x0f0f0f0f),
+    (0x50200030, 0x000000ff),
     (0x50200048, 0x00006321),
     (0x5020004c, 0x00001223),
     (0x50200050, 0x00001200),
@@ -697,12 +698,135 @@ def test_batch_dry_run_over_all_corpus_and_v1_jobs():
     n_corpus = sum(1 for j in jobs if j["name"].startswith("corpus__"))
     ok_corpus = [n for n in summary["ok"] if n.startswith("corpus__")]
     assert n_corpus == 36 and len(ok_corpus) == 35, (n_corpus, len(ok_corpus))
-    assert len([n for n in summary["ok"] if n.startswith("v1__")]) == 11
+    assert len([n for n in summary["ok"] if n.startswith("v1__")]) == 12
     for name in summary["ok"]:
         t = tr.read_trace(os.path.join(out, name + ".jsonl"))
         want = 4000 if name.startswith("corpus__") else 40000
         assert len(t.samples) == want, (name, len(t.samples))
     assert _json.load(open(os.path.join(out, "summary.json"))) == summary
+
+
+PIO0_IRQ = 0x50200000 + 0x030
+
+
+def test_irq_flags_cleared_before_restart():
+    """A flag left by an earlier job must not release a WAIT IRQ: the IRQ register is cleared
+    (write 1 to clear, all eight flags) before the restart write."""
+    _, mem = _run_ws2812()
+    clears = [i for i, (a, v) in enumerate(mem.log) if a == PIO0_IRQ and v == 0xFF]
+    restart = mem.log.index((PIO_CTRL, RESTART_WRITE))
+    assert clears and max(clears) < restart, "IRQ flags must be cleared before the restart"
+
+
+def test_host_pin_inputs_are_enabled_with_iso_cleared():
+    """Every host pin gets ISO cleared and IE set, not only the pins that the sampler reads.
+    v1_a drives pin 1 from the host and reads it as in_base, so the pin is in both groups; the
+    check is on the pad write itself."""
+    out, mem = _run_v1("v1_a_autopush")
+    pad1 = PADS_BANK0_BASE + 4 + 4 * 1
+    last = _writes_to(mem, pad1)[-1]
+    assert last & PAD_IE, "IE set on host pin 1"
+    assert last & PAD_ISO == 0, "ISO cleared on host pin 1"
+    assert last & PAD_OD == 0, "OD cleared on host pin 1"
+
+
+def test_host_pin_outside_the_capture_range_is_enabled():
+    """A host pin that is neither sampled nor an input of the program still needs IE and no ISO."""
+    capture, mem = _install_fakes()
+    d = tempfile.mkdtemp()
+    capture.run(program_json=V1_JSON, program_name="v1_f_sideset", pins=dict(
+        out_base=0, out_count=0, set_base=0, sideset_base=0, in_base=0, jmp_pin=0),
+        capture_base=0, samples=8, out_path=os.path.join(d, "t.jsonl"), set_count=2,
+        host_pins=[(12, 0)], init_dirs={0: 1, 1: 1}, init_levels={0: 0, 1: 0})
+    last = _writes_to(mem, PADS_BANK0_BASE + 4 + 4 * 12)[-1]
+    assert last & PAD_IE and last & PAD_ISO == 0, "host pin 12 must be an enabled input"
+
+
+def _batch_jobs_and_stage():
+    import json as _json
+    import shutil
+    import make_batch
+    stage = tempfile.mkdtemp(prefix="stage_")
+    for name in ("capture.py", "batch_capture.py"):
+        shutil.copyfile(os.path.join(HERE, name), os.path.join(stage, name))
+    jobs = make_batch.v1_jobs(stage) + make_batch.corpus_jobs(stage)
+    path = os.path.join(stage, "manifest.json")
+    with open(path, "w") as f:
+        _json.dump({"jobs": jobs}, f)
+    return stage, path, jobs
+
+
+def test_batch_groups_and_summary_written_per_job():
+    import batch_capture as bc
+    import json as _json
+    stage, path, jobs = _batch_jobs_and_stage()
+    out = tempfile.mkdtemp(prefix="batch_v1_")
+
+    def per_job(job):
+        capture, _ = _install_fakes()
+        FakeDMA.busy_polls = 200 if job["args"].get("host_actions") else 0
+        return capture
+
+    summary = bc.run_batch(per_job, path, stage, out, groups=["v1"])
+    assert all(n.startswith("v1__") for n in summary["ok"] + list(summary["failed"]) +
+               list(summary["skipped"])), "only the v1 group runs"
+    assert len(summary["done"]) == sum(1 for j in jobs if j["group"] == "v1")
+    assert _json.load(open(os.path.join(out, "summary.json"))) == summary
+
+
+def test_failed_job_leaves_no_partial_trace():
+    import batch_capture as bc
+    import json as _json
+    stage, path, jobs = _batch_jobs_and_stage()
+    # Break one runnable v1 job: a program name that is not in the file.
+    m = _json.load(open(path))
+    for j in m["jobs"]:
+        if j["name"] == "v1__v1_c_first_out":
+            j["program_name"] = "no_such_program"
+    _json.dump(m, open(path, "w"))
+    out = tempfile.mkdtemp(prefix="batch_fail_")
+
+    def per_job(job):
+        capture, _ = _install_fakes()
+        FakeDMA.busy_polls = 200 if job["args"].get("host_actions") else 0
+        return capture
+
+    summary = bc.run_batch(per_job, path, stage, out, groups=["v1"])
+    assert "v1__v1_c_first_out" in summary["failed"], summary["failed"]
+    assert not os.path.exists(os.path.join(out, "v1__v1_c_first_out.jsonl")), "partial trace removed"
+    assert "v1__v1_a_autopush" in summary["ok"], "the batch goes on after a failure"
+
+
+def test_batch_stops_cleanly_when_space_is_low():
+    import batch_capture as bc
+    stage, path, jobs = _batch_jobs_and_stage()
+    out = tempfile.mkdtemp(prefix="batch_full_")
+
+    def per_job(job):
+        capture, _ = _install_fakes()
+        return capture
+
+    summary = bc.run_batch(per_job, path, stage, out, groups=["v1"], min_free_bytes=10 ** 15)
+    assert summary["stopped"] and "low space" in summary["stopped"], summary
+    assert summary["ok"] == [] and summary["done"] == [], "no job runs when space is short"
+    assert os.path.exists(os.path.join(out, "summary.json")), "summary is written even when stopped"
+
+
+BOARD_FILES = ["capture.py", "batch_capture.py"]
+CPYTHON_ONLY = ["json.dump(", "sort_keys", "indent=", "pathlib", "tempfile", "argparse",
+                "subprocess", "f\"", "f'"]
+
+
+def test_board_code_uses_only_micropython_calls():
+    """Everything above the PC-only __main__ guard must run on MicroPython: no json.dump with
+    keyword arguments, no sort_keys or indent, no pathlib, tempfile, argparse, subprocess or
+    f-strings. Scanned as text, so a new CPython-only call is a test failure."""
+    for name in BOARD_FILES:
+        text = open(os.path.join(HERE, name)).read()
+        code = text.split('if __name__ == "__main__":')[0]
+        board = "\n".join(line.split("#")[0] for line in code.splitlines())   # code only
+        for token in CPYTHON_ONLY:
+            assert token not in board, "%s uses %r, which MicroPython lacks" % (name, token)
 
 
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

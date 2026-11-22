@@ -73,6 +73,41 @@
 			]
 		},
 		{
+			"name": "v1_b2_pull_full",
+			"pioVersion": 0,
+			"wrapTarget": 0,
+			"wrap": 7,
+			"origin": -1,
+			"usedGPIORanges": 0,
+			"publicSymbols": {
+			},
+			"publicLabels": {
+			},
+			"in": null,
+			"out": null,
+			"setCount": null,
+			"sideset": null,
+			"movStatus": null,
+			"fifoConfig": null,
+			"clockDiv": null,
+			"instructions": [
+				{"hex": "80A0", "instruction": "pull   block"},
+				{"hex": "80A0", "instruction": "pull   block"},
+				{"hex": "6001", "instruction": "out    pins, 1"},
+				{"hex": "6001", "instruction": "out    pins, 1"},
+				{"hex": "6001", "instruction": "out    pins, 1"},
+				{"hex": "6001", "instruction": "out    pins, 1"},
+				{"hex": "6001", "instruction": "out    pins, 1"},
+				{"hex": "20C0", "instruction": "wait   1 irq, 0"}
+			],
+			"codeBlocks": [
+
+			],
+			"langOpts": [
+
+			]
+		},
+		{
 			"name": "v1_c_first_out",
 			"pioVersion": 0,
 			"wrapTarget": 0,
