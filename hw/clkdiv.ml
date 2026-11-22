@@ -22,7 +22,9 @@ end
    gaps are floor(D) or ceil(D), and any 256 gaps sum to exactly Dq. *)
 let phase_bits = 25
 
-let create (_scope : Scope.t) (i : _ I.t) =
+(* Shared logic. Returns the tick and the phase register P (datasheet 3.5.5; engine.md
+   R10: S = P + 256, tick = S >= D, P' = S - D on a tick and S otherwise). *)
+let core (i : _ I.t) =
   let divisor =
     (* INT = 0 means 65536, i.e. 2^24 in these units. *)
     let is_zero = (i.int_ ==: zero 16) -- "int_is_zero" in
@@ -46,9 +48,33 @@ let create (_scope : Scope.t) (i : _ I.t) =
   let next = mux2 i.restart (zero phase_bits) next in
   let phase_q = reg spec next -- "phase_q" in
   phase <== phase_q;
+  tick, phase_q
+;;
+
+let create (_scope : Scope.t) (i : _ I.t) =
+  let tick, _ = core i in
   { O.tick }
 ;;
 
 module Hier = Hierarchy.In_scope (I) (O)
 
 let hierarchical scope i = Hier.hierarchical ~scope ~name:"clkdiv" create i
+
+(* Variant that also exposes the phase register, for the engine's DBG_PHASE. Same logic,
+   separate module name, so the block 1 "clkdiv" module is unchanged. *)
+module O_dbg = struct
+  type 'a t =
+    { tick : 'a
+    ; phase : 'a [@bits 25]
+    }
+  [@@deriving hardcaml]
+end
+
+let create_dbg (_scope : Scope.t) (i : _ I.t) =
+  let tick, phase = core i in
+  { O_dbg.tick; phase }
+;;
+
+module Hier_dbg = Hierarchy.In_scope (I) (O_dbg)
+
+let hierarchical_dbg scope i = Hier_dbg.hierarchical ~scope ~name:"clkdiv_dbg" create_dbg i
