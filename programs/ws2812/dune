@@ -1,0 +1,54 @@
+; Checks for ws2812 (see NOTES.md in this directory). `dune test --root .` runs them.
+
+; 1. pgasm assembles ws2812.pio to the committed ws2812.json. The file has two programs;
+;    pgasm writes both, and the test compares the whole file.
+(rule
+ (target ws2812.actual.json)
+ (deps ws2812.pio)
+ (action
+  (with-stdout-to
+   %{target}
+   (run %{exe:../../sw/pgasm/bin/pgasm.exe} ws2812.pio))))
+
+(rule
+ (alias runtest)
+ (deps ws2812.json ws2812.actual.json)
+ (action
+  (diff ws2812.json ws2812.actual.json)))
+
+; 2. The committed pgasm JSON equals the JSON the official pioasm 2.3.1 wrote.
+(rule
+ (alias runtest)
+ (deps ws2812.json ws2812.pioasm.json)
+ (action
+  (diff ws2812.pioasm.json ws2812.json)))
+
+; 3. pgsim on program ws2812 (the first program in the file), with the configuration in
+;    ws2812.config.json and the stimulus in NOTES.md, gives the committed trace.
+(rule
+ (target ws2812.actual.trace)
+ (deps ws2812.json ws2812.config.json)
+ (action
+  (with-stdout-to
+   %{target}
+   (run
+    %{exe:../../sw/pgsim/cli/pgsim_cli.exe}
+    --program
+    ws2812.json
+    --config
+    ws2812.config.json
+    --init-instr
+    e081
+    --tx
+    0xa55a0f00
+    --tx
+    0x00008100
+    --cycles
+    1000
+    --trace))))
+
+(rule
+ (alias runtest)
+ (deps ws2812.trace ws2812.actual.trace)
+ (action
+  (diff ws2812.trace ws2812.actual.trace)))

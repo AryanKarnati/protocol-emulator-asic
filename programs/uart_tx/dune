@@ -1,0 +1,55 @@
+; Checks for uart_tx (see NOTES.md in this directory). `dune test --root .` runs them.
+
+; 1. pgasm assembles uart_tx.pio to the committed uart_tx.json.
+(rule
+ (target uart_tx.actual.json)
+ (deps uart_tx.pio)
+ (action
+  (with-stdout-to
+   %{target}
+   (run %{exe:../../sw/pgasm/bin/pgasm.exe} uart_tx.pio))))
+
+(rule
+ (alias runtest)
+ (deps uart_tx.json uart_tx.actual.json)
+ (action
+  (diff uart_tx.json uart_tx.actual.json)))
+
+; 2. The committed pgasm JSON equals the JSON the official pioasm 2.3.1 wrote.
+(rule
+ (alias runtest)
+ (deps uart_tx.json uart_tx.pioasm.json)
+ (action
+  (diff uart_tx.pioasm.json uart_tx.json)))
+
+; 3. pgsim, with the fixed configuration in uart_tx.config.json and the stimulus in
+;    NOTES.md, gives the committed per-cycle trace.
+(rule
+ (target uart_tx.actual.trace)
+ (deps uart_tx.json uart_tx.config.json)
+ (action
+  (with-stdout-to
+   %{target}
+   (run
+    %{exe:../../sw/pgsim/cli/pgsim_cli.exe}
+    --program
+    uart_tx.json
+    --config
+    uart_tx.config.json
+    --init-instr
+    e001
+    --init-instr
+    e081
+    --tx
+    0xa5
+    --tx
+    0x5a
+    --cycles
+    400
+    --trace))))
+
+(rule
+ (alias runtest)
+ (deps uart_tx.trace uart_tx.actual.trace)
+ (action
+  (diff uart_tx.trace uart_tx.actual.trace)))
