@@ -43,12 +43,13 @@ let dut_name_of n =
 
 (* Run [case] (normalised) on the reference and on the named DUT. *)
 let waive = ref false
+let waive_fifo = ref false
 
 let check ~dut case =
   let num_sms = case.Case.num_sms in
   let reference = Dut.pgsim (module Pgsim : Dut.PGSIM) ~name:"pgsim-ref" ~pads_from_pins_in:false ~num_sms in
   let dut = dut_of_name dut ~num_sms in
-  Lockstep.run ~waive_cycle0_fstat:!waive ~reference ~dut case
+  Lockstep.run ~waive_cycle0_fstat:!waive ~waive_after_reset_fifo:!waive_fifo ~reference ~dut case
 ;;
 
 let print_failure ~label (case : Case.t) (f : Lockstep.failure) =
@@ -194,6 +195,7 @@ let window_kinds (case : Case.t) (run_cycle : int) =
 ;;
 
 let cmd_triage args =
+  waive_fifo := List.mem "--waive-after-reset-fifo" args;
   let count = int_flag args "--count" 1000 in
   let seed = int_flag args "--seed" 1 in
   let dut = dut_name_of (flag args "--dut" "rtl") in

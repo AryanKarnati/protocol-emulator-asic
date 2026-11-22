@@ -483,6 +483,18 @@ type search_result =
 
 (* Greedy shrinking: take the first candidate that still fails and scores lower, repeat.
    [limit] bounds the candidates tried in total. *)
+(* Port base name without the SM index: dbg_pc0 and dbg_pc1 are the same port. *)
+let port_base name =
+  let rec strip s =
+    let n = String.length s in
+    if n > 0 && s.[n - 1] >= '0' && s.[n - 1] <= '9' then strip (String.sub s 0 (n - 1)) else s
+  in
+  strip name
+;;
+
+(* A shrunk case must still fail on the same port, or it is a different failure. *)
+let same_port (a : Lockstep.failure) (b : Lockstep.failure) = port_base a.Lockstep.port = port_base b.Lockstep.port
+
 let shrink_failing ~check ~limit (c : Case.t) (f : Lockstep.failure) =
   let tried = ref 0 in
   let rec go c f steps =
@@ -498,8 +510,8 @@ let shrink_failing ~check ~limit (c : Case.t) (f : Lockstep.failure) =
           else (
             incr tried;
             match check cand with
-            | Lockstep.Fail f' -> Some (cand, f', steps + 1)
-            | Lockstep.Pass _ -> None)))
+            | Lockstep.Fail f' when same_port f' f -> Some (cand, f', steps + 1)
+            | Lockstep.Fail _ | Lockstep.Pass _ -> None)))
     in
     match next with
     | Some (c', f', steps') -> go c' f' steps'
