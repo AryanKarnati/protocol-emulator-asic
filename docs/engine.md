@@ -179,7 +179,7 @@ Each ruling cites the datasheet text it settles. Items marked V1 are to be check
 
 **R3. `!OSRE`** is true when OSR count < PULL_THRESH (datasheet §3.4.2.2). A threshold field of 0 means 32, for both thresholds.
 
-**R4. PULL with autopull.** The PULL is a no-op while OSR count < PULL_THRESH (datasheet §3.4.7.2 note, §3.5.4.2). Otherwise it behaves like a normal PULL. **V1 item b.**
+**R4. PULL with autopull.** The PULL is a no-op when the OSR is full, which means OSR count = 0. Otherwise it behaves like a normal PULL, with IfEmpty and Block as usual. The datasheet defines "full" as a count of 0 (the §3.5.4 table "OSR Count (0=full)", and §3.4.8.2 "reset to 0, i.e. full"), and §3.5.4.2 says a PULL under autopull "becomes a no-op if the OSR is full". An OSR that is partly shifted out is not full, so a PULL then loads a fresh word, or stalls on an empty FIFO. This replaces the block 1 reading ("no-op while count < threshold"). **V1 items b and b2.**
 
 **R5. OUT with autopull.** This follows the §3.5.4.2 pseudocode.
 
