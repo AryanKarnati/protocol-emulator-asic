@@ -1,0 +1,44 @@
+{
+  "format": "polyglot-lockstep-case",
+  "version": 1,
+  "num_sms": 4,
+  "load_cycles": 32,
+  "cycles": 37,
+  "imem": [
+    41026, 58130, 25325, 0, 0, 0, 0, 0, 0, 0, 60478, 35264, 25028, 12352,
+    52851, 55927, 40640, 57758, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+  ],
+  "initial": [
+    {
+      "clkdiv": 65536,
+      "execctrl": 1292042368,
+      "shiftctrl": 245039104,
+      "pinctrl": 1820342403
+    },
+    {
+      "clkdiv": 892672,
+      "execctrl": 956490126,
+      "shiftctrl": 277413888,
+      "pinctrl": 2172676510
+    },
+    {
+      "clkdiv": 15448576,
+      "execctrl": 721449729,
+      "shiftctrl": 1082589184,
+      "pinctrl": 1964141960
+    },
+    {
+      "clkdiv": 65536,
+      "execctrl": 570438028,
+      "shiftctrl": 1107427328,
+      "pinctrl": 3020397914
+    }
+  ],
+  "initial_sync_bypass": 0,
+  "events": [
+    { "cycle": 0, "op": "reset_low" },
+    { "cycle": 7, "op": "sm_enable", "mask": 15 },
+    { "cycle": 21, "op": "tx_push", "sm": 3, "data": 796522868 },
+    { "cycle": 27, "op": "instr_write", "sm": 1, "data": 27279 }
+  ]
+}
