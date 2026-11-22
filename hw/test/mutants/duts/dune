@@ -1,0 +1,21 @@
+; The faulty pgsim variants, each a single source edit of sw/pgsim/pgsim.ml (see
+; ../tool/mutate.ml). Linked by lockstep_cli and by the lockstep dune test.
+(library
+ (name polyglot_mutant_duts)
+ (modules mutant_duts)
+ (libraries
+  polyglot_lockstep
+  pgsim_mut_delay_off_by_one
+  pgsim_mut_sideset_loses_to_out
+  pgsim_mut_autopull_no_refill_non_out
+  pgsim_mut_irq_clear_beats_set
+  pgsim_mut_input_latency_2
+  pgsim_mut_host_push_same_cycle
+  pgsim_mut_x_forced_refills
+  pgsim_mut_x_forced_counts_delay
+  pgsim_mut_x_autopush_gt
+  pgsim_mut_x_pin_prio_reversed
+  pgsim_mut_x_div_gt
+  pgsim_mut_x_status_le
+  pgsim_mut_x_irq_rel_add7
+  pgsim_mut_x_restart_keeps_latch_irq))

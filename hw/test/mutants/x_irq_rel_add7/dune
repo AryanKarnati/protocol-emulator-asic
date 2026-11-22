@@ -1,0 +1,10 @@
+(rule
+ (targets pgsim.ml)
+ (deps ../../../../sw/pgsim/pgsim.ml)
+ (action
+  (run %{exe:../tool/mutate.exe} ../../../../sw/pgsim/pgsim.ml pgsim.ml "index land 4 lor ((index + sm_index) land 3)" "(index + sm_index) land 7")))
+(rule (targets pgsim.mli) (deps ../../../../sw/pgsim/pgsim.mli) (action (copy ../../../../sw/pgsim/pgsim.mli pgsim.mli)))
+(library
+ (name pgsim_mut_x_irq_rel_add7)
+ (modules pgsim)
+ (libraries polyglot_isa))

@@ -1,0 +1,42 @@
+{
+  "format": "polyglot-lockstep-case",
+  "version": 1,
+  "num_sms": 1,
+  "load_cycles": 32,
+  "cycles": 58,
+  "imem": [
+    39296, 41026, 41026, 41026, 41026, 2002, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 41026, 13336, 48142, 59148, 5548, 0, 0, 0, 0, 0, 0, 0, 0, 0
+  ],
+  "initial": [
+    {
+      "clkdiv": 65536,
+      "execctrl": 251855618,
+      "shiftctrl": 610926592,
+      "pinctrl": 1634083142
+    },
+    {
+      "clkdiv": 0,
+      "execctrl": 1610692109,
+      "shiftctrl": 134021120,
+      "pinctrl": 2349047830
+    },
+    {
+      "clkdiv": 65536,
+      "execctrl": 771830543,
+      "shiftctrl": 1040515072,
+      "pinctrl": 2352045077
+    },
+    {
+      "clkdiv": 98048,
+      "execctrl": 1275266581,
+      "shiftctrl": 269025280,
+      "pinctrl": 2300995575
+    }
+  ],
+  "initial_sync_bypass": 3005864253,
+  "events": [
+    { "cycle": 0, "op": "ext_pins", "pins": 3630144807 },
+    { "cycle": 37, "op": "sm_enable", "mask": 5 }
+  ]
+}

@@ -1,0 +1,4 @@
+(executable
+ (name probe)
+ (modules probe)
+ (libraries polyglot_lockstep polyglot_pgsim polyglot_rtl_dut polyglot_mutant_duts))

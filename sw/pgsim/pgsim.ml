@@ -14,7 +14,6 @@ module Isa = Polyglot_isa.Isa
 let m32 = 0xFFFF_FFFF
 let mask n = (1 lsl n) - 1
 let bit v i = (v lsr i) land 1
-let lcu_not_modelled () = failwith "LCU not modelled until block 5"
 
 let rotl32 x r =
   let r = r land 31 in
@@ -442,7 +441,7 @@ let body sm ins ~src ~synced ~irq_snap ~(bodyw : pinw) ~(setw : int ref) ~(clrw 
        else Stalled Stall_wait_irq)
   | Isa.In { source; bit_count = n; _ } ->
     (match (source : Isa.in_source) with
-     | In_lcu -> lcu_not_modelled ()
+     | In_lcu -> done_ () (* unreachable: [attempt] runs LCU words as Illegal (R12) *)
      | In_status -> done_ () (* not reached: is_legal is false, handled by the caller *)
      | _ ->
        let v =
@@ -557,8 +556,8 @@ let body sm ins ~src ~synced ~irq_snap ~(bodyw : pinw) ~(setw : int ref) ~(clrw 
   | Isa.Pull { if_empty; block; _ } ->
     (* OSR still holds unshifted data (count below threshold). *)
     let osr_has_data = sm.osr_count < thr_pull in
-    if c.autopull && osr_has_data
-    then done_ () (* PULL is a fence and a no-op while autopull has not refilled (3.5.4.2) *)
+    if c.autopull && sm.osr_count = 0
+    then done_ () (* R4: under autopull a PULL is a no-op only when the OSR is full (count 0) *)
     else if if_empty && osr_has_data
     then done_ ()
     else if not (Fifo.empty sm.tx)
@@ -588,7 +587,7 @@ let body sm ins ~src ~synced ~irq_snap ~(bodyw : pinw) ~(setw : int ref) ~(clrw 
       | Ms_x -> sm.x
       | Ms_y -> sm.y
       | Ms_null -> 0
-      | Ms_crc -> lcu_not_modelled ()
+      | Ms_crc -> 0 (* unreachable: [attempt] runs LCU words as Illegal (R12) *)
       | Ms_status -> status_word
       | Ms_isr -> sm.isr
       | Ms_osr -> sm.osr
@@ -666,7 +665,7 @@ let body sm ins ~src ~synced ~irq_snap ~(bodyw : pinw) ~(setw : int ref) ~(clrw 
      | Set_y ->
        sm.y <- data;
        done_ ()
-     | Set_lcu -> lcu_not_modelled ())
+     | Set_lcu -> done_ () (* unreachable: [attempt] runs LCU words as Illegal (R12) *))
 ;;
 
 (* Execute [word] for one attempt. [src] says where it came from, which decides the PC and
@@ -678,19 +677,30 @@ type tick_kind =
   | Out_tick (* an OUT, executed or stalled *)
   | Other_tick (* any other instruction, a delay cycle, or a stall *)
 
+(* The three LCU extension encodings (DESIGN.md 9.2). *)
+let lcu_word = function
+  | Isa.In { source = In_lcu; _ } | Isa.Mov { source = Ms_crc; _ } | Isa.Set { dest = Set_lcu; _ } -> true
+  | _ -> false
+;;
+
 (* Execute [word] once. [src] decides PC, delay and latch handling. Returns true if the
    instruction is an OUT. *)
 let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
   let c = sm.cfg in
   let ins = Isa.decode word in
-  if not (Isa.is_legal ins) then sm.illegal <- true;
+  (* The LCU extension words (in lcu, mov ..., crc, set lcu) are not modelled until block 5.
+     They run as a NOP and set ILLEGAL, as reserved words do (R12). *)
+  let legal = Isa.is_legal ins && not (lcu_word ins) in
+  if not legal then sm.illegal <- true;
   let ds = delay_side_of ins in
   let host = src = Host in
-  (* Side-set is tracked per instruction source, so a forced instruction does not change
-     the side-set state of the instruction it interrupted (AMBIGUITY, see README). *)
-  let first = not (if host then sm.host_side_done else sm.side_done) in
+  (* R11: the IMEM instruction and the latched one (forced or EXEC) each keep their own
+     side-set-done flag. [host_side_done] is the latched flag, so an EXEC completing does not
+     change the flag of the IMEM instruction it came from. *)
+  let latched = src <> Imem in
+  let first = not (if latched then sm.host_side_done else sm.side_done) in
   let side, delay = split_side c ds in
-  let ins_body = if Isa.is_legal ins then ins else Isa.Illegal word in
+  let ins_body = if legal then ins else Isa.Illegal word in
   let is_out = match ins with Isa.Out _ -> true | _ -> false in
   let outcome = body sm ins_body ~src ~synced ~irq_snap ~bodyw ~setw ~clrw in
   (* Side-set is applied on the first attempt, even if the instruction stalls
@@ -702,7 +712,7 @@ let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
      then add_dir sidew (group_mask c.sideset_base sbits) (place c.sideset_base sbits v)
      else add_lvl sidew (group_mask c.sideset_base sbits) (place c.sideset_base sbits v)
    | _ -> ());
-  let set_flag b = if host then sm.host_side_done <- b else sm.side_done <- b in
+  let set_flag b = if latched then sm.host_side_done <- b else sm.side_done <- b in
   (match outcome with
    | Stalled r ->
      (match src with
@@ -717,16 +727,33 @@ let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
       | Imem -> sm.stall <- No_stall
       | Exec | Host -> sm.latch_stall <- No_stall);
      set_flag false;
+     (* OUT_STICKY (ruling, engine.md): a completed OUT, SET or MOV pin write replaces the
+        sticky record even when its pin mask is empty (SET_COUNT 0, OUT_COUNT 0). The record
+        is then empty, so nothing is re-asserted. Side-set writes never touch the record. *)
+     (match ins_body with
+      | Isa.Out { dest = Out_pins | Out_pindirs; _ }
+      | Isa.Set { dest = Set_pins | Set_pindirs; _ }
+      | Isa.Mov { dest = Mov_pins; _ } ->
+        sm.sticky <- pinw_copy bodyw
+      | _ -> ());
      (match src, jump with
       | Imem, Some a -> sm.pc <- a
       | Imem, None -> sm.pc <- wrap_next c sm.pc
-      | (Exec | Host), Some a -> sm.pc <- a
+      | (Exec | Host), Some a ->
+        (* F6: a latched instruction that writes the PC abandons the IMEM instruction in
+           progress: its side-set flag, IRQ wait and IMEM stall reason are cleared. *)
+        sm.pc <- a;
+        sm.side_done <- false;
+        sm.irq_wait <- None;
+        sm.stall <- No_stall
       | (Exec | Host), None -> ());
      (* A forced instruction's delay is ignored, and it leaves a pending delay alone
         (datasheet 3.5.7: "Delay cycles are ignored on instructions written to the INSTR
         register"). OUT EXEC's own delay is ignored too (3.4.5.2). *)
      if not host then sm.delay <- (if delay_applies then delay else 0);
      if src <> Imem then sm.latch_irq_wait <- None;
+     (* R11: a new EXEC latch starts with its own side-set flag clear. *)
+     (match exec with Some _ -> sm.host_side_done <- false | None -> ());
      sm.latch
      <- (match exec with
          | Some w -> Exec_latch w
@@ -786,9 +813,126 @@ let divider_tick sm =
 ;;
 
 (* ------------------------------------------------------------------------------------ *)
-(* One system clock cycle. Returns the pad levels seen at the start of this cycle. *)
+(* Host operations (block 2 contract, section 5, H1 to H9). An operation presented in cycle
+   k is judged against the state at the start of that cycle, and takes effect at its end,
+   together with the SMs' own updates. The immediate functions further down (used between
+   cycles) apply the same effects at once. *)
 
-let step t =
+module Host_op = struct
+  type t =
+    | Tx_push of
+        { sm : int
+        ; data : int
+        }
+    | Rx_pop of { sm : int }
+    | Instr_write of
+        { sm : int
+        ; data : int
+        }
+    | Sm_restart of int (* SM mask *)
+    | Clkdiv_restart of int (* SM mask *)
+    | Irq_clear of int (* IRQ mask, write 1 to clear *)
+    | Irq_force of int (* IRQ mask *)
+    | Fdebug_clear of int (* FDEBUG layout mask, write 1 to clear *)
+    | Fifo_flush of int (* SM mask *)
+    | Imem_write of
+        { addr : int
+        ; data : int
+        }
+end
+
+type step_result =
+  { pads : int (* pads at the start of the cycle *)
+  ; rx_data : int list (* one per [Rx_pop] in the list, in order (combinational, H2) *)
+  }
+
+let host_sm t i =
+  if i < 0 || i > 3 then invalid_arg (Printf.sprintf "pgsim: SM %d out of range" i);
+  t.sms.(i)
+;;
+
+(* CTRL.SM_RESTART (datasheet 3.7; contract H3). PC, OSR contents, X and Y keep their
+   values. *)
+let restart_sm sm =
+  sm.isr <- 0;
+  sm.isr_count <- 0;
+  sm.osr_count <- 32;
+  sm.delay <- 0;
+  sm.latch <- No_latch;
+  sm.side_done <- false;
+  sm.host_side_done <- false;
+  sm.irq_wait <- None;
+  sm.latch_irq_wait <- None;
+  sm.latch_stall <- No_stall;
+  sm.stall <- No_stall;
+  sm.sticky <- pinw_create ()
+;;
+
+let restart_sms t mask = Array.iteri (fun i sm -> if bit mask i = 1 then restart_sm sm) t.sms
+
+(* SMx_INSTR (datasheet 3.2.2, 3.5.7; contract H7 and F1, F3, F5). The word is latched and
+   runs on the next cycle. Its delay is ignored, and it does not touch the side-set state or
+   the pending delay of the instruction it interrupts. *)
+let latch_instr sm w =
+  sm.latch <- Host_latch (w land 0xFFFF);
+  sm.latch_irq_wait <- None;
+  sm.latch_stall <- No_stall;
+  sm.host_side_done <- false
+;;
+
+(* FDEBUG flags of one SM. *)
+type fdbg =
+  { f_txstall : bool
+  ; f_txover : bool
+  ; f_rxunder : bool
+  ; f_rxstall : bool
+  ; f_illegal : bool
+  }
+
+let fdbg_none =
+  { f_txstall = false; f_txover = false; f_rxunder = false; f_rxstall = false; f_illegal = false }
+;;
+
+let fdbg_of_sm sm =
+  { f_txstall = sm.txstall
+  ; f_txover = sm.txover
+  ; f_rxunder = sm.rxunder
+  ; f_rxstall = sm.rxstall
+  ; f_illegal = sm.illegal
+  }
+;;
+
+let fdbg_store sm f =
+  sm.txstall <- f.f_txstall;
+  sm.txover <- f.f_txover;
+  sm.rxunder <- f.f_rxunder;
+  sm.rxstall <- f.f_rxstall;
+  sm.illegal <- f.f_illegal
+;;
+
+(* The clear mask for SM [i] in the FDEBUG layout (RP2040 3.7, with ILLEGAL at [31:28]). *)
+let fdbg_clear_of_mask mask i =
+  { f_txstall = bit mask (24 + i) = 1
+  ; f_txover = bit mask (16 + i) = 1
+  ; f_rxunder = bit mask (8 + i) = 1
+  ; f_rxstall = bit mask i = 1
+  ; f_illegal = bit mask (28 + i) = 1
+  }
+;;
+
+(* H8: flag_next = (flag AND NOT clear) OR set. [set] holds the flags set in this cycle. *)
+let fdbg_merge ~pre ~clear ~set =
+  let f p c s = (p && not c) || s in
+  { f_txstall = f pre.f_txstall clear.f_txstall set.f_txstall
+  ; f_txover = f pre.f_txover clear.f_txover set.f_txover
+  ; f_rxunder = f pre.f_rxunder clear.f_rxunder set.f_rxunder
+  ; f_rxstall = f pre.f_rxstall clear.f_rxstall set.f_rxstall
+  ; f_illegal = f pre.f_illegal clear.f_illegal set.f_illegal
+  }
+;;
+
+(* One system clock cycle, with the host operations of this cycle. *)
+let step_ex ?(host = []) t =
   let pad = pad_now t in
   t.hist.(3) <- t.hist.(2);
   t.hist.(2) <- t.hist.(1);
@@ -796,6 +940,59 @@ let step t =
   t.hist.(0) <- pad;
   let synced = synced t in
   let irq_snap = t.irq in
+  (* F7 compares the IMEM write address with the PC at the start of the cycle. *)
+  let pc0 = Array.map (fun sm -> sm.pc) t.sms in
+  (* FDEBUG flags: the start-of-cycle values are kept aside, and the flags are rebuilt from
+     the sets of this cycle (H8). *)
+  let pre_flags = Array.map fdbg_of_sm t.sms in
+  Array.iter (fun sm -> fdbg_store sm fdbg_none) t.sms;
+  (* Host operations, judged against the start-of-cycle state (H1, H2). Their effects are
+     collected here and applied at the end of the cycle. *)
+  let restart = ref 0 in
+  let clk_restart = ref 0 in
+  let flush = ref 0 in
+  let irq_clr = ref 0 in
+  let irq_frc = ref 0 in
+  let fd_mask = ref 0 in
+  let tx_in = ref [] in
+  let rx_out = ref [] in
+  let rx_data = ref [] in
+  let instrs = ref [] in
+  let imem = ref [] in
+  let pushed = Array.make 4 false in
+  let popped = Array.make 4 false in
+  List.iter
+    (fun (op : Host_op.t) ->
+      match op with
+      | Tx_push { sm; data } ->
+        let s = host_sm t sm in
+        if pushed.(sm) then invalid_arg "pgsim: two TX pushes to one SM in a cycle";
+        pushed.(sm) <- true;
+        (* H1: a full FIFO drops the word, even if the SM pops in this cycle. *)
+        if Fifo.full s.tx then s.txover <- true else tx_in := (sm, data land m32) :: !tx_in
+      | Rx_pop { sm } ->
+        let s = host_sm t sm in
+        if popped.(sm) then invalid_arg "pgsim: two RX pops from one SM in a cycle";
+        popped.(sm) <- true;
+        (* H2: an empty FIFO gives 0 and sets RXUNDER. *)
+        (match s.rx.Fifo.items with
+         | [] ->
+           s.rxunder <- true;
+           rx_data := 0 :: !rx_data
+         | w :: _ ->
+           rx_data := w :: !rx_data;
+           rx_out := sm :: !rx_out)
+      | Instr_write { sm; data } ->
+        ignore (host_sm t sm);
+        instrs := (sm, data land 0xFFFF) :: !instrs
+      | Sm_restart m -> restart := !restart lor (m land 0xF)
+      | Clkdiv_restart m -> clk_restart := !clk_restart lor (m land 0xF)
+      | Irq_clear m -> irq_clr := !irq_clr lor (m land 0xFF)
+      | Irq_force m -> irq_frc := !irq_frc lor (m land 0xFF)
+      | Fdebug_clear m -> fd_mask := !fd_mask lor m
+      | Fifo_flush m -> flush := !flush lor (m land 0xF)
+      | Imem_write { addr; data } -> imem := (addr land 31, data land 0xFFFF) :: !imem)
+    host;
   let setw = ref 0 in
   let clrw = ref 0 in
   let pin_writes = Array.init 4 (fun _ -> pinw_create ()) in
@@ -806,15 +1003,15 @@ let step t =
       let sidew = pinw_create () in
       let kind = run_sm t sm ~tick ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw in
       autopull_after_non_out sm kind;
-      (* OUT_STICKY keeps the last OUT/SET/MOV pin write asserted (datasheet 3.7). *)
+      (* OUT_STICKY (datasheet 3.7): the last OUT, SET or MOV pin write is kept, forced
+         writes included. It is asserted only while the SM is enabled, in the cycles that
+         make no new write. *)
+      (* The record tracks the most recent write whether or not OUT_STICKY is set (engine.md
+         OUT_STICKY; the record is only asserted while OUT_STICKY is set and enabled). *)
+      if not (pinw_empty bodyw) then sm.sticky <- pinw_copy bodyw;
       let eff =
-        if sm.cfg.out_sticky && sm.enabled
-        then
-          if pinw_empty bodyw
-          then pinw_copy sm.sticky
-          else (
-            sm.sticky <- pinw_copy bodyw;
-            pinw_copy bodyw)
+        if sm.cfg.out_sticky && sm.enabled && pinw_empty bodyw
+        then pinw_copy sm.sticky
         else bodyw
       in
       let combine (dst : pinw) (src : pinw) =
@@ -835,24 +1032,122 @@ let step t =
       t.pin_level <- t.pin_level land lnot w.lm lor (w.lv land w.lm);
       t.pin_dir <- t.pin_dir land lnot w.dm lor (w.dv land w.dm))
     pin_writes;
-  (* IRQ flags. A set and a clear of the same flag in one cycle leaves it set
-     (datasheet 3.2.7 and 3.4.9.3). WAIT and IRQ read the flags as they were at the start
-     of the cycle. *)
-  t.irq <- irq_snap land lnot !clrw lor !setw land 0xFF;
+  (* IRQ flags (H5): irq_next = (irq AND NOT (SM clears or host clears)) OR SM sets OR
+     forced. A set always beats a clear in the same cycle (datasheet 3.2.7). WAIT and IRQ
+     read the flags as they were at the start of the cycle. *)
+  t.irq <- (irq_snap land lnot (!clrw lor !irq_clr)) lor !setw lor !irq_frc land 0xFF;
+  (* FIFOs (H1, H2, H6): an SM pop happens before the host push joins the tail. *)
+  List.iter (fun sm -> ignore (Fifo.pop t.sms.(sm).rx)) !rx_out;
+  List.iter (fun (sm, w) -> Fifo.push t.sms.(sm).tx w) (List.rev !tx_in);
+  for i = 0 to 3 do
+    if bit !flush i = 1
+    then (
+      Fifo.flush t.sms.(i).tx;
+      Fifo.flush t.sms.(i).rx)
+  done;
+  (* SM_RESTART (H3) overrides what the SM did in this cycle, then an INSTR write is latched
+     (H7). CLKDIV_RESTART (H4) sets the phase to 0 after this cycle's tick. *)
+  restart_sms t !restart;
+  for i = 0 to 3 do
+    if bit !clk_restart i = 1 then t.sms.(i).acc <- 0
+  done;
+  List.iter (fun (addr, data) -> t.imem.(addr) <- data) (List.rev !imem);
+  (* F7: a write to the address equal to an SM's PC abandons that SM's IMEM instruction: its
+     side-set flag, IRQ wait and IMEM stall reason are cleared. The value does not matter,
+     and the delay counter is untouched. This overrides the SM's own attempt of this cycle. *)
+  List.iter
+    (fun (addr, _) ->
+      Array.iteri
+        (fun i sm ->
+          if pc0.(i) = addr
+          then (
+            sm.side_done <- false;
+            sm.irq_wait <- None;
+            sm.stall <- No_stall))
+        t.sms)
+    !imem;
+  List.iter (fun (sm, w) -> latch_instr t.sms.(sm) w) (List.rev !instrs);
+  (* FDEBUG (H8). *)
+  Array.iteri
+    (fun i sm ->
+      fdbg_store
+        sm
+        (fdbg_merge
+           ~pre:pre_flags.(i)
+           ~clear:(fdbg_clear_of_mask !fd_mask i)
+           ~set:(fdbg_of_sm sm)))
+    t.sms;
   t.cycle <- t.cycle + 1;
-  pad
+  { pads = pad; rx_data = List.rev !rx_data }
+;;
+
+(* One system clock cycle with no host operations. Returns the pad levels seen at the start
+   of this cycle. *)
+let step ?host t = (step_ex ?host t).pads
+
+(* Pads at the start of the cycle, before the next step: (level, output enable). Both are
+   32-bit masks. The level is the PIO output level where the pin is driven, and the external
+   level elsewhere. *)
+let pads t = pad_now t, t.pin_dir
+
+(* Block-level register values (RP2040 layouts, datasheet 3.7). *)
+let pins_out t = t.pin_level
+let pins_oe t = t.pin_dir
+
+(* Head of the RX FIFO of SM [i], 0 if it is empty: the combinational rxf_data (H2). *)
+let rx_head t i =
+  match (host_sm t i).rx.Fifo.items with
+  | [] -> 0
+  | w :: _ -> w
+;;
+
+let fstat t =
+  let v = ref 0 in
+  Array.iteri
+    (fun i sm ->
+      if Fifo.empty sm.tx then v := !v lor (1 lsl (24 + i));
+      if Fifo.full sm.tx then v := !v lor (1 lsl (16 + i));
+      if Fifo.empty sm.rx then v := !v lor (1 lsl (8 + i));
+      if Fifo.full sm.rx then v := !v lor (1 lsl i))
+    t.sms;
+  !v
+;;
+
+let flevel t =
+  let v = ref 0 in
+  Array.iteri
+    (fun i sm ->
+      v := !v lor ((Fifo.level sm.tx land 15) lsl (8 * i));
+      v := !v lor ((Fifo.level sm.rx land 15) lsl ((8 * i) + 4)))
+    t.sms;
+  !v
+;;
+
+(* FDEBUG, with the Polyglot ILLEGAL flag at [31:28]. *)
+let fdebug t =
+  let v = ref 0 in
+  Array.iteri
+    (fun i sm ->
+      if sm.txstall then v := !v lor (1 lsl (24 + i));
+      if sm.txover then v := !v lor (1 lsl (16 + i));
+      if sm.rxunder then v := !v lor (1 lsl (8 + i));
+      if sm.rxstall then v := !v lor (1 lsl i);
+      if sm.illegal then v := !v lor (1 lsl (28 + i)))
+    t.sms;
+  !v
 ;;
 
 (* ------------------------------------------------------------------------------------ *)
-(* Host-side operations (what the register interface does). *)
+(* Immediate host operations, between cycles. Each is the effect of the matching
+   [Host_op.t] in a cycle with no SM activity. *)
 
 let write_tx t i w =
-  let sm = t.sms.(i) in
+  let sm = host_sm t i in
   if Fifo.full sm.tx then sm.txover <- true else Fifo.push sm.tx (w land m32)
 ;;
 
 let read_rx t i =
-  let sm = t.sms.(i) in
+  let sm = host_sm t i in
   match Fifo.pop sm.rx with
   | Some w -> Some w
   | None ->
@@ -860,42 +1155,10 @@ let read_rx t i =
     None
 ;;
 
-(* SMx_INSTR write: the instruction runs at once, ignoring the divider and the enable
-   (datasheet 3.2.2, 3.5.7). Its delay is ignored, and it does not touch the side-set
-   state or the pending delay of the instruction it interrupts. *)
-let write_instr t i w =
-  let sm = t.sms.(i) in
-  sm.latch <- Host_latch (w land 0xFFFF);
-  sm.latch_irq_wait <- None;
-  sm.latch_stall <- No_stall;
-  sm.host_side_done <- false
-;;
+let write_instr t i w = latch_instr (host_sm t i) w
+let set_enabled t i b = (host_sm t i).enabled <- b
+let sm_restart t mask = restart_sms t mask
 
-let set_enabled t i b = t.sms.(i).enabled <- b
-
-(* CTRL.SM_RESTART for the SMs in [mask] (datasheet 3.7, CTRL). The PC, the OSR contents,
-   X and Y are not affected. *)
-let sm_restart t mask =
-  Array.iteri
-    (fun i sm ->
-      if bit mask i = 1
-      then (
-        sm.isr <- 0;
-        sm.isr_count <- 0;
-        sm.osr_count <- 32;
-        sm.delay <- 0;
-        sm.latch <- No_latch;
-        sm.side_done <- false;
-        sm.host_side_done <- false;
-        sm.irq_wait <- None;
-        sm.latch_irq_wait <- None;
-        sm.latch_stall <- No_stall;
-        sm.stall <- No_stall;
-        sm.sticky <- pinw_create ()))
-    t.sms
-;;
-
-(* CTRL.CLKDIV_RESTART for the SMs in [mask]: phase back to 0 (datasheet 3.7, CTRL). *)
 let clkdiv_restart t mask =
   Array.iteri (fun i sm -> if bit mask i = 1 then sm.acc <- 0) t.sms
 ;;
@@ -903,10 +1166,29 @@ let clkdiv_restart t mask =
 (* Host write-1-to-clear on the IRQ register (datasheet 3.7, IRQ). *)
 let clear_irq t mask = t.irq <- t.irq land lnot mask land 0xFF
 
-(* Pads at the start of the cycle, before this cycle's [step]: (level, output enable).
-   Both are 32-bit masks. The level is the PIO output level where the pin is driven, and
-   the external level elsewhere. *)
-let pads t = pad_now t, t.pin_dir
+(* IRQ_FORCE (datasheet 3.7). *)
+let force_irq t mask = t.irq <- (t.irq lor mask) land 0xFF
+
+let clear_fdebug t mask =
+  Array.iteri
+    (fun i sm ->
+      fdbg_store
+        sm
+        (fdbg_merge ~pre:(fdbg_of_sm sm) ~clear:(fdbg_clear_of_mask mask i) ~set:fdbg_none))
+    t.sms
+;;
+
+let flush_fifos t mask =
+  Array.iteri
+    (fun i sm ->
+      if bit mask i = 1
+      then (
+        Fifo.flush sm.tx;
+        Fifo.flush sm.rx))
+    t.sms
+;;
+
+let write_imem t addr data = t.imem.(addr land 31) <- data land 0xFFFF
 
 (* ------------------------------------------------------------------------------------ *)
 (* Debug view, for the block 2 lockstep harness. *)
@@ -927,7 +1209,7 @@ type debug =
   ; tx_level : int
   ; rx_level : int
   ; delay : int (* remaining delay ticks *)
-  ; acc : int (* clock divider accumulator, 1/256 units *)
+  ; acc : int (* clock divider phase P, 1/256 units (R10) *)
   ; stall : stall
   ; stall_code : int (* DBG_CNT.stall_reason code, see [stall_code] *)
   ; enabled : bool
@@ -936,6 +1218,7 @@ type debug =
   ; irq_wait : int option (* IMEM IRQ instruction waiting on a flag *)
   ; latch_irq_wait : int option (* latched EXEC or host IRQ instruction waiting on a flag *)
   ; latch_stall : stall (* stall of the latched instruction; [stall] reports it when set *)
+  ; exec_stalled : bool (* a host instruction is latched and its latest attempt stalled (F4) *)
   ; side_done : bool
   ; host_side_done : bool
   ; sticky : sticky_view
@@ -945,8 +1228,7 @@ type debug =
   ; rxstall : bool
   }
 
-(* DESIGN.md 7 names DBG_CNT.stall_reason but does not give its encoding. The encoding
-   used here is 3 bits, one code per stall reason, 0 for no stall. AMBIGUITY for the owner. *)
+(* DBG_CNT.stall_reason, as DESIGN.md 7 now defines it: one code per stall reason, 0 for none. *)
 let stall_code = function
   | No_stall -> 0
   | Stall_tx_empty -> 1
@@ -970,7 +1252,7 @@ let stall_name = function
 ;;
 
 let debug t i =
-  let sm = t.sms.(i) in
+  let sm = host_sm t i in
   (* A stalled latched instruction is the current one; otherwise the IMEM reason applies.
      Completing a latched instruction never changes the IMEM reason (see README). *)
   let effective = if sm.latch_stall <> No_stall then sm.latch_stall else sm.stall in
@@ -995,6 +1277,10 @@ let debug t i =
   ; latch = sm.latch
   ; irq_wait = sm.irq_wait
   ; latch_irq_wait = sm.latch_irq_wait
+  ; exec_stalled =
+      (match sm.latch with
+       | Host_latch _ -> sm.latch_stall <> No_stall
+       | No_latch | Exec_latch _ -> false)
   ; side_done = sm.side_done
   ; host_side_done = sm.host_side_done
   ; sticky = pinw_to_tuple sm.sticky
@@ -1003,4 +1289,14 @@ let debug t i =
   ; rxunder = sm.rxunder
   ; rxstall = sm.rxstall
   }
+;;
+
+(* DBG_CNT (DESIGN.md 7): ISR count [5:0], OSR count [13:8], delay [20:16], stall reason
+   [27:24]. All other bits 0. *)
+let dbg_cnt t i =
+  let d = debug t i in
+  (d.isr_count land 63)
+  lor ((d.osr_count land 63) lsl 8)
+  lor ((d.delay land 31) lsl 16)
+  lor (d.stall_code lsl 24)
 ;;

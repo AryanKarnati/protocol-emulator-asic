@@ -142,8 +142,48 @@ val load_program : t -> int list -> unit
 (** Set SM [i]'s configuration. Changing FJOIN discards the FIFO contents. *)
 val set_config : t -> int -> Config.t -> unit
 
-(** Advance one system clock cycle. Returns the pad levels at the start of the cycle. *)
-val step : t -> int
+(** Host operations of the block 2 contract (engine.md section 5, H1 to H9). An operation
+    presented in a cycle is judged against the state at the start of that cycle, and takes
+    effect at its end, together with the SMs' own updates. *)
+module Host_op : sig
+  type t =
+    | Tx_push of
+        { sm : int
+        ; data : int
+        } (** H1: dropped and TXOVER set if the TX FIFO is full at the start of the cycle *)
+    | Rx_pop of { sm : int } (** H2: [rx_data] is the head, or 0 and RXUNDER if empty *)
+    | Instr_write of
+        { sm : int
+        ; data : int
+        } (** H3, H7: after any restart of the same cycle, latched for the next cycle *)
+    | Sm_restart of int (** H3, SM mask *)
+    | Clkdiv_restart of int (** H4, SM mask *)
+    | Irq_clear of int (** H5, IRQ mask, write 1 to clear *)
+    | Irq_force of int (** H5, IRQ mask *)
+    | Fdebug_clear of int (** H8, FDEBUG layout mask, write 1 to clear *)
+    | Fifo_flush of int (** H6, SM mask: both FIFOs empty at the end of the cycle *)
+    | Imem_write of
+        { addr : int
+        ; data : int
+        } (** H9, usable from the next cycle *)
+end
+
+type step_result =
+  { pads : int (** pads at the start of the cycle *)
+  ; rx_data : int list
+    (** one per [Rx_pop], in order: the RX head (or 0) judged at the start of the cycle *)
+  }
+
+(** Advance one system clock cycle with the host operations of that cycle. Returns the pad
+    levels at the start of the cycle. Two pushes to one SM, or two pops from one SM, in one
+    cycle raise [Invalid_argument], as does an SM index outside 0..3. *)
+val step : ?host:Host_op.t list -> t -> int
+
+(** As {!step}, and also returns the RX data of each pop. *)
+val step_ex : ?host:Host_op.t list -> t -> step_result
+
+(** Head of the RX FIFO of SM [i], or 0 if it is empty: the combinational [rxf_data]. *)
+val rx_head : t -> int -> int
 
 (** Pads at the start of the cycle, before the next {!step}: [(level, oe)]. *)
 val pads : t -> int * int
@@ -168,6 +208,33 @@ val clkdiv_restart : t -> int -> unit
 (** Host write-1-to-clear of IRQ flags in the mask. *)
 val clear_irq : t -> int -> unit
 
+(** Host IRQ_FORCE: set the IRQ flags in the mask. *)
+val force_irq : t -> int -> unit
+
+(** Host write-1-to-clear of FDEBUG, in the RP2040 layout with ILLEGAL at [31:28]. *)
+val clear_fdebug : t -> int -> unit
+
+(** Empty both FIFOs of the SMs in the mask. *)
+val flush_fifos : t -> int -> unit
+
+(** Write one IMEM word. *)
+val write_imem : t -> int -> int -> unit
+
+(** Block-level views, for the lockstep harness. Register layouts are in engine.md section 3.
+    [fstat] and [flevel] are RP2040 FSTAT and FLEVEL. [fdebug] is RP2040 FDEBUG with the
+    ILLEGAL flag of each SM in [31:28]. A FIFO of capacity 0 reads as both full and empty.
+    [pins_out] and [pins_oe] are the output level and direction registers. *)
+val fstat : t -> int
+
+val flevel : t -> int
+val fdebug : t -> int
+val pins_out : t -> int
+val pins_oe : t -> int
+
+(** DBG_CNT of SM [i] (DESIGN.md 7): ISR count [5:0], OSR count [13:8], delay [20:16],
+    stall reason [27:24]. *)
+val dbg_cnt : t -> int -> int
+
 (** Debug view of one SM, for the block 2 lockstep harness. *)
 type debug =
   { pc : int
@@ -191,6 +258,9 @@ type debug =
   ; irq_wait : int option
   ; latch_irq_wait : int option
   ; latch_stall : stall
+  ; exec_stalled : bool
+    (** EXECCTRL.EXEC_STALLED (engine.md F4): a host instruction is latched and its latest
+        attempt stalled *)
   ; side_done : bool
   ; host_side_done : bool
   ; sticky : int * int * int * int
@@ -203,7 +273,8 @@ type debug =
 val debug : t -> int -> debug
 
 (** DESIGN.md 7 DBG_CNT.stall_reason code: 0 none, 1 tx_empty, 2 rx_full, 3 autopull,
-    4 wait_gpio, 5 wait_pin, 6 wait_irq, 7 irq_wait. AMBIGUITY, see README. *)
+    4 wait_gpio, 5 wait_pin, 6 wait_irq, 7 irq_wait. The encoding is the one DESIGN §7 now
+    defines. *)
 val stall_code : stall -> int
 
 val stall_name : stall -> string

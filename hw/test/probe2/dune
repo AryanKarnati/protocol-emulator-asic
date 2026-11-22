@@ -1,0 +1,4 @@
+(executable
+ (name probe2)
+ (modules probe2)
+ (libraries polyglot_lockstep polyglot_pgsim))

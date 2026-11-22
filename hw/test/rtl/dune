@@ -1,0 +1,4 @@
+(library
+ (name polyglot_rtl_dut)
+ (modules rtl_dut)
+ (libraries polyglot_lockstep polyglot_hw hardcaml))

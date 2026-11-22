@@ -373,16 +373,32 @@ let%expect_test "set pindirs changes the direction but not the level (datasheet 
 (* ------------------------------------------------------------------------------------ *)
 (* Not in block 1 *)
 
-let%expect_test "LCU instructions are stubs that raise" =
-  let t = make [ enc (Isa.Set { delay_side = 0; dest = Set_lcu; data = 0 }) ] in
-  let raised =
-    try
-      ignore (Pgsim.step t);
-      false
-    with
-    | Failure _ -> true
+(* R12 (engine.md): the LCU extension words run as a NOP and set ILLEGAL, and keep their
+   delay. They used to raise. *)
+let%expect_test "LCU extension words run as a NOP and set ILLEGAL (R12)" =
+  let words =
+    [ enc (Isa.Set { delay_side = 0; dest = Set_lcu; data = 0 })
+    ; enc (Isa.In { delay_side = 0; source = In_lcu; bit_count = 8 })
+    ; enc (Isa.Mov { delay_side = 0; dest = Mov_x; op = Op_none; source = Ms_crc })
+    ]
   in
-  check "set lcu raises" raised
+  List.iter
+    (fun w ->
+      let t = make [ w; set_x 5 ] in
+      t.Pgsim.sms.(0).Pgsim.x <- 7;
+      ignore (run t 1);
+      let d = dbg t 0 in
+      check "lcu word is a NOP (x kept)" (d.Pgsim.x = 7);
+      check "lcu word sets ILLEGAL" d.Pgsim.illegal;
+      check "lcu word advances the PC" (d.Pgsim.pc = 1))
+    words
+;;
+
+let%expect_test "LCU word keeps its delay field (R12)" =
+  let w = enc (Isa.Set { delay_side = 3; dest = Set_lcu; data = 0 }) in
+  let t = make [ w; set_x 1 ] in
+  ignore (run t 1);
+  check "delay 3 applies" ((dbg t 0).Pgsim.delay = 3)
 ;;
 
 let%expect_test "mov x, osr copies OSR and resets its counter (datasheet 3.4.8.2)" =

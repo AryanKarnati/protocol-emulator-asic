@@ -1,0 +1,43 @@
+{
+  "format": "polyglot-lockstep-case",
+  "version": 1,
+  "num_sms": 4,
+  "load_cycles": 32,
+  "cycles": 203,
+  "imem": [
+    35072, 25742, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+  ],
+  "initial": [
+    {
+      "clkdiv": 65536,
+      "execctrl": 126976,
+      "shiftctrl": 786432,
+      "pinctrl": 335544320
+    },
+    {
+      "clkdiv": 65536,
+      "execctrl": 503509653,
+      "shiftctrl": 786432,
+      "pinctrl": 335544320
+    },
+    {
+      "clkdiv": 65536,
+      "execctrl": 126976,
+      "shiftctrl": 786432,
+      "pinctrl": 2914842307
+    },
+    {
+      "clkdiv": 130048,
+      "execctrl": 973259668,
+      "shiftctrl": 1441857536,
+      "pinctrl": 298564827
+    }
+  ],
+  "initial_sync_bypass": 4294967295,
+  "events": [
+    { "cycle": 0, "op": "imem_write", "addr": 3, "data": 65435 },
+    { "cycle": 49, "op": "imem_write", "addr": 2, "data": 18576 },
+    { "cycle": 119, "op": "sm_enable", "mask": 15 }
+  ]
+}

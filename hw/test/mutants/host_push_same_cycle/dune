@@ -1,0 +1,12 @@
+ (rule
+ (targets pgsim.ml)
+ (deps ../../../../sw/pgsim/pgsim.ml)
+ (action
+  (run %{exe:../tool/mutate.exe} ../../../../sw/pgsim/pgsim.ml pgsim.ml "  List.iter (fun (sm, w) -> Fifo.push t.sms.(sm).tx w) (List.rev !tx_in);" "  ();" "  Array.iteri\n    (fun i sm ->\n      let tick = divider_tick sm in" "  List.iter (fun (sm, w) -> Fifo.push t.sms.(sm).tx w) (List.rev !tx_in);\n  Array.iteri\n    (fun i sm ->\n      let tick = divider_tick sm in")))
+
+(rule (targets pgsim.mli) (deps ../../../../sw/pgsim/pgsim.mli) (action (copy ../../../../sw/pgsim/pgsim.mli pgsim.mli)))
+
+(library
+ (name pgsim_mut_host_push_same_cycle)
+ (modules pgsim)
+ (libraries polyglot_isa))
