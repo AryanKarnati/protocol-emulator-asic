@@ -43,6 +43,8 @@ The Tiny Tapeout top (`src/project.v`, `hw/top.ml`) stays as the block 1 gate de
 
 Port names are the Verilog names. The lockstep harness drives Cyclesim by these names, so they must match exactly. A `[@length 4]` list field such as `clkdiv` must come out as `clkdiv0` … `clkdiv3`. If ppx_hardcaml names list ports differently, use separate fields instead.
 
+`hw/pio_block.mli` exposes `val circuit : num_sms:int -> Hardcaml.Circuit.t`. This is the circuit the lockstep harness simulates, and it must behave exactly like the Verilog that `gen_verilog` prints.
+
 Ports exist for 4 SMs whatever `num_sms` is. For an SM `i ≥ num_sms` there is no logic: its outputs are 0, and inputs aimed at it are ignored.
 
 **Inputs**
@@ -204,7 +206,7 @@ Each ruling cites the datasheet text it settles. Items marked V1 are to be check
 - The divider runs whether or not the SM is enabled. P resets to 0, and CLKDIV_RESTART sets it to 0. `dbg_phase` is P.
 - **V1 item g.**
 
-**R11. Side-set** applies once, on the instruction's first attempt, even if the instruction stalls (§3.2.4 note). It is not repeated on later stalled attempts. Forced instructions keep their own side-set-done flag, so a forced instruction never changes the flag of the instruction it interrupts.
+**R11. Side-set** applies once, on the instruction's first attempt, even if the instruction stalls (§3.2.4 note). It is not repeated on later stalled attempts. The IMEM instruction and the latched instruction each keep their own side-set-done flag, the same split as F3 and F5. A latched instruction is a forced (INSTR) or EXEC one. A new INSTR write, or an OUT/MOV EXEC completing, clears the latch's flag. So a latched instruction never changes the flag of the IMEM instruction it interrupts, and a stalled IMEM instruction's flag never suppresses the latched instruction's side-set.
 
 **R12. Reserved words** run as a NOP and set ILLEGAL. The NOP keeps its delay and side-set field. The list is in DESIGN §9.1, and in block 2 it includes the three LCU extension encodings.
 
