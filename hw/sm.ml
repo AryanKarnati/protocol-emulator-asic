@@ -175,10 +175,10 @@ let create (scope : Scope.t) (i : _ I.t) =
   let imem_irqw = wire 1 in
   let latch_irqw = wire 1 in
   let exec_stalled = wire 1 in
-  let lvl_sticky_mask = wire 32 in
-  let lvl_sticky_val = wire 32 in
-  let dir_sticky_mask = wire 32 in
-  let dir_sticky_val = wire 32 in
+  (* OUT_STICKY record: the most recent OUT/SET/MOV pin write, level or direction. *)
+  let sticky_mask = wire 32 in
+  let sticky_val = wire 32 in
+  let sticky_isdir = wire 1 in
   (* Divider (engine.md R10, H4). *)
   let clk_out =
     Clkdiv.hierarchical_dbg
@@ -324,8 +324,12 @@ let create (scope : Scope.t) (i : _ I.t) =
   let push_clr = (push_drop |: push_fire) -- "push_clr" in
   (* ---- PULL (datasheet 3.4.7.2, engine.md R4) ---- *)
   let pull_now = now is_pull in
+  (* R4: with autopull, a PULL is a no-op only when the OSR is full (count 0). IfEmpty
+     keeps its own rule: no-op unless the count has reached the threshold. *)
   let pull_noop =
-    (pull_now &: (autopull |: pull_ifempty) &: (osr_cnt <: pull_thr)) -- "pull_noop"
+    (pull_now
+     &: ((autopull &: (osr_cnt ==: zero 6)) |: (pull_ifempty &: (osr_cnt <: pull_thr))))
+    -- "pull_noop"
   in
   let pull_try = (pull_now &: ~:pull_noop) -- "pull_try" in
   let pull_stall = (pull_try &: i.I.tx_empty &: pull_block) -- "pull_stall" in
@@ -390,7 +394,7 @@ let create (scope : Scope.t) (i : _ I.t) =
   let irq_set_form = (irq_now &: ~:irq_clr_bit) -- "irq_set_form" in
   let irq_state = mux2 latch_valid latch_irqw imem_irqw -- "irq_state" in
   let irqw_form = (irq_set_form &: irq_wait_bit) -- "irqw_form" in
-  let irqw_next = (irqw_form &: (~:irq_state |: flag_val)) -- "irqw_next" in
+  let irqw_next = irqw_form &: (~:irq_state |: flag_val) in
   let irq_stall = irqw_next -- "irq_stall" in
   let irq_set_now = (irq_set_form &: ~:irq_state) -- "irq_set_now" in
   (* ---- SET (datasheet 3.4.10.2) ---- *)
@@ -426,20 +430,19 @@ let create (scope : Scope.t) (i : _ I.t) =
   (* OUT_STICKY (engine.md OUT_STICKY): with the SM enabled and no new write this cycle,
      the last write of each kind is asserted again. *)
   let sticky_on = (out_sticky &: i.enable) in
-  let lvl_eff_mask =
-    mux2 lvl_write_now lvl_new_mask (repeat sticky_on 32 &: lvl_sticky_mask)
-    -- "lvl_eff_mask"
-  in
+  let write_any = (lvl_write_now |: dir_write_now) -- "write_any" in
+  (* The record re-asserts on its own kind only. A new write (of either kind) takes the
+     cycle itself; the other kind's new mask is zero, so it does not disturb it. *)
+  let rec_lvl = (repeat (sticky_on &: ~:sticky_isdir) 32 &: sticky_mask) in
+  let rec_dir = (repeat (sticky_on &: sticky_isdir) 32 &: sticky_mask) in
+  let lvl_eff_mask = mux2 write_any lvl_new_mask rec_lvl -- "lvl_eff_mask" in
   let lvl_eff_val =
-    mux2 lvl_write_now lvl_new_val (repeat sticky_on 32 &: lvl_sticky_val)
+    mux2 write_any lvl_new_val (repeat (sticky_on &: ~:sticky_isdir) 32 &: sticky_val)
     -- "lvl_eff_val"
   in
-  let dir_eff_mask =
-    mux2 dir_write_now dir_new_mask (repeat sticky_on 32 &: dir_sticky_mask)
-    -- "dir_eff_mask"
-  in
+  let dir_eff_mask = mux2 write_any dir_new_mask rec_dir -- "dir_eff_mask" in
   let dir_eff_val =
-    mux2 dir_write_now dir_new_val (repeat sticky_on 32 &: dir_sticky_val)
+    mux2 write_any dir_new_val (repeat (sticky_on &: sticky_isdir) 32 &: sticky_val)
     -- "dir_eff_val"
   in
   (* Side-set (datasheet 3.5.1, engine.md R11). It applies on the first attempt only, and
@@ -612,7 +615,7 @@ let create (scope : Scope.t) (i : _ I.t) =
   in
   (* Flags of the latched instruction are cleared by a new INSTR write, by restart and on
      completion. *)
-  let clr_latch_scope = (i.restart |: i.instr_write) -- "clr_latch_scope" in
+  let clr_latch_scope = (i.restart |: i.instr_write |: exec_set) -- "clr_latch_scope" in
   let latch_ss_next =
     mux2 clr_latch_scope gnd (mux2 attempt_latch stall latch_ss) -- "latch_ss_next"
   in
@@ -633,8 +636,13 @@ let create (scope : Scope.t) (i : _ I.t) =
     -- "imem_irqw_next"
   in
   let stall_reason_now = mux2 stall stall_code (zero 4) -- "stall_reason_now" in
+  (* F6: a latched instruction that writes the PC abandons the IMEM instruction, and its
+     stall reason goes with it. *)
   let imem_stall_next =
-    mux2 i.restart (zero 4) (mux2 attempt_imem stall_reason_now imem_stall)
+    mux2
+      i.restart
+      (zero 4)
+      (mux2 pc_write_latch (zero 4) (mux2 attempt_imem stall_reason_now imem_stall))
     -- "imem_stall_next"
   in
   let latch_stall_next =
@@ -708,35 +716,29 @@ let create (scope : Scope.t) (i : _ I.t) =
     reg (mkr ~width:1 ~reset_to:gnd) exec_stalled_next -- "exec_stalled_q"
   in
   exec_stalled <== reg_exec_stalled;
-  (* Sticky writes are kept per kind, and cleared by restart (engine.md H3). *)
-  let lvl_mask_next =
-    mux2 i.restart zero32 (mux2 lvl_write_now lvl_new_mask lvl_sticky_mask)
+  (* The OUT_STICKY record: a new write replaces all of it, and restart clears it (H3).
+     It is recorded whether or not the SM is enabled (a forced write counts). *)
+  let new_mask = mux2 dir_write_now dir_new_mask lvl_new_mask in
+  let new_val = mux2 dir_write_now dir_new_val lvl_new_val in
+  let sticky_mask_next =
+    mux2 i.restart zero32 (mux2 write_any new_mask sticky_mask)
   in
-  let lvl_val_next =
-    mux2 i.restart zero32 (mux2 lvl_write_now lvl_new_val lvl_sticky_val)
+  let sticky_val_next =
+    mux2 i.restart zero32 (mux2 write_any new_val sticky_val)
   in
-  let dir_mask_next =
-    mux2 i.restart zero32 (mux2 dir_write_now dir_new_mask dir_sticky_mask)
+  let sticky_isdir_next = mux2 i.restart gnd (mux2 write_any dir_write_now sticky_isdir) in
+  let reg_sticky_mask =
+    reg (mkr ~width:32 ~reset_to:zero32) sticky_mask_next -- "sticky_mask_q"
   in
-  let dir_val_next =
-    mux2 i.restart zero32 (mux2 dir_write_now dir_new_val dir_sticky_val)
+  sticky_mask <== reg_sticky_mask;
+  let reg_sticky_val =
+    reg (mkr ~width:32 ~reset_to:zero32) sticky_val_next -- "sticky_val_q"
   in
-  let reg_lvl_mask =
-    reg (mkr ~width:32 ~reset_to:zero32) lvl_mask_next -- "lvl_sticky_mask_q"
+  sticky_val <== reg_sticky_val;
+  let reg_sticky_isdir =
+    reg (mkr ~width:1 ~reset_to:gnd) sticky_isdir_next -- "sticky_isdir_q"
   in
-  lvl_sticky_mask <== reg_lvl_mask;
-  let reg_lvl_val =
-    reg (mkr ~width:32 ~reset_to:zero32) lvl_val_next -- "lvl_sticky_val_q"
-  in
-  lvl_sticky_val <== reg_lvl_val;
-  let reg_dir_mask =
-    reg (mkr ~width:32 ~reset_to:zero32) dir_mask_next -- "dir_sticky_mask_q"
-  in
-  dir_sticky_mask <== reg_dir_mask;
-  let reg_dir_val =
-    reg (mkr ~width:32 ~reset_to:zero32) dir_val_next -- "dir_sticky_val_q"
-  in
-  dir_sticky_val <== reg_dir_val;
+  sticky_isdir <== reg_sticky_isdir;
   (* ---- Outputs ---- *)
   let irq_set_out = onehot8 flag_idx irq_set_now -- "irq_set_out" in
   let irq_clr_out = onehot8 flag_idx (irq_clr_now |: wait_irq_clr) -- "irq_clr_out" in

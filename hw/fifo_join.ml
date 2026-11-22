@@ -63,7 +63,6 @@ let create (_scope : Scope.t) (i : _ I.t) =
       ~reset_to:(zero 4)
   in
   let spec_ptr = Reg_spec.override reset_spec ~reset_to:(zero 3) in
-  let spec_ptr = spec_ptr in
   (* Capacities. Joining one direction gives the other direction 0 words. Setting both
      bits is outside engine.md, and gives 0 to both (datasheet 3.5.3). *)
   let tx_cap = mux2 i.join_rx (zero 4) (mux2 i.join_tx (of_int ~width:4 8) (of_int ~width:4 4)) -- "tx_cap" in
@@ -111,32 +110,29 @@ let create (_scope : Scope.t) (i : _ I.t) =
     -- "rx_level_q"
   in
   rx_level <== rx_level_q;
-  let next_ptr ~wr_q ~inc ~cur ~last =
-    let n = mux2 i.flush (zero 3) (mux2 inc (wrap cur last) cur) in
-    ignore wr_q;
-    n
-  in
+  (* Pointer after a flush (H6), a push or pop, or unchanged. *)
+  let next_ptr ~inc ~cur ~last = mux2 i.flush (zero 3) (mux2 inc (wrap cur last) cur) in
   let tx_wr_q =
-    reg (Reg_spec.override spec_ptr ~reset_to:(zero 3))
-      (next_ptr ~wr_q:() ~inc:tx_store ~cur:tx_wr ~last:tx_last)
+    reg spec_ptr
+      (next_ptr ~inc:tx_store ~cur:tx_wr ~last:tx_last)
     -- "tx_wr_q"
   in
   tx_wr <== tx_wr_q;
   let tx_rd_q =
-    reg (Reg_spec.override spec_ptr ~reset_to:(zero 3))
-      (next_ptr ~wr_q:() ~inc:tx_pop_ok ~cur:tx_rd ~last:tx_last)
+    reg spec_ptr
+      (next_ptr ~inc:tx_pop_ok ~cur:tx_rd ~last:tx_last)
     -- "tx_rd_q"
   in
   tx_rd <== tx_rd_q;
   let rx_wr_q =
-    reg (Reg_spec.override spec_ptr ~reset_to:(zero 3))
-      (next_ptr ~wr_q:() ~inc:rx_store ~cur:rx_wr ~last:rx_last)
+    reg spec_ptr
+      (next_ptr ~inc:rx_store ~cur:rx_wr ~last:rx_last)
     -- "rx_wr_q"
   in
   rx_wr <== rx_wr_q;
   let rx_rd_q =
-    reg (Reg_spec.override spec_ptr ~reset_to:(zero 3))
-      (next_ptr ~wr_q:() ~inc:rx_pop_ok ~cur:rx_rd ~last:rx_last)
+    reg spec_ptr
+      (next_ptr ~inc:rx_pop_ok ~cur:rx_rd ~last:rx_last)
     -- "rx_rd_q"
   in
   rx_rd <== rx_rd_q;
