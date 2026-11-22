@@ -1,0 +1,23 @@
+[tasks]
+d5_1_0
+d5_1_255
+
+[options]
+d5_1_0: mode bmc
+d5_1_0: depth 300
+d5_1_255: mode bmc
+d5_1_255: depth 540
+
+[engines]
+d5_1_0: abc bmc3
+d5_1_255: abc bmc3
+
+[script]
+d5_1_0: read_verilog -formal -DFIXED_INT=1 -DFIXED_FRAC=0 clkdiv_d5_harness.v
+d5_1_255: read_verilog -formal -DFIXED_INT=1 -DFIXED_FRAC=255 clkdiv_d5_harness.v
+read_verilog -formal clkdiv_dbg.v
+prep -top clkdiv_d5_harness
+
+[files]
+build/clkdiv_dbg.v
+clkdiv_d5_harness.v

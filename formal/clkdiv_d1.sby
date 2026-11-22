@@ -1,0 +1,18 @@
+[tasks]
+prove
+
+[options]
+mode prove
+depth 3
+
+[engines]
+smtbmc z3
+
+[script]
+read_verilog -formal clkdiv_dbg.v
+read_verilog -formal clkdiv_d1_harness.v
+prep -top clkdiv_d1_harness
+
+[files]
+build/clkdiv_dbg.v
+clkdiv_d1_harness.v

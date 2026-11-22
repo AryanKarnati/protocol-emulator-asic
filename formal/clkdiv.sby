@@ -1,0 +1,26 @@
+[tasks]
+bmc_1_255
+cover_1_0
+cover_1_255
+
+[options]
+bmc_1_255: mode bmc
+bmc_1_255: depth 300
+cover_1_0: mode cover
+cover_1_0: depth 300
+cover_1_255: mode cover
+cover_1_255: depth 300
+
+[engines]
+smtbmc boolector
+
+[script]
+bmc_1_255: read_verilog -formal -DFIXED_INT=1 -DFIXED_FRAC=255 clkdiv_harness.v
+cover_1_0: read_verilog -formal -DFIXED_INT=1 -DFIXED_FRAC=0 -DCOVER_ZERO -DCOVER_WINDOW clkdiv_harness.v
+cover_1_255: read_verilog -formal -DFIXED_INT=1 -DFIXED_FRAC=255 -DCOVER_NONZERO clkdiv_harness.v
+read_verilog -formal clkdiv.v
+prep -top clkdiv_harness
+
+[files]
+build/clkdiv.v
+clkdiv_harness.v
