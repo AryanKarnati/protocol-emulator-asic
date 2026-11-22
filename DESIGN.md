@@ -364,7 +364,7 @@ Any other reserved encoding executes as a NOP and sets the sticky `FDEBUG.ILLEGA
 - Every other RP2350 PIO version 1 encoding: WAIT JMPPIN, MOV PINDIRS and the RX FIFO MOVs. Polyglot is binary-compatible with version 0 only, so version 1 programs fail loudly instead of running wrongly.
 - The three extension encodings (IN 100, MOV source 100, SET 011) when the LCU is absent: in blocks 2 to 4, or in a build with `LCU present` off.
 
-Before the LCU RTL starts (block 5), check that the three extension encodings are still reserved in RP2350 PIO version 1 **[verify]**. If one is not, move it to another reserved slot.
+The three extension encodings are still reserved in RP2350 PIO version 1 (checked 2026-11-21 against the RP2350 datasheet: §11.4.4.2 IN source 100, §11.4.10.2 MOV source 100 and §11.4.12.2 SET destination 011 all read "Reserved"). Programs written for either PIO version can therefore never contain them by accident.
 
 #### 9.2 Extensions
 
