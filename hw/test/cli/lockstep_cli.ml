@@ -35,6 +35,7 @@ let dut_of_name name ~num_sms : Dut.port_dut =
   in
   match name with
   | "pgsim" -> port (module Pgsim : Dut.PGSIM) ~pads_from_pins_in:true
+  | "rtl" -> Polyglot_rtl_dut.Rtl_dut.create ~num_sms
   | "delay_off_by_one" ->
     port (module Pgsim_mut_delay_off_by_one.Pgsim : Dut.PGSIM) ~pads_from_pins_in:true
   | "sideset_loses_to_out" ->
@@ -51,15 +52,17 @@ let dut_of_name name ~num_sms : Dut.port_dut =
 ;;
 
 let dut_name_of n =
-  if n = "pgsim" || List.mem n mutant_names then n else failwith ("unknown DUT " ^ n)
+  if n = "pgsim" || n = "rtl" || List.mem n mutant_names then n else failwith ("unknown DUT " ^ n)
 ;;
 
 (* Run [case] (normalised) on the reference and on the named DUT. *)
+let waive = ref false
+
 let check ~dut case =
   let num_sms = case.Case.num_sms in
   let reference = Dut.pgsim (module Pgsim : Dut.PGSIM) ~name:"pgsim-ref" ~pads_from_pins_in:false ~num_sms in
   let dut = dut_of_name dut ~num_sms in
-  Lockstep.run ~reference ~dut case
+  Lockstep.run ~waive_cycle0_fstat:!waive ~reference ~dut case
 ;;
 
 let print_failure ~label (case : Case.t) (f : Lockstep.failure) =
@@ -81,6 +84,7 @@ let flag args name default =
 let int_flag args name default = int_of_string (flag args name (string_of_int default))
 
 let cmd_gen args =
+  waive := List.mem "--waive-cycle0-fstat" args;
   let count = int_flag args "--count" 1000 in
   let seed = int_flag args "--seed" 1 in
   let dut = dut_name_of (flag args "--dut" "pgsim") in
@@ -94,7 +98,8 @@ let cmd_gen args =
       Case.write_file (Filename.concat save_dir (Printf.sprintf "gen_%04d.json" !saved)) c);
     check ~dut c
   in
-  match Gen.search ~seed ~check ~count () with
+  let sms = match flag args "--sms" "" with "" -> None | n -> Some (int_of_string n) in
+  match Gen.search ~seed ?sms ~check ~count () with
   | Gen.Passed { count; total_cycles; seconds } ->
     Printf.printf
       "gen: %d cases passed on %s (seed %d): %d compared cycles, %.2f s, %.3f ms per case\n" count dut
@@ -131,6 +136,7 @@ let write_cases dir cases =
 ;;
 
 let cmd_corpus args =
+  waive := List.mem "--waive-cycle0-fstat" args;
   let dir = flag args "--dir" "sw/pgasm/test/corpus" in
   let cycles = int_flag args "--cycles" 3000 in
   let dut = dut_name_of (flag args "--dut" "pgsim") in
@@ -180,12 +186,96 @@ let cmd_mutants args =
   if missed = [] then 0 else 1
 ;;
 
+(* Port base name: dbg_pc0 -> dbg_pc, irq -> irq. *)
+let port_base name =
+  let n = String.length name in
+  let rec cut i = if i > 0 && name.[i - 1] >= '0' && name.[i - 1] <= '9' then cut (i - 1) else i in
+  let i = cut n in
+  if i < n && i > 0 && name.[i - 1] = '_' then name else String.sub name 0 i
+
+(* Event kinds in the window of run cycles that ends at the failing one. *)
+let window_kinds (case : Case.t) (run_cycle : int) =
+  case.Case.events
+  |> List.filter (fun (cy, _) -> cy >= run_cycle - 3 && cy <= run_cycle)
+  |> List.map (fun (_, ev) -> Case.kind_name ev)
+  |> List.sort_uniq compare
+  |> String.concat "+"
+;;
+
+let cmd_triage args =
+  let count = int_flag args "--count" 1000 in
+  let seed = int_flag args "--seed" 1 in
+  let dut = dut_name_of (flag args "--dut" "rtl") in
+  let sms = match flag args "--sms" "" with "" -> None | n -> Some (int_of_string n) in
+  let out_dir = flag args "--out-dir" "." in
+  let passed, fails, cycles, secs =
+    Gen.search_all ~seed ?sms ~check:(check ~dut) ~count ()
+  in
+  let miss = Polyglot_rtl_dut.Rtl_dut.missing_ports () in
+  if miss <> [] then Printf.printf "RTL ports missing from the circuit: %s\n" (String.concat " " miss);
+  Printf.printf "triage on %s: %d cases, %d passed, %d failed, %d compared cycles, %.1f s\n" dut
+    count passed (List.length fails) cycles secs;
+  let classes = Hashtbl.create 16 in
+  List.iter
+    (fun (i, c, (f : Lockstep.failure)) ->
+      let run_cycle = f.Lockstep.cycle - Case.load_cycles in
+      let key =
+        Printf.sprintf "%s [%s]" (port_base f.Lockstep.port) (window_kinds c run_cycle)
+      in
+      let prev = Option.value (Hashtbl.find_opt classes key) ~default:[] in
+      Hashtbl.replace classes key ((i, c, f) :: prev))
+    fails;
+  let rows =
+    Hashtbl.fold (fun k v acc -> (k, List.rev v) :: acc) classes []
+    |> List.sort (fun (_, a) (_, b) -> compare (List.length b) (List.length a))
+  in
+  List.iter
+    (fun (key, members) ->
+      let i, _, (f : Lockstep.failure) = List.hd members in
+      Printf.printf "class %-45s count %4d  first: case %d, %s, port %s, ref=0x%x dut=0x%x\n" key
+        (List.length members) i (Lockstep.describe_cycle f.Lockstep.cycle) f.Lockstep.port f.Lockstep.reference
+        f.Lockstep.dut)
+    rows;
+  List.iteri
+    (fun k (key, members) ->
+      let _, c, f = List.hd members in
+      let shrunk, sf, steps = Gen.shrink_failing ~check:(check ~dut) ~limit:400 c f in
+      let file =
+        Filename.concat out_dir
+          (Printf.sprintf "class_%02d_%s.json" (k + 1)
+             (String.map (fun ch -> if ch = ' ' || ch = '[' || ch = ']' || ch = '+' then '_' else ch) key))
+      in
+      Case.write_file file shrunk;
+      Printf.printf "shrunk class %d (%s): %s, port %s, ref=0x%x dut=0x%x, %d shrink steps -> %s\n"
+        (k + 1) key (Lockstep.describe_cycle sf.Lockstep.cycle) sf.Lockstep.port sf.Lockstep.reference
+        sf.Lockstep.dut steps file)
+    rows;
+  if fails = [] then 0 else 1
+;;
+
 let cmd_write_cases args dir =
   let count = int_flag args "--count" 20 in
   let seed = int_flag args "--seed" 1 in
   write_cases dir (Corpus.cases ~dir:"sw/pgasm/test/corpus" ());
   for i = 1 to count do
     Case.write_file (Filename.concat dir (Printf.sprintf "gen_%03d.json" i)) (Gen.generate_one ~seed i)
+  done;
+  0
+;;
+
+(* Probe the RTL: print the register outputs after reset and over the first idle cycles. *)
+let cmd_rtl_probe args =
+  let num_sms = int_flag args "--sms" 4 in
+  let d = Polyglot_rtl_dut.Rtl_dut.create ~num_sms in
+  let show tag =
+    let o = d.Dut.regs () in
+    Printf.printf "%-12s fstat=%x flevel=%x fdebug=%x pins_oe=%x irq=%x phase0=%x\n" tag
+      o.Ports.fstat o.Ports.flevel o.Ports.fdebug o.Ports.pins_oe o.Ports.irq o.Ports.phase.(0)
+  in
+  show "after reset";
+  for c = 0 to 2 do
+    ignore (d.Dut.cycle (Ports.idle ~rst_n:true));
+    show (Printf.sprintf "idle %d" c)
   done;
   0
 ;;
@@ -199,6 +289,8 @@ let () =
     | _ :: "corpus" :: args -> cmd_corpus args
     | _ :: "mutants" :: args -> cmd_mutants args
     | _ :: "write-cases" :: dir :: args -> cmd_write_cases args dir
+    | _ :: "rtl-probe" :: args -> cmd_rtl_probe args
+    | _ :: "triage" :: args -> cmd_triage args
     | _ ->
       prerr_endline
         "usage: lockstep_cli (gen|replay FILE|corpus|mutants|write-cases DIR) [options]";

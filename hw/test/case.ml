@@ -319,3 +319,20 @@ let write_file path c =
   output_char oc '\n';
   close_out oc
 ;;
+
+let kind_name = function
+  | Ext_pins _ -> "ext_pins"
+  | Sm_enable _ -> "sm_enable"
+  | Sm_config _ -> "sm_config"
+  | Sync_bypass _ -> "sync_bypass"
+  | Tx_push _ -> "tx_push"
+  | Rx_pop _ -> "rx_pop"
+  | Instr_write _ -> "instr_write"
+  | Sm_restart _ -> "sm_restart"
+  | Clkdiv_restart _ -> "clkdiv_restart"
+  | Fifo_flush _ -> "fifo_flush"
+  | Irq_clear _ -> "irq_clear"
+  | Irq_force _ -> "irq_force"
+  | Fdebug_clear _ -> "fdebug_clear"
+  | Imem_write _ -> "imem_write"
+;;

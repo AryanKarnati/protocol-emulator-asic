@@ -18,7 +18,10 @@ type outcome =
 let history_len = 16
 
 (* Run [case] (normalised by the caller, see [Case.normalise]) on both. *)
-let run ~(reference : Dut.port_dut) ~(dut : Dut.port_dut) (case : Case.t) : outcome =
+(* [waive_cycle0_fstat]: skip the FSTAT comparison in global cycle 0 only. Used to triage
+   past a reset-visibility question on the RTL (see the round 2 report); it is off by
+   default and every use is labelled in the report. *)
+let run ?(waive_cycle0_fstat = false) ~(reference : Dut.port_dut) ~(dut : Dut.port_dut) (case : Case.t) : outcome =
   let inputs = Case.dense case in
   let rst = Ports.idle ~rst_n:false in
   ignore (reference.cycle rst);
@@ -32,7 +35,9 @@ let run ~(reference : Dut.port_dut) ~(dut : Dut.port_dut) (case : Case.t) : outc
     let d = dut.regs () in
     let rf = Ports.fields r in
     let df = Ports.fields d in
-    (match List.find_opt (fun ((_, a), (_, b)) -> a <> b) (List.combine rf df) with
+    let waived ((name, _) : string * int) = waive_cycle0_fstat && !n = 0 && name = "fstat" in
+    let pairs = List.filter (fun (a, _) -> not (waived a)) (List.combine rf df) in
+    (match List.find_opt (fun ((_, a), (_, b)) -> a <> b) pairs with
      | Some ((name, a), (_, b)) ->
        result
        := Some

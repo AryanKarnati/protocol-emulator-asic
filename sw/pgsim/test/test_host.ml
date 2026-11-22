@@ -315,3 +315,96 @@ let%test_unit "two pushes to one SM in one cycle are refused" =
 ;;
 
 let _ = fd_flags
+
+(* ------------------------------------------------------------------------------------ *)
+(* R4 (revised): under autopull a PULL is a no-op only when the OSR is full (count 0). *)
+
+let autopull_cfg = { C.reset with autopull = true; pull_thresh = 8 }
+
+let%test_unit "R4: a partly shifted OSR is not full, so PULL loads a fresh word" =
+  let t = make ~cfg:autopull_cfg [ pull (); jmp 0 ] in
+  t.Pgsim.sms.(0).Pgsim.osr <- 0xABC;
+  t.Pgsim.sms.(0).Pgsim.osr_count <- 3;
+  Pgsim.write_tx t 0 0x55;
+  step t;
+  let d = dbg t 0 in
+  check "osr loaded from TX" (d.Pgsim.osr = 0x55);
+  check "osr count cleared" (d.Pgsim.osr_count = 0);
+  check "tx consumed" (d.Pgsim.tx_fifo = [])
+;;
+
+let%test_unit "R4: a full OSR (count 0) makes PULL a no-op, TX is not consumed" =
+  let t = make ~cfg:autopull_cfg [ pull (); jmp 0 ] in
+  t.Pgsim.sms.(0).Pgsim.osr <- 0x12;
+  t.Pgsim.sms.(0).Pgsim.osr_count <- 0;
+  Pgsim.write_tx t 0 0x55;
+  step t;
+  let d = dbg t 0 in
+  check "osr unchanged" (d.Pgsim.osr = 0x12);
+  check "tx untouched" (d.Pgsim.tx_fifo = [ 0x55 ])
+;;
+
+let%test_unit "R4: a partly shifted OSR with an empty TX stalls a blocking PULL" =
+  let t = make ~cfg:autopull_cfg [ pull (); jmp 0 ] in
+  t.Pgsim.sms.(0).Pgsim.osr_count <- 3;
+  step t;
+  let d = dbg t 0 in
+  check "stalled on tx" (d.Pgsim.stall_code = 1);
+  check "txstall set" d.Pgsim.txstall;
+  check "pc held" (d.Pgsim.pc = 0)
+;;
+
+(* ------------------------------------------------------------------------------------ *)
+(* F6: a latched instruction that writes the PC abandons the IMEM instruction in progress. *)
+
+let side_cfg = { C.reset with sideset_count = 1; side_en = false; sideset_base = 0 }
+
+let%test_unit "F6: a forced JMP clears the IMEM side-set flag and stall reason, keeps delay" =
+  (* wait gpio 5 with side-set 1 (bit 4 of the field), stalled on the pad. *)
+  let wait_side = enc (Isa.Wait { delay_side = 0x10; polarity = true; source = Wsrc_gpio 5 }) in
+  let t = make ~cfg:side_cfg [ wait_side; jmp 0 ] in
+  step t;
+  let d = dbg t 0 in
+  check "stalled on wait gpio" (d.Pgsim.stall_code = 4);
+  check "side-set done" d.Pgsim.side_done;
+  step ~host:[ H.Instr_write { sm = 0; data = jmp 0 } ] t;
+  step t;
+  let d = dbg t 0 in
+  check "side-set flag cleared by F6" (not d.Pgsim.side_done);
+  check "imem stall reason cleared by F6" (d.Pgsim.stall_code = 0);
+  check "delay untouched" (d.Pgsim.delay = 0)
+;;
+
+let%test_unit "F6: a forced JMP clears an IMEM IRQ wait" =
+  let t = make [ irq_set ~wait:true 2; set_pins 1 ] in
+  step t;
+  check "irq wait raised" ((dbg t 0).Pgsim.irq_wait = Some 2);
+  step ~host:[ H.Instr_write { sm = 0; data = jmp 0 } ] t;
+  step t;
+  check "irq wait cleared by F6" ((dbg t 0).Pgsim.irq_wait = None)
+;;
+
+let%test_unit "F6: a forced instruction that does not write the PC leaves the wait alone" =
+  let wait_side = enc (Isa.Wait { delay_side = 0x10; polarity = true; source = Wsrc_gpio 5 }) in
+  let t = make ~cfg:side_cfg [ wait_side; jmp 0 ] in
+  step t;
+  step ~host:[ H.Instr_write { sm = 0; data = set_x 3 } ] t;
+  step t;
+  let d = dbg t 0 in
+  check "still stalled on the wait" (d.Pgsim.stall_code = 4);
+  check "side-set flag kept" d.Pgsim.side_done
+;;
+
+(* ------------------------------------------------------------------------------------ *)
+(* OUT_STICKY: one record, the most recent write replaces it. *)
+
+let%test_unit "OUT_STICKY keeps only the most recent write (levels replaced by a direction)" =
+  let cfg = { C.reset with set_count = 1; out_sticky = true } in
+  let t = make ~cfg [ set_pins 1; set_pindirs 1; jmp 2 ] in
+  step t;
+  check "level write recorded" ((dbg t 0).Pgsim.sticky = (1, 1, 0, 0));
+  step t;
+  check "direction write replaces the record" ((dbg t 0).Pgsim.sticky = (0, 0, 1, 1));
+  step t;
+  check "still asserted in a cycle with no write" (t.Pgsim.pin_dir land 1 = 1)
+;;

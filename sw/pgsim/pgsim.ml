@@ -556,8 +556,8 @@ let body sm ins ~src ~synced ~irq_snap ~(bodyw : pinw) ~(setw : int ref) ~(clrw 
   | Isa.Pull { if_empty; block; _ } ->
     (* OSR still holds unshifted data (count below threshold). *)
     let osr_has_data = sm.osr_count < thr_pull in
-    if c.autopull && osr_has_data
-    then done_ () (* PULL is a fence and a no-op while autopull has not refilled (3.5.4.2) *)
+    if c.autopull && sm.osr_count = 0
+    then done_ () (* R4: under autopull a PULL is a no-op only when the OSR is full (count 0) *)
     else if if_empty && osr_has_data
     then done_ ()
     else if not (Fifo.empty sm.tx)
@@ -728,7 +728,13 @@ let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
      (match src, jump with
       | Imem, Some a -> sm.pc <- a
       | Imem, None -> sm.pc <- wrap_next c sm.pc
-      | (Exec | Host), Some a -> sm.pc <- a
+      | (Exec | Host), Some a ->
+        (* F6: a latched instruction that writes the PC abandons the IMEM instruction in
+           progress: its side-set flag, IRQ wait and IMEM stall reason are cleared. *)
+        sm.pc <- a;
+        sm.side_done <- false;
+        sm.irq_wait <- None;
+        sm.stall <- No_stall
       | (Exec | Host), None -> ());
      (* A forced instruction's delay is ignored, and it leaves a pending delay alone
         (datasheet 3.5.7: "Delay cycles are ignored on instructions written to the INSTR

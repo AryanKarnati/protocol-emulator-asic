@@ -338,7 +338,7 @@ let shrink_failing ~check ~limit (c : Case.t) (f : Lockstep.failure) =
 
 (* Generate [count] cases from [seed] and run [check] on each. On the first failure, shrink
    it and stop. [check] runs the lockstep on one case. *)
-let search ?(seed = 1) ?(shrink_limit = 2000) ~check ~count () : search_result =
+let search ?(seed = 1) ?sms ?(shrink_limit = 2000) ~check ~count () : search_result =
   let random = Splittable_random.create (Base.Random.State.make [| seed |]) in
   let t0 = Sys.time () in
   let total_cycles = ref 0 in
@@ -347,6 +347,7 @@ let search ?(seed = 1) ?(shrink_limit = 2000) ~check ~count () : search_result =
     then Passed { count; total_cycles = !total_cycles; seconds = Sys.time () -. t0 }
     else (
       let c = G.generate generator ~size:(i mod 31) ~random in
+      let c = match sms with Some n -> { c with Case.num_sms = n } | None -> c in
       let c = Case.normalise c in
       match check c with
       | Lockstep.Pass { cycles } ->
@@ -363,4 +364,25 @@ let search ?(seed = 1) ?(shrink_limit = 2000) ~check ~count () : search_result =
 let generate_one ~seed i : Case.t =
   let random = Splittable_random.create (Base.Random.State.make [| seed; i |]) in
   Case.normalise (G.generate generator ~size:(i mod 31) ~random)
+;;
+
+(* Generate [count] cases and run every one (no stop at the first failure). Returns the
+   failing ones as (index, case, failure). [sms] pins num_sms when given. *)
+let search_all ?(seed = 1) ?sms ~check ~count () =
+  let random = Splittable_random.create (Base.Random.State.make [| seed |]) in
+  let fails = ref [] in
+  let passed = ref 0 in
+  let total_cycles = ref 0 in
+  let t0 = Sys.time () in
+  for i = 0 to count - 1 do
+    let c = G.generate generator ~size:(i mod 31) ~random in
+    let c = match sms with Some n -> { c with Case.num_sms = n } | None -> c in
+    let c = Case.normalise c in
+    match check c with
+    | Lockstep.Pass { cycles } ->
+      incr passed;
+      total_cycles := !total_cycles + cycles
+    | Lockstep.Fail f -> fails := (i, c, f) :: !fails
+  done;
+  !passed, List.rev !fails, !total_cycles, Sys.time () -. t0
 ;;

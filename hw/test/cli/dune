@@ -4,6 +4,7 @@
  (libraries
   polyglot_lockstep
   polyglot_pgsim
+  polyglot_rtl_dut
   pgsim_mut_delay_off_by_one
   pgsim_mut_sideset_loses_to_out
   pgsim_mut_autopull_no_refill_non_out
