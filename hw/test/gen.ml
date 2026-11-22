@@ -370,8 +370,36 @@ let shrink_case (c : Case.t) : Case.t Sequence.t =
       chunk_sizes
   in
   (* Earlier cycles: halve each event's cycle, or move it one cycle earlier. *)
+  (* The last SM_ENABLE moved to cycle 0 or halfway: enables gate every later event. *)
+  let last_enable =
+    List.fold_left
+      (fun acc (i, (cy, ev)) ->
+        match (ev, acc) with
+        | Case.Sm_enable _, Some (_, cy') when cy' >= cy -> acc
+        | Case.Sm_enable _, _ -> Some (i, cy)
+        | _ -> acc)
+      None
+      (List.mapi (fun i e -> (i, e)) evs)
+  in
+  let enable_moves =
+    match last_enable with
+    | None -> []
+    | Some (i, cy) ->
+      List.filter_map
+        (fun cy' ->
+          if cy' >= cy || cy' < 0
+          then None
+          else
+            Some
+              { c with
+                Case.events =
+                  List.mapi (fun j (c0, e) -> if i = j then (cy', e) else (c0, e)) evs
+              })
+        (List.sort_uniq Stdlib.compare [ 0; cy / 2 ])
+  in
   let moves =
-    List.concat
+    enable_moves
+    @ List.concat
       (List.mapi
          (fun i (cy, ev) ->
            if cy = 0

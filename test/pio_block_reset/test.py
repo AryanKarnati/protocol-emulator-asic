@@ -160,3 +160,50 @@ async def reset_mid_run(dut):
         await Timer(1, unit="ns")
     assert seen == {0, 1}, f"program loaded before the reset did not run after it: pins_out bit 0 seen {seen}"
     dut._log.info("program loaded before the reset runs after it: pins_out bit 0 toggled")
+
+
+@cocotb.test()
+async def fjoin_capacity_after_reset(dut):
+    """FIFO capacity follows the FJOIN input and reset does not change it (engine.md 3).
+
+    SM0 has FJOIN_RX set: RX takes all 8 entries and the other FIFO, TX, has capacity 0, so
+    TX reads both TXEMPTY and TXFULL. Checked in cycle 0 after a mid-run reset, with the FJOIN
+    configuration still presented. Values from engine.md section 3 and R0:
+    FSTAT = TXEMPTY [27:24] | RXEMPTY [11:8] | RXFULL [3:0] for each SM, all FIFOs empty.
+    """
+    cocotb.start_soon(Clock(dut.clock, 10, unit="ns").start())
+    drive_idle(dut)
+    FJOIN_RX = 1 << 31
+    dut.shiftctrl0.value = FJOIN_RX | SHIFTCTRL_RESET
+
+    dut.rst_n.value = 0
+    await RisingEdge(dut.clock)
+    await RisingEdge(dut.clock)
+    dut.rst_n.value = 1
+    await Timer(1, unit="ns")
+
+    # Expected FSTAT: every SM's TX and RX empty; SM0's TX also full (capacity 0).
+    expected = FSTAT_R0 | (1 << 16)
+    await ReadOnly()
+    got = int(dut.fstat.value)
+    await Timer(1, unit="ns")
+    assert got == expected, f"cycle 0 after the initial release: fstat 0x{got:08x}, expected 0x{expected:08x}"
+
+    # Run a few cycles, then a mid-run reset with the same FJOIN configuration.
+    dut.sm_enable.value = 0x1
+    for _ in range(8):
+        await RisingEdge(dut.clock)
+    dut.sm_enable.value = 0x0
+    await RisingEdge(dut.clock)
+    await Timer(3, unit="ns")
+    dut.rst_n.value = 0
+    await RisingEdge(dut.clock)
+    await RisingEdge(dut.clock)
+    await Timer(1, unit="ns")
+    dut.rst_n.value = 1
+    await Timer(1, unit="ns")
+    await ReadOnly()
+    got = int(dut.fstat.value)
+    await Timer(1, unit="ns")
+    assert got == expected, f"cycle 0 after the mid-run reset: fstat 0x{got:08x}, expected 0x{expected:08x}"
+    dut._log.info("fjoin_rx on SM0: capacity-0 RX reads empty and full at cycle 0 after reset (fstat 0x%08x)", got)
