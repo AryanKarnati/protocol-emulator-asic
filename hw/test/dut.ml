@@ -6,7 +6,9 @@
 
 type port_dut =
   { name : string
-  ; regs : unit -> Ports.outputs
+  ; regs : Ports.inputs -> Ports.outputs
+    (** the register outputs of the cycle whose inputs are given. FIFO capacity follows the
+        FJOIN input of that cycle (engine.md 3), so the inputs are applied before reading. *)
   ; cycle : Ports.inputs -> int
   }
 
@@ -25,7 +27,26 @@ let pgsim (module P : PGSIM) ~name ~pads_from_pins_in ~num_sms : port_dut =
     Array.blit imem 0 !t_ref.P.imem 0 (Array.length imem);
     Array.fill applied 0 4 None
   in
-  let regs () : Ports.outputs =
+  (* The configuration of the cycle, applied before its outputs are read. Changing FJOIN
+     rebuilds the FIFOs (the model keeps no FIFO depth outside the configuration). *)
+  let apply_config (i : Ports.inputs) =
+    for sm = 0 to num_sms - 1 do
+      let cfg =
+        P.Config.of_registers
+          ~clkdiv:i.clkdiv.(sm)
+          ~execctrl:i.execctrl.(sm)
+          ~shiftctrl:i.shiftctrl.(sm)
+          ~pinctrl:i.pinctrl.(sm)
+      in
+      match applied.(sm) with
+      | Some c when c = cfg -> ()
+      | _ ->
+        P.set_config !t_ref sm cfg;
+        applied.(sm) <- Some cfg
+    done
+  in
+  let regs (i : Ports.inputs) : Ports.outputs =
+    if i.rst_n then apply_config i;
     let t = !t_ref in
     let per f = Array.init 4 (fun i -> if i < num_sms then f i else 0) in
     let dbg i = P.debug t i in
@@ -81,6 +102,7 @@ let pgsim (module P : PGSIM) ~name ~pads_from_pins_in ~num_sms : port_dut =
       reset ();
       0)
     else (
+      apply_config i;
       let t = !t_ref in
       let rx =
         match i.rxf_pop with
@@ -88,18 +110,6 @@ let pgsim (module P : PGSIM) ~name ~pads_from_pins_in ~num_sms : port_dut =
         | Some _ | None -> 0
       in
       for sm = 0 to num_sms - 1 do
-        let cfg =
-          P.Config.of_registers
-            ~clkdiv:i.clkdiv.(sm)
-            ~execctrl:i.execctrl.(sm)
-            ~shiftctrl:i.shiftctrl.(sm)
-            ~pinctrl:i.pinctrl.(sm)
-        in
-        (match applied.(sm) with
-         | Some c when c = cfg -> ()
-         | _ ->
-           P.set_config t sm cfg;
-           applied.(sm) <- Some cfg);
         P.set_enabled t sm (i.sm_enable lsr sm land 1 = 1)
       done;
       t.P.sync_bypass <- i.sync_bypass;

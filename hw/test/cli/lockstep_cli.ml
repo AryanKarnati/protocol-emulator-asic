@@ -262,7 +262,7 @@ let cmd_rtl_probe args =
   let num_sms = int_flag args "--sms" 4 in
   let d = Polyglot_rtl_dut.Rtl_dut.create ~num_sms in
   let show tag =
-    let o = d.Dut.regs () in
+    let o = d.Dut.regs (Ports.idle ~rst_n:true) in
     Printf.printf "%-12s fstat=%x flevel=%x fdebug=%x pins_oe=%x irq=%x phase0=%x\n" tag
       o.Ports.fstat o.Ports.flevel o.Ports.fdebug o.Ports.pins_oe o.Ports.irq o.Ports.phase.(0)
   in

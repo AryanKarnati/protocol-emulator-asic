@@ -931,6 +931,8 @@ let step_ex ?(host = []) t =
   t.hist.(0) <- pad;
   let synced = synced t in
   let irq_snap = t.irq in
+  (* F7 compares the IMEM write address with the PC at the start of the cycle. *)
+  let pc0 = Array.map (fun sm -> sm.pc) t.sms in
   (* FDEBUG flags: the start-of-cycle values are kept aside, and the flags are rebuilt from
      the sets of this cycle (H8). *)
   let pre_flags = Array.map fdbg_of_sm t.sms in
@@ -1039,6 +1041,20 @@ let step_ex ?(host = []) t =
     if bit !clk_restart i = 1 then t.sms.(i).acc <- 0
   done;
   List.iter (fun (addr, data) -> t.imem.(addr) <- data) (List.rev !imem);
+  (* F7: a write to the address equal to an SM's PC abandons that SM's IMEM instruction: its
+     side-set flag, IRQ wait and IMEM stall reason are cleared. The value does not matter,
+     and the delay counter is untouched. This overrides the SM's own attempt of this cycle. *)
+  List.iter
+    (fun (addr, _) ->
+      Array.iteri
+        (fun i sm ->
+          if pc0.(i) = addr
+          then (
+            sm.side_done <- false;
+            sm.irq_wait <- None;
+            sm.stall <- No_stall))
+        t.sms)
+    !imem;
   List.iter (fun (sm, w) -> latch_instr t.sms.(sm) w) (List.rev !instrs);
   (* FDEBUG (H8). *)
   Array.iteri

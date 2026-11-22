@@ -19,7 +19,29 @@ let check name = function
   | Lockstep.Fail f -> failwith (name ^ ": unexpected mismatch\n" ^ Lockstep.report f)
 ;;
 
+(* Class A (engine.md 3): FIFO capacity follows the FJOIN input of the current cycle, and a
+   mid-run reset does not change it. In the first cycle after a reset with FJOIN_TX set, SM0's
+   TX reads capacity 0: both TXEMPTY and TXFULL. *)
+let fjoin_after_reset () =
+  let check what cond = if not cond then failwith ("FAILED: " ^ what) in
+  let d = Dut.pgsim (module Pgsim : Dut.PGSIM) ~name:"p" ~pads_from_pins_in:true ~num_sms:1 in
+  ignore (d.Dut.cycle (Ports.idle ~rst_n:false));
+  let inp fjoin_tx =
+    let i = Ports.idle ~rst_n:true in
+    { i with Ports.shiftctrl = [| (if fjoin_tx then 0x4000_0000 else 0) lor 0x000C_0000; 0; 0; 0 |];
+             pinctrl = Array.make 4 0x1400_0000; clkdiv = Array.make 4 0x10000; execctrl = Array.make 4 0x1F000 }
+  in
+  let o = d.Dut.regs (inp true) in
+  (* FJOIN_TX: TX has 8 entries, RX has capacity 0, so RX reads both RXEMPTY and RXFULL. *)
+  check "fjoin_tx: SM0 RX reads capacity 0 (RXEMPTY and RXFULL) in the first cycle after reset"
+    (o.Ports.fstat land (1 lsl 8) <> 0 && o.Ports.fstat land 1 <> 0);
+  ignore (d.Dut.cycle (inp true));
+  let o = d.Dut.regs (inp false) in
+  check "no join: SM0 RX capacity 4 (RXFULL clear)" (o.Ports.fstat land 1 = 0)
+;;
+
 let () =
+  fjoin_after_reset ();
   let c = Gen.generate_one ~seed:3 5 in
   assert (Case.of_text (Case.to_text c) = c);
   for i = 0 to 299 do

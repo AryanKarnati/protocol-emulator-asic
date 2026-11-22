@@ -50,9 +50,53 @@ let create ~num_sms : Dut.port_dut =
       0
   in
   let per name = Array.init 4 (fun i -> get (Printf.sprintf "%s%d" name i)) in
-  let regs () : Ports.outputs =
-    (* Settle the combinational outputs before reading: without this, cycle-0 reads of
-       FSTAT and DBG_CNT show zeros instead of the reset values (round 2). *)
+  (* Drive the input ports for one cycle (rst_n high). *)
+  let drive (i : Ports.inputs) =
+    set "rst_n" 1 1;
+    set "sm_enable" 4 i.Ports.sm_enable;
+    for k = 0 to 3 do
+      set (Printf.sprintf "clkdiv%d" k) 32 i.Ports.clkdiv.(k);
+      set (Printf.sprintf "execctrl%d" k) 32 i.Ports.execctrl.(k);
+      set (Printf.sprintf "shiftctrl%d" k) 32 i.Ports.shiftctrl.(k);
+      set (Printf.sprintf "pinctrl%d" k) 32 i.Ports.pinctrl.(k)
+    done;
+    set "sync_bypass" 32 i.Ports.sync_bypass;
+    set "pins_in" 32 i.Ports.pins_in;
+    set "sm_restart" 4 i.Ports.sm_restart;
+    set "clkdiv_restart" 4 i.Ports.clkdiv_restart;
+    set "fifo_flush" 4 i.Ports.fifo_flush;
+    set "irq_clear" 8 i.Ports.irq_clear;
+    set "irq_force" 8 i.Ports.irq_force;
+    set "fdebug_clear" 32 i.Ports.fdebug_clear;
+    (match i.Ports.txf_push with
+     | Some (sm, d) ->
+       set "txf_push" 1 1;
+       set "txf_sm" 2 sm;
+       set "txf_data" 32 d
+     | None -> set "txf_push" 1 0);
+    (match i.Ports.rxf_pop with
+     | Some sm ->
+       set "rxf_pop" 1 1;
+       set "rxf_sm" 2 sm
+     | None -> set "rxf_pop" 1 0);
+    (match i.Ports.instr_write with
+     | Some (sm, d) ->
+       set "instr_write" 1 1;
+       set "instr_sm" 2 sm;
+       set "instr_data" 16 d
+     | None -> set "instr_write" 1 0);
+    (match i.Ports.imem_write with
+     | Some (a, d) ->
+       set "imem_write" 1 1;
+       set "imem_addr" 5 a;
+       set "imem_data" 16 d
+     | None -> set "imem_write" 1 0);
+    Sim.cycle_check sim
+  in
+  (* Outputs of the cycle: the inputs are driven first, since FIFO capacity follows FJOIN
+     (engine.md 3). Register outputs do not depend on the rest. *)
+  let regs (i : Ports.inputs) : Ports.outputs =
+    if i.Ports.rst_n then drive i;
     Sim.cycle_before_clock_edge sim;
     { Ports.pins_out = get "pins_out"
     ; pins_oe = get "pins_oe"
@@ -77,47 +121,7 @@ let create ~num_sms : Dut.port_dut =
       reset ();
       0)
     else (
-      set "rst_n" 1 1;
-      set "sm_enable" 4 i.Ports.sm_enable;
-      for k = 0 to 3 do
-        set (Printf.sprintf "clkdiv%d" k) 32 i.Ports.clkdiv.(k);
-        set (Printf.sprintf "execctrl%d" k) 32 i.Ports.execctrl.(k);
-        set (Printf.sprintf "shiftctrl%d" k) 32 i.Ports.shiftctrl.(k);
-        set (Printf.sprintf "pinctrl%d" k) 32 i.Ports.pinctrl.(k)
-      done;
-      set "sync_bypass" 32 i.Ports.sync_bypass;
-      set "pins_in" 32 i.Ports.pins_in;
-      set "sm_restart" 4 i.Ports.sm_restart;
-      set "clkdiv_restart" 4 i.Ports.clkdiv_restart;
-      set "fifo_flush" 4 i.Ports.fifo_flush;
-      set "irq_clear" 8 i.Ports.irq_clear;
-      set "irq_force" 8 i.Ports.irq_force;
-      set "fdebug_clear" 32 i.Ports.fdebug_clear;
-      (match i.Ports.txf_push with
-       | Some (sm, d) ->
-         set "txf_push" 1 1;
-         set "txf_sm" 2 sm;
-         set "txf_data" 32 d
-       | None -> set "txf_push" 1 0);
-      (match i.Ports.rxf_pop with
-       | Some sm ->
-         set "rxf_pop" 1 1;
-         set "rxf_sm" 2 sm
-       | None -> set "rxf_pop" 1 0);
-      (match i.Ports.instr_write with
-       | Some (sm, d) ->
-         set "instr_write" 1 1;
-         set "instr_sm" 2 sm;
-         set "instr_data" 16 d
-       | None -> set "instr_write" 1 0);
-      (match i.Ports.imem_write with
-       | Some (a, d) ->
-         set "imem_write" 1 1;
-         set "imem_addr" 5 a;
-         set "imem_data" 16 d
-       | None -> set "imem_write" 1 0);
-      Sim.cycle_check sim;
-      (* rxf_data is combinational: read it before the clock edge, with this cycle's pop. *)
+      drive i;
       Sim.cycle_before_clock_edge sim;
       let rx = match i.Ports.rxf_pop with Some _ -> get "rxf_data" | None -> 0 in
       Sim.cycle_at_clock_edge sim;

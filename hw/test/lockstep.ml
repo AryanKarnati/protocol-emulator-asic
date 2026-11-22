@@ -39,15 +39,26 @@ let run ?(waive_cycle0_fstat = false) ?(waive_after_reset_fifo = false) ~(refere
   (* The loop runs one compare past the last cycle: the state after the last clock edge is
      compared too (engine.md 5). Inputs are only driven for cycles below [total]. *)
   while Option.is_none !result && !n <= total do
-    let r = reference.regs () in
-    let d = dut.regs () in
+    (* Nothing is compared while rst_n is low (engine.md 5). The outputs of a cycle are read
+       with that cycle's inputs applied (FIFO capacity follows FJOIN), with pins_in not yet set:
+       pins_in does not affect the register outputs. *)
+    (* The final compare (after the last cycle) uses the last cycle's configuration. *)
+    let inp0 =
+      if !n < total then inputs.(!n) else { inputs.(total - 1) with Ports.rst_n = true }
+    in
+    let r = reference.regs inp0 in
+    let d = dut.regs inp0 in
     let rf = Ports.fields r in
     let df = Ports.fields d in
     let waived ((name, _) : string * int) =
       (waive_cycle0_fstat && !n = 0 && name = "fstat")
       || (waive_after_reset_fifo && !reset_seen && fifo_port_after_reset name)
     in
-    let pairs = List.filter (fun (a, _) -> not (waived a)) (List.combine rf df) in
+    let pairs =
+      if inp0.Ports.rst_n
+      then List.filter (fun (a, _) -> not (waived a)) (List.combine rf df)
+      else []
+    in
     (match List.find_opt (fun ((_, a), (_, b)) -> a <> b) pairs with
      | Some ((name, a), (_, b)) ->
        result

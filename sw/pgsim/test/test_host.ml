@@ -446,3 +446,57 @@ let%test_unit "H3: SM_RESTART clears the latched IRQ wait" =
   check "restart clears the latch" ((dbg t 0).Pgsim.latch = Pgsim.No_latch);
   check "restart clears the latched IRQ wait" ((dbg t 0).Pgsim.latch_irq_wait = None)
 ;;
+
+(* ------------------------------------------------------------------------------------ *)
+(* F7: an IMEM write to the address equal to the SM's PC abandons the IMEM instruction (side-set
+   flag, IRQ wait and IMEM stall reason cleared at the end of the write cycle). *)
+
+let irq_wait2 = enc (Isa.Irq { delay_side = 0; clear = false; wait = true; index = 2; rel = false })
+
+let%test_unit "F7: a write at the PC clears a stalled IRQ wait and its stall reason" =
+  let t = make [ irq_wait2; set_pins 1 ] in
+  step t;
+  check "wait raised" ((dbg t 0).Pgsim.irq_wait = Some 2);
+  step ~host:[ H.Imem_write { addr = 0; data = set_pins 0 } ] t;
+  let d = dbg t 0 in
+  check "irq wait cleared at the end of the write cycle" (d.Pgsim.irq_wait = None);
+  check "imem stall reason cleared" (d.Pgsim.stall_code = 0)
+;;
+
+let%test_unit "F7: the new word runs fresh after the abandoned wait" =
+  let t = make [ irq_wait2; jmp 0 ] in
+  step t;
+  step ~host:[ H.Imem_write { addr = 0; data = set_pins 1 } ] t;
+  (* Flag 2 is still set, so the old IRQ wait would stall. The new word is a SET and runs. *)
+  step t;
+  check "new word ran: pin 0 high" (t.Pgsim.pin_level land 1 = 1 || (dbg t 0).Pgsim.pc = 1)
+;;
+
+let%test_unit "F7: a write at the PC clears the side-set flag" =
+  let wait_side = enc (Isa.Wait { delay_side = 0x10; polarity = true; source = Wsrc_gpio 5 }) in
+  let t = make ~cfg:side_cfg [ wait_side; jmp 0 ] in
+  step t;
+  check "side-set done" (dbg t 0).Pgsim.side_done;
+  step ~host:[ H.Imem_write { addr = 0; data = wait_side } ] t;
+  check "side-set flag cleared, even with the same value" (not (dbg t 0).Pgsim.side_done)
+;;
+
+let%test_unit "F7: a write elsewhere (not the PC) leaves the stalled instruction alone" =
+  let t = make [ irq_wait2; set_pins 1 ] in
+  step t;
+  step ~host:[ H.Imem_write { addr = 1; data = set_pins 0 } ] t;
+  check "wait kept" ((dbg t 0).Pgsim.irq_wait = Some 2)
+;;
+
+let%test_unit "F7: the delay counter is untouched" =
+  let delayed = enc (Isa.Set { delay_side = 3; dest = Set_x; data = 1 }) in
+  let mk () = make [ delayed; set_x 2; jmp 1 ] in
+  let a = mk () in
+  let b = mk () in
+  step a;
+  step b;
+  (* Both completed the delayed SET at pc 0 with delay 3, pc now 1. *)
+  step a;
+  step ~host:[ H.Imem_write { addr = 1; data = set_x 9 } ] b;
+  check "delay identical with and without the write" ((dbg a 0).Pgsim.delay = (dbg b 0).Pgsim.delay)
+;;

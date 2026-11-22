@@ -20,8 +20,8 @@ let () =
   ignore (dut.Dut.cycle (Ports.idle ~rst_n:false));
   Array.iteri
     (fun n inp ->
-      let r = reference.Dut.regs () in
-      let d = dut.Dut.regs () in
+      let r = reference.Dut.regs inp in
+      let d = dut.Dut.regs inp in
       if n >= Case.load_cycles then (
         let cy = n - Case.load_cycles in
         let show (o : Ports.outputs) =
