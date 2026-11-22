@@ -615,7 +615,7 @@ let create (scope : Scope.t) (i : _ I.t) =
   in
   (* Flags of the latched instruction are cleared by a new INSTR write, by restart and on
      completion. *)
-  let clr_latch_scope = (i.restart |: i.instr_write) -- "clr_latch_scope" in
+  let clr_latch_scope = (i.restart |: i.instr_write |: exec_set) -- "clr_latch_scope" in
   let latch_ss_next =
     mux2 clr_latch_scope gnd (mux2 attempt_latch stall latch_ss) -- "latch_ss_next"
   in

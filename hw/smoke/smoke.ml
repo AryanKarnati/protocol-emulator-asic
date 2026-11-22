@@ -998,7 +998,202 @@ let absent_engines () =
     ()
 ;;
 
+(* ---------- 12. Round 3: ports for every num_sms, R11, restart, flush, H7, two engines ---------- *)
+
+(* engine.md section 3: every port exists for num_sms 1 to 4. Expected names and widths. *)
+let section3_inputs =
+  [ "clock", 1; "rst_n", 1; "sm_enable", 4 ]
+  @ List.concat_map (fun p -> List.init 4 (fun k -> Printf.sprintf "%s%d" p k, 32))
+      [ "clkdiv"; "execctrl"; "shiftctrl"; "pinctrl" ]
+  @ [ "sync_bypass", 32; "pins_in", 32; "sm_restart", 4; "clkdiv_restart", 4; "fifo_flush", 4
+    ; "irq_clear", 8; "irq_force", 8; "fdebug_clear", 32; "txf_push", 1; "txf_sm", 2
+    ; "txf_data", 32; "rxf_pop", 1; "rxf_sm", 2; "instr_write", 1; "instr_sm", 2
+    ; "instr_data", 16; "imem_write", 1; "imem_addr", 5; "imem_data", 16 ]
+;;
+
+let section3_outputs =
+  [ "pins_out", 32; "pins_oe", 32; "irq", 8; "rxf_data", 32; "fstat", 32; "flevel", 32
+  ; "fdebug", 32 ]
+  @ List.init 4 (fun k -> Printf.sprintf "dbg_pc%d" k, 5)
+  @ List.concat_map (fun p -> List.init 4 (fun k -> Printf.sprintf "%s%d" p k, 32))
+      [ "dbg_x"; "dbg_y"; "dbg_isr"; "dbg_osr"; "dbg_cnt" ]
+  @ List.init 4 (fun k -> Printf.sprintf "dbg_exec_stalled%d" k, 1)
+  @ List.init 4 (fun k -> Printf.sprintf "dbg_phase%d" k, 25)
+;;
+
+let port_check () =
+  for n = 1 to 4 do
+    let sim = Cyclesim.create (Polyglot_hw.Pio_block.circuit ~num_sms:n) in
+    let widths ports = List.map (fun (name, r) -> name, Bits.width !r) ports in
+    let ins = widths (Cyclesim.in_ports sim) in
+    let outs = widths (Cyclesim.out_ports sim) in
+    let check what want got =
+      let missing = List.filter (fun p -> not (List.mem p got)) want in
+      let extra = List.filter (fun p -> not (List.mem p want)) got in
+      List.iter (fun (name, w) -> Printf.printf "  num_sms=%d %s missing %s[%d]\n%!" n what name w) missing;
+      List.iter (fun (name, w) -> Printf.printf "  num_sms=%d %s extra %s[%d]\n%!" n what name w) extra;
+      expect (Printf.sprintf "num_sms=%d %s port list" n what) ~cyc:0
+        (List.length missing + List.length extra) 0
+    in
+    check "input" section3_inputs ins;
+    check "output" section3_outputs outs
+  done
+;;
+
+(* R11 (round 3): the IMEM WAIT and the latched instruction each keep their own side-set
+   flag. Side-set on pin 5. Pin 1 low, so the WAIT GPIO 1 stalls. pins_in is 0xE001.
+     c0 IMEM WAIT 1 GPIO 1, side 1: side-set applies once (pin 5 = 1 from c1); stalls.
+     c2 host forces MOV EXEC,PINS with side 1 (0xB080). It runs in c3, side 1 (pin 5 stays 1),
+        and latches the low 16 bits of PINS (0xE001) as an EXEC instruction.
+     c4 EXEC SET PINS,1 side 0 runs: its own side-set applies on its first attempt, so pin 5
+        goes to 0 (from c5), and pin 0 goes to 1.
+     c5 the IMEM WAIT retries: its flag is still set, so no side-set. Pin 5 stays 0. *)
+let r11_latch_flag () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0x3081 (* WAIT 1 GPIO 1, side 1 *);
+  set tb "pins_in" 0xE001;
+  set tb "sync_bypass" 0xFFFF_FFFF;
+  preload tb;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ~sideset_count:1 ~sideset_base:5 ());
+  run tb 7
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      if c = 2
+      then (
+        set tb "instr_write" 1;
+        set tb "instr_sm" 0;
+        set tb "instr_data" 0xB080))
+    ~check:(fun c () ->
+      check_arr "r11 pin5" tb ~name:"pins_out" ~mask:0x20
+        (Array.map (fun b -> b * 0x20) [| 0; 1; 1; 1; 1; 0; 0 |]) c;
+      check_arr "r11 pin0" tb ~name:"pins_out" ~mask:1 [| 0; 0; 0; 0; 0; 1; 1 |] c;
+      check_arr "r11 pc" tb ~name:"dbg_pc0" ~mask:31 (Array.make 7 0) c)
+    ()
+;;
+
+(* Restart (H3) clears the OUT_STICKY record and both stall reasons. SM1 (higher) runs
+   SET PINS,1 then WAIT 1 GPIO 1 (stalls), with sticky on. SM0 runs SET PINS,0 and is
+   enabled only in c6. Restart of SM1 in c4 clears its record, so SM0's write in c6 wins
+   (c7 pin 0 = 0). Without the restart SM1 would re-assert pin 0 = 1 and win.
+   SM1 stall reason 4 is visible c2..c4 and c6 onward, and 0 in c5 (the restart cleared
+   it, and the retry in c5 shows from c6). *)
+let restart_clears_sticky () =
+  let tb = make ~num_sms:2 in
+  load_imem tb 0 0xE000 (* SET PINS,0 *);
+  load_imem tb 1 0x0001 (* JMP 1 *);
+  load_imem tb 8 0xE001 (* SET PINS,1 *);
+  load_imem tb 9 0x2081 (* WAIT 1 GPIO 1 *);
+  cfg_all tb ~sms:[ 0 ] ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  configure tb ~sm:1 ~clkdiv:clkdiv_1 ~execctrl:(execctrl_default lor (1 lsl 17))
+    ~shiftctrl:shiftctrl_default ~pinctrl_v:(pinctrl ());
+  force_jmp tb ~sm:1 ~addr:8;
+  run tb 9
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 2;
+      if c = 4 then set tb "sm_restart" 2;
+      if c = 6 then set tb "sm_enable" 3)
+    ~check:(fun c () ->
+      check_arr "restart pin0" tb ~name:"pins_out" ~mask:1 [| 0; 1; 1; 1; 1; 1; 1; 0; 0 |] c;
+      check_arr "restart pc1" tb ~name:"dbg_pc1" ~mask:31 [| 8; 9; 9; 9; 9; 9; 9; 9; 9 |] c;
+      check_arr "restart stall reason" tb ~name:"dbg_cnt1" ~mask:0x0F00_0000
+        (Array.map (fun r -> r lsl 24) [| 0; 0; 4; 4; 4; 0; 4; 4; 4 |]) c)
+    ()
+;;
+
+(* Flush in the same cycle as a push (H6, H1). Non-joined TX, 4 words. Case A: the FIFO is
+   full, and in c4 the host pushes and flushes together. The push is dropped (TXOVER, from
+   H1), and the flush empties the FIFO. Case B: 2 words, and the push-with-flush in c2 is
+   dropped by the flush, with no TXOVER. *)
+let flush_with_push () =
+  let tb = make ~num_sms:1 in
+  run tb 6
+    ~f:(fun c () ->
+      if c < 4 || c = 4
+      then (
+        set tb "txf_push" 1;
+        set tb "txf_data" (c + 1));
+      if c = 4 then set tb "fifo_flush" 1)
+    ~check:(fun c () ->
+      if c = 5
+      then (
+        expect "flush A level" ~cyc:c (get tb "flevel" land 0xF) 0;
+        expect "flush A fstat" ~cyc:c (get tb "fstat") 0x0100_0100;
+        expect "flush A TXOVER" ~cyc:c (get tb "fdebug") 0x0001_0000))
+    ();
+  let tb = make ~num_sms:1 in
+  run tb 4
+    ~f:(fun c () ->
+      if c < 2 || c = 2
+      then (
+        set tb "txf_push" 1;
+        set tb "txf_data" (c + 1));
+      if c = 2 then set tb "fifo_flush" 1)
+    ~check:(fun c () ->
+      if c = 3
+      then (
+        expect "flush B level" ~cyc:c (get tb "flevel" land 0xF) 0;
+        expect "flush B fstat" ~cyc:c (get tb "fstat") 0x0100_0100;
+        expect "flush B TXOVER" ~cyc:c (get tb "fdebug") 0))
+    ()
+;;
+
+(* H7: a forced PULL stalls on empty TX and retries. In c4 a new INSTR write arrives. The
+   retry in c4 still runs (it stalls again), and the new SET PINS,1 replaces the latch at the
+   end of c4, so it runs in c5 and pin 0 is 1 from c6. exec_stalled and the latch stall reason
+   are 1 from c2 to c4, and 0 from c5 (the new write clears them). *)
+let h7_replace_latch () =
+  let tb = make ~num_sms:1 in
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  run tb 8
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      if c = 0 then (set tb "instr_write" 1; set tb "instr_data" 0x80A0);
+      if c = 4 then (set tb "instr_write" 1; set tb "instr_data" 0xE001))
+    ~check:(fun c () ->
+      check_arr "h7 exec_stalled" tb ~name:"dbg_exec_stalled0" ~mask:1 [| 0; 0; 1; 1; 1; 0; 0; 0 |] c;
+      check_arr "h7 latch stall" tb ~name:"dbg_cnt0" ~mask:0x0F00_0000
+        (Array.map (fun r -> r lsl 24) [| 0; 0; 1; 1; 1; 0; 0; 0 |]) c;
+      check_arr "h7 pin0" tb ~name:"pins_out" ~mask:1 [| 0; 0; 0; 0; 0; 0; 1; 1 |] c;
+      check_arr "h7 pc" tb ~name:"dbg_pc0" ~mask:31 (Array.make 8 0) c)
+    ()
+;;
+
+(* num_sms 2 with SM1 enabled. SM1 runs IRQ set 2 (0xC002) and loops. Two words are pushed
+   to its TX. Its IRQ flag 2 (0x4) shows from c1. Its FIFO bits: TX level 1 then 2 (FLEVEL
+   bits 11:8), TXEMPTY clear (bit 25), RXEMPTY set (bit 9). SM0's bits stay empty. *)
+let two_engines_sm1 () =
+  let tb = make ~num_sms:2 in
+  load_imem tb 8 0xC002 (* IRQ set 2 *);
+  load_imem tb 9 0x0009 (* JMP 9 *);
+  cfg_all tb ~sms:[ 0; 1 ] ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  force_jmp tb ~sm:1 ~addr:8;
+  run tb 3
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 2;
+      if c < 2
+      then (
+        set tb "txf_push" 1;
+        set tb "txf_sm" 1;
+        set tb "txf_data" (0x11 * (c + 1))))
+    ~check:(fun c () ->
+      check_arr "two irq" tb ~name:"irq" ~mask:0xFF [| 0; 4; 4 |] c;
+      check_arr "two pc1" tb ~name:"dbg_pc1" ~mask:31 [| 8; 9; 9 |] c;
+      check_arr "two fstat" tb ~name:"fstat" ~mask:0xFFFF_FFFF [| 0x0300_0300; 0x0100_0300; 0x0100_0300 |] c;
+      check_arr "two flevel" tb ~name:"flevel" ~mask:0xFFFF_FFFF [| 0; 0x100; 0x200 |] c)
+    ()
+;;
+
 let () =
+  port_check ();
+  r11_latch_flag ();
+  restart_clears_sticky ();
+  flush_with_push ();
+  h7_replace_latch ();
+  two_engines_sm1 ();
   decoder_exhaustive ();
   set_pins_loop ();
   side_set_stall ();

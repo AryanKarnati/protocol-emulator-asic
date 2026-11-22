@@ -258,7 +258,23 @@ let create ~num_sms (scope : Scope.t) (i : _ I.t) =
          else zero 32))
     -- "rxf_data"
   in
-  let pick k w f = if k < n then f (eng k).sm else zero w in
+  (* Engines i >= num_sms have no logic (engine.md section 3). Their config inputs are
+     unconnected in the logic. They still appear in the circuit (so that the port list is
+     the same for every num_sms): each is XORed into a term that is always 0, so that the
+     outputs of an absent engine stay 0. [x ^: x] is constant 0 for every input value. *)
+  let absent_sink =
+    let absent =
+      List.concat_map
+        (fun k ->
+          if k < n
+          then []
+          else [ clkdivs.(k); execctrls.(k); shiftctrls.(k); pinctrls.(k) ])
+        [ 0; 1; 2; 3 ]
+    in
+    List.fold_left (fun acc s -> acc ^: s) (zero 32) absent
+  in
+  let absent_zero w = (uresize absent_sink w ^: uresize absent_sink w) in
+  let pick k w f = if k < n then f (eng k).sm else absent_zero w in
   { O.pins_out = pins_out_q
   ; pins_oe = pins_oe_q
   ; irq = irq_q
