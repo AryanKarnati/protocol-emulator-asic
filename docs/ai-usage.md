@@ -57,3 +57,11 @@ On 2026-11-21 the owner delegated these five decisions to the orchestrator, with
 3. **The three Polyglot extension slots** (IN source 100, MOV source 100, SET destination 011) are still unused in RP2350 PIO v1, according to `pioasm` 2.3.1's disassembler and the SDK's enums. The RP2350 datasheet itself has not been checked yet.
 4. **Host-forced instructions (`SMn_INSTR`) run immediately**, ignoring the clock divider and their own delay field, as RP2040 datasheet §3.5.7 says. DESIGN.md §8.2 says "on the next tick", and should be reworded to match.
 5. **`DBG_CNT.stall_reason` encoding.** DESIGN.md §7 names the field but gives no encoding. pgsim uses 0 none, 1 TX empty, 2 RX full, 3 autopull, 4 WAIT gpio, 5 WAIT pin, 6 WAIT irq, 7 IRQ wait. The RTL should adopt the same encoding in block 3.
+
+## Block 2 log
+
+| Task | Worker | What checked it | What the check found |
+| --- | --- | --- | --- |
+| Block 2 contract (`docs/engine.md`) and the rulings in DESIGN v0.3 | Orchestrator (Opus 5.5), with the owner's go-ahead to decide | The workers who built from it. Each reported its own questions, without seeing the other's code. | 12 questions so far, including: forced instructions using up a tick, absent SMs, OUT_STICKY as one record, and abandoning a stalled instruction on a forced jump. Each was answered in the contract before the code it affects was checked. The Pico 2 prep checker found that R4 (PULL under autopull) did not follow the datasheet's definition of a full OSR. Fixed in the contract. |
+| `pgasm -o python` and `-o c-sdk` | Haiku 5.5 (ISA & tools lane) | Sonnet checker: regenerated every expected file with official `pioasm`; differential fuzzing of about 6,000 programs in 4 formats; 162 code-block shapes; mutants of the output code | No output difference anywhere. **Fix needed:** two older lexer bugs in `% … {` code blocks, which changed all output formats, and tests that guarded the new formats only on the 26-file corpus. Fixed: the edge cases and the 65,536-word sweep now cover all formats, and every output-code mutant fails the tests. The re-check passed. |
+| RP2350 check of the three extension encodings | Haiku 5.5 (ISA & tools lane) | The orchestrator re-read the quoted datasheet lines | All three are still reserved in PIO version 1 (RP2350 datasheet §11.4.4.2, §11.4.10.2, §11.4.12.2). DESIGN §9.1 is updated. |
