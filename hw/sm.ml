@@ -369,7 +369,9 @@ let create (scope : Scope.t) (i : _ I.t) =
   (* ---- MOV (datasheet 3.4.8.2) ---- *)
   let mov_now = now is_mov in
   let status_bit =
-    mux2 status_sel (i.I.tx_level <: status_n) (i.I.rx_level <: status_n) -- "status_bit"
+    (* STATUS_SEL 0 is TXLEVEL and 1 is RXLEVEL (datasheet 3.7). mux2 returns its first
+       argument when the select is 1, so RX comes first. *)
+    mux2 status_sel (i.I.rx_level <: status_n) (i.I.tx_level <: status_n) -- "status_bit"
   in
   let mov_src_val =
     mux
@@ -405,28 +407,23 @@ let create (scope : Scope.t) (i : _ I.t) =
   let set_dirs = (set_now &: (set_dst ==: c3 4)) -- "set_dirs" in
   let set_d32 = uresize set_data 32 in
   (* ---- Pin writes (datasheet 3.5.6, engine.md R2) ---- *)
-  let out_mask = rotl_var (thermo32 out_count6) out_base -- "out_mask" in
-  let set_mask = rotl_var (thermo32 set_count6) set_base -- "set_mask" in
-  let out_val_of d = rotl_var d out_base &: out_mask in
-  let set_val_of d = rotl_var d set_base &: set_mask in
+  (* One mask rotator and one value rotator serve OUT, MOV PINS and SET. The source, the
+     count and the base are selected first, then rotated once. At most one of these
+     instructions writes in a cycle, so the selection is exact. The OUT and MOV mapping uses
+     OUT_BASE and OUT_COUNT, and SET uses SET_BASE and SET_COUNT (datasheet 3.5.6). *)
+  let set_write = (set_pins |: set_dirs) -- "set_write" in
+  let pin_base = mux2 set_write set_base out_base in
+  let pin_count = mux2 set_write set_count6 out_count6 in
+  let pin_data = mux2 mov_pins mov_data (mux2 set_write set_d32 out_data) in
+  let pin_mask = rotl_var (thermo32 pin_count) pin_base -- "pin_mask" in
+  let pin_val = (rotl_var pin_data pin_base &: pin_mask) -- "pin_val" in
   let m_of f m = repeat f 32 &: m in
   let lvl_write_now = (out_pins |: mov_pins |: set_pins) -- "lvl_write_now" in
-  let lvl_new_mask =
-    (m_of out_pins out_mask |: m_of mov_pins out_mask |: m_of set_pins set_mask)
-    -- "lvl_new_mask"
-  in
-  let lvl_new_val =
-    (m_of out_pins (out_val_of out_data)
-     |: m_of mov_pins (out_val_of mov_data)
-     |: m_of set_pins (set_val_of set_d32))
-    -- "lvl_new_val"
-  in
+  let lvl_new_mask = m_of lvl_write_now pin_mask -- "lvl_new_mask" in
+  let lvl_new_val = m_of lvl_write_now pin_val -- "lvl_new_val" in
   let dir_write_now = (out_dirs |: set_dirs) -- "dir_write_now" in
-  let dir_new_mask = (m_of out_dirs out_mask |: m_of set_dirs set_mask) -- "dir_new_mask" in
-  let dir_new_val =
-    (m_of out_dirs (out_val_of out_data) |: m_of set_dirs (set_val_of set_d32))
-    -- "dir_new_val"
-  in
+  let dir_new_mask = m_of dir_write_now pin_mask -- "dir_new_mask" in
+  let dir_new_val = m_of dir_write_now pin_val -- "dir_new_val" in
   (* OUT_STICKY (engine.md OUT_STICKY): with the SM enabled and no new write this cycle,
      the last write of each kind is asserted again. *)
   let sticky_on = (out_sticky &: i.enable) in
