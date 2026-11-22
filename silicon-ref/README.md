@@ -392,7 +392,7 @@ are what the first run must confirm.
    ```
    If the shell does not expand the glob, copy the corpus files one by one (the manifest lists them).
    Check the free flash first: `mpremote connect auto exec "import os; print(os.statvfs('/'))"`.
-   Free space is `f_frsize * f_bavail`. Each V1 trace is about 140 KB and the whole V1 run is about 1.5 MB.
+   Free space is `f_frsize * f_bavail`. Each V1 trace is about 140 KB and the whole V1 run is about 1.7 MB.
 5. **Calibrate first (V1 item e).** One capture, run by hand:
    ```
    mpremote connect auto exec "import capture; capture.run(program_json='/prog/v1/v1_items.pioasm.json', program_name='v1_e_calib', pins=dict(out_base=0,out_count=0,set_base=0,sideset_base=0,in_base=0,jmp_pin=0), capture_base=0, samples=40000, out_path='/calib.jsonl', set_count=1, clkdiv=(1,0), init_dirs={0:1}, init_levels={0:0})"
@@ -416,7 +416,7 @@ are what the first run must confirm.
    ```
    `silicon-ref/traces/` then holds `v1__*.jsonl` and `summary.json`. Then run the corpus group
    (same call with `groups=['corpus']`), fetch it the same way, and delete it.
-   The corpus group has 35 runnable jobs and one known failure, `corpus__pio__quadrature_encoder_substep__...`,
+   The corpus group has 36 runnable corpus jobs: 35 expected ok, and 1 expected to fail, `corpus__pio__quadrature_encoder_substep__...`,
    which does not fit IMEM. Corpus traces use a generic smoke setting, so they are not a checked
    reference yet.
 8. **Compare with the model** (V1 traces without host actions or host pins). Build the tool once:

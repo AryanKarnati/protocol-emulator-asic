@@ -40,56 +40,37 @@ capture header. Where a row says "by reading the model", it was not run.
 Not written: the autopull count after a forced instruction (needs the forced instruction counted by
 the autopull rule, plus the same host-timed forced write as f).
 
-## b. PULL under autopull, count 1 (R4 and the model disagree)
+## b and b2. PULL under autopull: which rule silicon follows
 
-Program: `pull; out; pull; out` x4, autopull at threshold 32. TX words 0x00000002, 0xFFFFFFFE.
+Two programs separate the three readings of the PULL rule.
 
-- R4 (docs/engine.md): the OSR is full only at count 0, so the second PULL takes TX word 1. Pin 0
-  bits of the five OUTs: 0, 0, 1, 1, 1.
-- pgsim (ambiguity 3): the second PULL is a no-op. Pin 0 bits: 0, 1, 0, 0, 0. Pgsim edges: rise
-  at pad cycle 4, fall at 5.
+- b (`v1_b_pull_autopull`): `pull; out; pull; out` x4, autopull at threshold 32, TX words
+  0x00000002 and 0xFFFFFFFE. The second PULL runs with one bit shifted out (count 1). Pin 0 bits of
+  the five OUTs are read.
+- b2 (`v1_b2_pull_full`): `pull; pull; out` x5, autopull at threshold 32, TX words 0x0000000A (bits
+  0..4 = 0,1,0,1,0) and 0x0000001F (1,1,1,1,1). The second PULL runs with count 0, nothing shifted.
 
-| Pin 0 bits, first five OUTs | Meaning |
-| --- | --- |
-| 0, 0, 1, 1, 1 | R4 is right. pgsim ambiguity 3 must change, and the team should confirm R4's wording. |
-| 0, 1, 0, 0, 0 | The PULL is a no-op at count 1 (pgsim). R4 is wrong at count 1; the contract needs the fix. |
-| anything else | Neither. Re-check the header and the TX FIFO state. |
+Three rules, and the bits each one predicts (pin 0, five OUTs):
 
-## b2. PULL under autopull, count 0 (separates the two rules)
+| Rule | b | b2 |
+| --- | --- | --- |
+| R4 (no-op only at count 0) | 0,0,1,1,1 | 0,1,0,1,0 |
+| Old pgsim (no-op while count < threshold) | 0,1,0,0,0 | 0,1,0,1,0 |
+| PULL always consumes | 0,0,1,1,1 | 1,1,1,1,1 |
 
-Program: `pull; pull; out` x5, autopull at threshold 32. TX words 0x0000000A (bits 0..4 =
-0,1,0,1,0) and 0x0000001F (1,1,1,1,1). Nothing is shifted when the second PULL runs.
+"Old pgsim" is block 1 pgsim as it stands (sw/pgsim ambiguity 3). Block 1 pgsim is being moved to
+R4 in parallel, so this row will change. The rows above are the rules, not the current pgsim output.
 
-- R4: the OSR is full (count 0), so the PULL is a no-op and word 1 stays in the FIFO. Pin 0
-  bits: 0, 1, 0, 1, 0.
-- "No-op when not empty" (the other reading): the PULL takes word 1. Pin 0 bits: 1, 1, 1, 1, 1.
-- Model (pgsim): 0, 1, 0, 1, 0. Edges: rise 4, fall 5, rise 6, fall 7. Agrees with R4.
+Reading the capture:
 
-| Pin 0 bits, five OUTs | Meaning |
-| --- | --- |
-| 0, 1, 0, 1, 0 | R4 at count 0 (the model agrees). |
-| 1, 1, 1, 1, 1 | The PULL at count 0 takes word 1. R4's "full" is wrong. |
+| b bits | b2 bits | Meaning |
+| --- | --- | --- |
+| 0,0,1,1,1 | 0,1,0,1,0 | R4. The count-1 PULL takes word 1, and the count-0 PULL is a no-op. |
+| 0,1,0,0,0 | 0,1,0,1,0 | Old pgsim: the PULL is a no-op while count < threshold. Block 1 pgsim is then right, and R4 must change at count 1. |
+| 0,0,1,1,1 | 1,1,1,1,1 | PULL always consumes. R4 is wrong at count 0: a PULL with nothing shifted takes the next word. |
+| anything else | anything else | Neither. Re-check the header and the TX FIFO state. |
 
-Together with b this fixes both sides of the rule: b2 gives count 0, b gives count 1.
-
-## a. Autopush order
-
-Program: five `in pins, 1` with autopush at threshold 1 (RX FIFO 4 deep, so the fifth IN finds
-it full). Pin 1 is host-driven: the host sets it high at about 20 us, and reads the RX FIFO at about
-60 us. Marker: `set pins, 1` on pin 2 after the IN.
-
-The pushed word is the sample taken by the IN. Stall-then-shift samples the pin when the stall ends
-(after pin 1 went high), so bit 31 is set. Shift-then-stall samples on the first attempt (before 20
-us), so bit 31 is clear.
-
-| `host.rx_words[4]` bit 31 | Meaning |
-| --- | --- |
-| 1 | The IN samples when the stall ends: stall-then-shift. By reading the model, this is what pgsim does. |
-| 0 | The IN samples on its first attempt: shift-then-stall. The model must change (ambiguity 5). |
-| other | More than one bit was shifted during the stall, which neither model allows. |
-
-The first four RX words are 0 (pin 1 is low until about 20 us). The pin 2 marker shows when the
-stall ended, relative to the host read, not the shift order.
+Together, b and b2 settle both sides of the rule: b2 gives count 0, b gives count 1.
 
 ## c. First OUT after reset
 
@@ -198,6 +179,7 @@ Silicon comparison, from one trace:
 | The first boundary after the landing is on the extended grid, no shift | The forced cycle costs nothing. The model's +1 is wrong. |
 | It is one cycle later than the grid (the model's result) | The delay continues and the forced cycle costs one cycle. Model agrees. |
 | It is at the landing plus one, off the grid | The delay is cancelled. Ambiguity 8 holds the other way; the model must change. |
+| It is at the landing plus about 32 (one full instruction after the landing) | The delay restarted at the landing, not continued. The model must change. |
 
 To re-run pgsim at the observed landing `L_f` (the pgsim cycle, which is the pad rise sample minus L,
 minus 1), with the registers from the trace header:
@@ -219,7 +201,7 @@ high), forced `irq set 0` at about 30 us (ends the wait).
 
 | Result | Meaning |
 | --- | --- |
-| Pin 1 stays high from the forced set, and falls only after the forced IRQ | The wait survives the forced set (model, by reading the model). |
+| Pin 1 stays high from the forced set, and falls only after the forced IRQ | The wait survives the forced set (model, by reading block 1 pgsim). |
 | Pin 1 falls at the forced set, or the wait never completes | The forced set cancels the wait. The model must change. |
 
 ## g. Divider phase after restart
@@ -239,12 +221,12 @@ intervals alternating 2 and 3.
 Program: `pull block; set pins, 1; set pins, 0`. The question is whether a TX write that lands
 during a stalled blocking PULL completes the PULL in its own cycle or the next one.
 
-This is not decided by silicon. Ruling (from the checker's review): the host's TX write is a bus
-write through the SIO-versus-PIO bus path, and its landing offset relative to the PIO's sampling
-cycle cannot be observed on any pin. The PULL's completion is observable, but the write's landing is
-not, so the trace cannot tell the two cases apart. The config is kept with `"runnable": false`, and
+This is ruled by design, because silicon cannot observe the TX landing cycle. The host's TX write is a
+bus write through the SIO-versus-PIO path, and its landing cycle relative to the PIO's sampling cycle is
+not visible on any pin. The PULL's completion is visible, but the write's landing is not, so the trace
+cannot tell the two cases apart. The config is kept with `"runnable": false`, and
 the batch skips it. The model completes the PULL in the cycle after the write (sw/pgsim/README.md,
-V1 item h). That is the design ruling for the model, recorded as a ruling, not as a silicon result.
+V1 item h). That is the design ruling, not a silicon result.
 
 ## i. OUT_STICKY across a stalled side-set
 
@@ -252,7 +234,7 @@ Program: `pull; out pins, 1; wait 1 pin 5 side 0; set pins, 1`, `.side_set 1 opt
 high. The stalled wait sets pin 0 low on its first attempt. Pin 5 is held low by the PIO, so the
 wait stalls.
 
-Model (run): with OUT_STICKY, pin 0 rises at 2, falls at 3, and rises again at 4 (re-asserted each
+Block 1 pgsim (run): with OUT_STICKY, pin 0 rises at 2, falls at 3, and rises again at 4 (re-asserted each
 stalled cycle). Without it: rise at 2, fall at 3, stays low.
 
 | Pin 0 during the stall, `_on` | Pin 0 during the stall, `_off` | Meaning |
@@ -261,12 +243,14 @@ stalled cycle). Without it: rise at 2, fall at 3, stays low.
 | low | low | OUT_STICKY does not re-assert over side-set. The model must change. |
 | low | high | Not expected. Re-check the configs. |
 
-## Model predictions run with pgsim (same register values as the capture header)
+## Block 1 pgsim predictions (same register values as the capture header)
+
+These are the current block 1 pgsim outputs, which follow the old PULL rule for b and b2 until pgsim moves to R4.
 
 | Config | Pgsim edges (pad cycle, pin, new level) |
 | --- | --- |
-| b | (4, 0, 1), (5, 0, 0). R4 predicts a different result (see b). |
-| b2 | (4, 0, 1), (5, 0, 0), (6, 0, 1), (7, 0, 0) |
+| b | (4, 0, 1), (5, 0, 0): old rule. R4 gives 0,0,1,1,1 instead (see b and b2). |
+| b2 | (4, 0, 1), (5, 0, 0), (6, 0, 1), (7, 0, 0): 0,1,0,1,0, the same under R4 and the old rule |
 | c | (2, 0, 1), (3, 0, 0) |
 | d | low at 2, high at 5, low at 7, high at 10, ... (period 5) |
 | e | rise at 1, fall at 9, rise at 17, fall at 25, ... |

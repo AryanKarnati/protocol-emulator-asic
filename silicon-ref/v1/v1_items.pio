@@ -16,28 +16,30 @@
 
 ; ---- b. PULL under autopull, OSR with 1 bit shifted out (count 1, not empty).
 ;      Contract R4 (docs/engine.md): PULL is a no-op only when the OSR is FULL (count 0), so
-;      here the second PULL should take TX word 1. pgsim (ambiguity 3) says no-op. The capture
-;      decides which one silicon does.
+;      here the second PULL should take TX word 1. Old block 1 pgsim (ambiguity 3) says no-op.
+;      The capture decides which one silicon does.
 .program v1_b_pull_autopull
 .wrap_target
     pull block          ; loads TX word 0 (0x00000002)
     out pins, 1         ; shifts bit 0 (0)
-    pull block          ; count 1: R4 says TX word 1 is taken; pgsim says no-op
-    out pins, 1         ; R4: bit 0 of word 1 (0); pgsim: bit 1 of word 0 (1)
+    pull block          ; count 1: R4 says TX word 1 is taken; old block 1 pgsim says no-op
+    out pins, 1         ; R4: bit 0 of word 1 (0); old pgsim: bit 1 of word 0 (1)
     out pins, 1
     out pins, 1
     out pins, 1
     wait 1 irq 0        ; halt
 .wrap
 
-; ---- b2. PULL under autopull with the OSR EMPTY-by-count (count 0, nothing shifted yet).
-;      R4: the OSR is full, so the second PULL is a no-op and TX word 1 stays in the FIFO.
-;      The alternative ("no-op when not empty") pulls word 1 here. Both words have distinct
-;      bit patterns, so the first five pin bits name the rule.
+; ---- b2. PULL under autopull with count 0 (nothing shifted yet).
+;      Three rules, five pin bits each (see silicon-ref/v1/README.md, "b and b2"):
+;        R4 (no-op only at count 0)            : 0,1,0,1,0
+;        old pgsim (no-op while count < thresh) : 0,1,0,1,0
+;        PULL always consumes                   : 1,1,1,1,1
+;      Word 0 = 0x0000000A (bits 0..4 = 0,1,0,1,0), word 1 = 0x0000001F (all ones).
 .program v1_b2_pull_full
 .wrap_target
     pull block          ; loads TX word 0 (0x0000000A: bits 0..4 = 0,1,0,1,0)
-    pull block          ; count 0: R4 no-op; alternative takes TX word 1 (0x0000001F)
+    pull block          ; count 0: R4 and old pgsim: no-op; always-consume: takes TX word 1 (0x0000001F)
     out pins, 1
     out pins, 1
     out pins, 1
