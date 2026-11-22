@@ -1,0 +1,16 @@
+; Decoder equivalence (block 2 exit check). engine.md section 4.
+
+(library
+ (name decode_ref)
+ (modules decode_ref)
+ (libraries polyglot_isa))
+
+(test
+ (name decode_exhaustive)
+ (modules decode_exhaustive)
+ (libraries decode_ref polyglot_hw polyglot_isa hardcaml))
+
+(executable
+ (name dump_expected)
+ (modules dump_expected)
+ (libraries decode_ref))

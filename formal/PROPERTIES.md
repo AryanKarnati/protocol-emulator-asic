@@ -1,10 +1,17 @@
-# Block 1 formal properties
+# Formal properties, blocks 1 and 2
 
-Scope: the 4 x 32 FIFO (`hw/fifo.ml`) and the 16.8 clock divider (`hw/clkdiv.ml`), as
-Hardcaml-generated Verilog (`formal/build/`). Sources: DESIGN.md section 17 and
-`docs/gate.md`. The properties are written from those documents and the `.mli` port
-interfaces, not from the RTL bodies. SVA here means the Verilog `assert` and `cover`
-statements in `fifo_harness.v` and `clkdiv_harness.v`, which SymbiYosys checks.
+Blocks 1 and 2 are listed separately. Block 1 (the 4 x 32 FIFO and the 16.8 divider) is in
+the first two sections. Block 2 (the decoder, `fifo_join`, and the divider with its phase
+output) follows.
+
+Sources: DESIGN.md section 17, `docs/gate.md` (block 1), and `docs/engine.md` sections 2 to 5
+and rules R10 (block 2). The properties are written from those documents and the `.mli`
+port interfaces. Disclosure: in block 1 the divider and FIFO RTL bodies were read before the
+properties were written, against the brief. The block 2 properties were written from the
+contract and the `.mli` files. The block 2 `.ml` sources were not opened. The generated
+Verilog was read to pick the kill-check mutants, which do not affect the properties. The
+block 2 harnesses read only the DUT ports. SVA here means the
+Verilog `assert` and `cover` statements in the harness files, which SymbiYosys checks.
 
 Regenerate and check everything with `make -C formal` (see `formal/Makefile`).
 
@@ -59,6 +66,74 @@ one of: INT in 1..2 with any FRAC (symbolic, depth 24), or one fixed divisor (de
   boolector (about 6 to 30 s per step and rising), so the fixed-divisor runs were used.
   Covering all 2 x 256 divisors and the full 800-cycle window is not done.
 - INT = 0 (meaning 65536) is not checked. FRAC != 0 with INT = 0 is unspecified by the spec.
+
+## Block 2 decoder (`decode`, engine.md section 4)
+
+| ID | Sentence | Status | Non-vacuity |
+| --- | --- | --- | --- |
+| DEC1 | For every 16-bit word and every valid side-set configuration (count 0 to 5, enable only with count 1 or more), every output of `decode` equals the ISA reference. | Proven by exhaustive enumeration of all 720,896 cases, on the Cyclesim circuit (`dune test`, `formal/decode/`) and on the generated Verilog (Verilator, `formal/decode/verilator/`). | The reference fields are not constant: legal and illegal words, every instruction kind and LCU words all occur, and the kill-checks below show each output is compared. |
+
+Kill-checks on the generated Verilog, run by `formal/decode/run_mutants.sh`: `side_valid_ignores_enable`,
+`bit_count_drops_out`, `is_set_ignores_legal`. Each one makes the Verilator run report mismatches.
+
+The enumeration is complete, not a sample: the decoder is combinational, and every input
+combination in its contract is tried.
+
+## Block 2 clock divider, unbounded (`clkdiv_dbg`, engine.md R10)
+
+The harness keeps a reference accumulator P_ref, written from R10 alone, with the same inputs.
+Each cycle: S = P_ref + 256; tick_ref = (S >= D); P_ref becomes S - D on a tick, else S;
+restart and reset set it to 0. D = 256 x INT + FRAC, with INT = 0 meaning 65536.
+
+| ID | Sentence | Status | Non-vacuity |
+| --- | --- | --- | --- |
+| DIV2 | For every divisor and every restart pattern, in every cycle after reset, `dbg_phase` equals the reference phase and `tick` equals the reference tick. | Proven, unbounded, by k-induction with k = 1. The invariant is phase equality, which is inductive by itself. | Covers: tick, no tick, restart with nonzero phase, INT = 0, and phase above D after the divisor is lowered, all reached (`clkdiv_dbg.sby cover`). Mutants `restart_ignored`, `tick_one_cycle_late`, `phase_step_128` killed. |
+
+### D1 to D5, as properties of the reference
+
+These are the block 1 properties. They are argued here for the reference, and DIV2 transfers
+them to the block 2 divider for every divisor. Let Dq = 256 x INT + FRAC, with INT at least 1.
+Let P_c be the phase in cycle c after a restart. The invariant 0 <= P_c < Dq holds. It holds
+at c = 0 (P = 0), and each cycle keeps it: a tick gives P + 256 - Dq, which is in [0, 256); no
+tick gives P + 256 < Dq. Writing N_c for the ticks in cycles 0 to c - 1, P_c = 256 c - Dq N_c, so
+N_c = floor(256 c / Dq), and the m-th tick (from 0) is at cycle t_m = ceil((m+1) Dq / 256) - 1.
+
+- **D1** (INT = 1, FRAC = 0): Dq = 256, so P stays 0, S = 256 >= 256 in every cycle, and TICK is
+  1 in every cycle. Also true before any restart.
+- **D2** (first tick): t_0 = ceil(Dq / 256) - 1, which is INT for FRAC != 0 and INT - 1 for
+  FRAC = 0. Both are at most INT + 1.
+- **D3** (gaps): t_{m+1} - t_m = ceil((m+2) Dq/256) - ceil((m+1) Dq/256). Consecutive ceilings
+  of x and x + Dq/256 differ by floor(Dq/256) or ceil(Dq/256), which are INT and INT + 1.
+- **D4** (FRAC = 0): Dq/256 = INT is an integer, so every gap is exactly INT.
+- **D5** (256-gap window): t_{m+256} - t_m = ceil((m+257) Dq/256) - ceil((m+1) Dq/256). The
+  shift by 256 adds exactly Dq/256 x 256 = Dq, an integer, so the difference is exactly Dq.
+
+Bounded evidence for D1 to D5 on the block 1 divider (`formal/clkdiv.sby`) is kept and still
+passes: symbolic INT in 1..2 to depth 24, and fixed divisors 1/0, 1/255 and 2/85 to depth 300.
+The 256-tick window is reached only for 1/0 inside depth 300.
+
+## Block 2 FIFO join (`fifo_join`, engine.md sections 2, 3 and 5)
+
+One anyconst chooses the join mode for the run: none, TX joined, or RX joined. Both at once is
+outside the contract. Capacities: not joined, TX 4 and RX 4; `join_tx`, TX 8 and RX 0;
+`join_rx`, TX 0 and RX 8. Counters: `tx_np`/`tx_nq` count accepted host pushes and SM pops of
+the TX FIFO; `rx_np`/`rx_nq` count SM pushes and host pops of RX. A flush sets the pop counter
+to the push counter, so a flush empties the FIFO and drops any tracked token in it.
+
+| ID | Sentence | Status | Non-vacuity |
+| --- | --- | --- | --- |
+| FJ1 | Each LEVEL is the accepted pushes minus the accepted pops since the last flush (F1 analogue). | Proven, k-induction, k = 4, all three modes | Covers: `join_tx`, `join_rx`, no join, `tx_dropped`, `rx_underflow`, both push-and-pop-on-full/empty cases, and a flush with a non-empty FIFO, all reached (`fifo_join.sby cover_all`). |
+| FJ2 | FULL is high exactly when LEVEL equals the capacity, and EMPTY exactly when LEVEL is 0 (F2 analogue). A capacity-0 FIFO reads as both full and empty with LEVEL 0. | Proven, k-induction, k = 4 | Capacity-0 case is a branch of the same properties, reached in the join modes. |
+| FJ3 | TX_DROPPED is high exactly when a host TX push comes while the TX FIFO is full at the start of the cycle (H1). RX_UNDERFLOW is high exactly when a host RX pop comes while the RX FIFO is empty at the start (H2). | Proven, k-induction, k = 4 | Covers `host_tx_push && tx_full && sm_tx_pop`, `host_rx_pop && rx_empty && sm_rx_push`, `tx_dropped`, `rx_underflow`. Kill-checks `tx_dropped_without_full`, `underflow_masked_by_push`. |
+| FJ4 | After a flush, both FIFOs are empty (H6). | Proven, k-induction, k = 4 | Covers `flush && level != 0`. Kill-check `rx_flush_keeps_level` (RX level not cleared by flush). |
+| FJ5 | Tracked token, TX (host pushes, SM pops) and RX (SM pushes, host pops): when the FIFO is non-empty, the head equals the token exactly when the head is the token (F1 to F4 analogue). The head is judged at the start of the cycle (H2). | Bounded: BMC to depth 20 (abc bmc3), PASS. Not 1-inductive; no auxiliary invariant was found without reading internals. | Covers `acc_pop && tx_nq == tk` and `acc_rx_pop && rx_nq == tk`, for the same runs. |
+
+Why FJ5 is bounded: the token property needs the ring pointers to be consistent with the
+counters, and that is an internal invariant. The harness must not look inside the DUT, so the
+induction has no such hypothesis, and the property is not 1-inductive. The ring has 8 entries,
+so depth 20 gives at least two full wraps of the pointers, which is where the ring
+conditions first repeat. This is a bound, not the reachable-state diameter. The diameter was not
+computed.
 
 ## Reproduce
 

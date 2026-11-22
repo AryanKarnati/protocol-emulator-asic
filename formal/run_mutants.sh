@@ -19,6 +19,11 @@ status=0
 
 for sedf in mutants/*.sed; do
   name=$(basename "$sedf" .sed)
+  # ONLY=prefix runs the mutants whose name starts with it, for example ONLY=clkdiv_dbg.
+  case "$name" in
+    ${ONLY:-}*) ;;
+    *) continue ;;
+  esac
   mod=${name%%__*}
   case "$mod" in
     fifo)
@@ -28,6 +33,14 @@ for sedf in mutants/*.sed; do
     clkdiv)
       src=build/clkdiv.v
       tasks="bmc_sym bmc_1_0 bmc_1_255 bmc_2_85"
+      ;;
+    clkdiv_dbg)
+      src=build/clkdiv_dbg.v
+      tasks="prove"
+      ;;
+    fifo_join)
+      src=build/fifo_join.v
+      tasks="flags_prove token_bmc"
       ;;
     *)
       echo "unknown module in mutant name: $name" >&2
@@ -46,7 +59,17 @@ for sedf in mutants/*.sed; do
   fi
 
   sby_file="$dir/mutant.sby"
-  if [ "$mod" = fifo ]; then
+  if [ "$mod" = fifo_join ]; then
+    # Reuse the real task file, with only the DUT replaced by the mutant.
+    sed -e "s#build/fifo_join.v#$dir/mutant.v#" \
+        -e "s#read_verilog -formal fifo_join.v#read_verilog -formal mutant.v#" \
+        fifo_join.sby > "$sby_file"
+  elif [ "$mod" = clkdiv_dbg ]; then
+    # Reuse the real task file, with only the DUT replaced by the mutant.
+    sed -e "s#build/clkdiv_dbg.v#$dir/mutant.v#" \
+        -e "s#read_verilog -formal clkdiv_dbg.v#read_verilog -formal mutant.v#" \
+        clkdiv_dbg.sby > "$sby_file"
+  elif [ "$mod" = fifo ]; then
     cat > "$sby_file" <<EOF
 [tasks]
 flags_prove
