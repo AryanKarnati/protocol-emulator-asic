@@ -1,0 +1,612 @@
+(* Smoke tests for the block 2 RTL. Every expected value below was worked out by hand from
+   docs/engine.md and the RP2040 datasheet, cycle by cycle. The reasoning is in each
+   test's comment. Only the decoder check uses the Isa library.
+
+   Cycle convention (engine.md section 5): the outputs read in a cycle are the state after
+   the previous cycle's edge, with that cycle's inputs applied. A host pulse set in a cycle
+   takes effect at its end. *)
+
+open Hardcaml
+
+let failures = ref 0
+let checks = ref 0
+
+let expect what ~cyc got want =
+  incr checks;
+  if got <> want
+  then (
+    incr failures;
+    Printf.printf
+      "FAIL %s at cycle %d: got %d (0x%x), expected %d (0x%x)\n%!"
+      what
+      cyc
+      got
+      got
+      want
+      want)
+;;
+
+(* ---------- Harness ---------- *)
+
+type tb =
+  { sim : Cyclesim.t_port_list
+  ; mutable now : int
+  }
+
+let pulse_names =
+  [ "sm_restart"
+  ; "clkdiv_restart"
+  ; "fifo_flush"
+  ; "irq_clear"
+  ; "irq_force"
+  ; "fdebug_clear"
+  ; "txf_push"
+  ; "rxf_pop"
+  ; "instr_write"
+  ; "imem_write"
+  ]
+;;
+
+let set tb name v =
+  let r = Cyclesim.in_port tb.sim name in
+  r := Bits.of_int ~width:(Bits.width !r) v
+;;
+
+let get tb name = Bits.to_int !(Cyclesim.out_port ~clock_edge:Before tb.sim name)
+
+(* One clock cycle. [f] sets this cycle's inputs; [check] reads this cycle's outputs. *)
+let cyc tb ?(f = fun () -> ()) ?(check = fun () -> ()) () =
+  List.iter (fun n -> set tb n 0) pulse_names;
+  f ();
+  Cyclesim.cycle_check tb.sim;
+  Cyclesim.cycle_before_clock_edge tb.sim;
+  check ();
+  Cyclesim.cycle_at_clock_edge tb.sim;
+  Cyclesim.cycle_after_clock_edge tb.sim;
+  tb.now <- tb.now + 1
+;;
+
+(* Build a block with [num_sms] engines, reset it, and leave every input at 0 except
+   rst_n, which is high from the first cycle after reset (engine.md section 5, cycle 0). *)
+let make ~num_sms =
+  let circuit = Polyglot_hw.Pio_block.circuit ~num_sms in
+  let sim = Cyclesim.create circuit in
+  let tb = { sim; now = 0 } in
+  List.iter (fun (_, r) -> r := Bits.zero (Bits.width !r)) (Cyclesim.in_ports sim);
+  (* Cyclesim applies the reset values only through Cyclesim.reset (a clocked cycle with
+     rst_n low does not reset registers in this simulator), so call it while rst_n is low,
+     then release. *)
+  set tb "rst_n" 0;
+  cyc tb ();
+  Cyclesim.reset sim;
+  cyc tb ();
+  set tb "rst_n" 1;
+  tb
+;;
+
+(* Configuration words, RP2040 layouts (datasheet 3.7). *)
+let clkdiv_1 = 0x0001_0000 (* INT 1, FRAC 0: a tick every cycle *)
+let execctrl_default = 0x0001_F000 (* WRAP_TOP 31, WRAP_BOTTOM 0 *)
+let shiftctrl_default = 0x000C_0000 (* IN and OUT shift right, thresholds 32 *)
+
+(* PINCTRL with SET_COUNT, OUT_COUNT and SIDESET_COUNT, all bases at 0 unless given. *)
+let pinctrl ?(set_count = 1) ?(out_count = 0) ?(sideset_count = 0) ?(sideset_base = 0)
+    ?(set_base = 0) ()
+  =
+  (sideset_count lsl 29)
+  lor (set_count lsl 26)
+  lor (out_count lsl 20)
+  lor (sideset_base lsl 10)
+  lor (set_base lsl 5)
+;;
+
+let configure tb ~sm ~clkdiv ~execctrl ~shiftctrl ~pinctrl_v =
+  set tb (Printf.sprintf "clkdiv%d" sm) clkdiv;
+  set tb (Printf.sprintf "execctrl%d" sm) execctrl;
+  set tb (Printf.sprintf "shiftctrl%d" sm) shiftctrl;
+  set tb (Printf.sprintf "pinctrl%d" sm) pinctrl_v
+;;
+
+(* Write an instruction word to IMEM, with the SM disabled, in one cycle. *)
+let load_imem tb addr word =
+  cyc tb
+    ~f:(fun () ->
+      set tb "imem_write" 1;
+      set tb "imem_addr" addr;
+      set tb "imem_data" word)
+    ()
+;;
+
+(* Run [n] cycles, reading [check] in each. Outputs are read with clock_edge Before. *)
+let run tb n ?(f = fun _ () -> ()) ?(check = fun _ _ -> ()) () =
+  for c = 0 to n - 1 do
+    cyc tb ~f:(f c) ~check:(check c) ()
+  done
+;;
+
+(* ---------- 1. Decoder, exhaustive against the ISA library (engine.md section 4) ---------- *)
+
+let decoder_exhaustive () =
+  let sim = Cyclesim.create (Polyglot_hw.Decode.circuit ()) in
+  let set_in name v =
+    let r = Cyclesim.in_port sim name in
+    r := Bits.of_int ~width:(Bits.width !r) v
+  in
+  let get_out name = Bits.to_int !(Cyclesim.out_port ~clock_edge:Before sim name) in
+  let configs =
+    List.init 6 (fun c -> c, false) @ List.init 5 (fun c -> c + 1, true)
+  in
+  let before = !failures in
+  let n_checked = ref 0 in
+  for w = 0 to 0xFFFF do
+    let d = Polyglot_isa.Isa.decode w in
+    let legal = Polyglot_isa.Isa.is_legal d in
+    let is_c p = legal && p in
+    let want_jmp = is_c (match d with Polyglot_isa.Isa.Jmp _ -> true | _ -> false) in
+    let want_wait = is_c (match d with Polyglot_isa.Isa.Wait _ -> true | _ -> false) in
+    let want_in = is_c (match d with Polyglot_isa.Isa.In _ -> true | _ -> false) in
+    let want_out = is_c (match d with Polyglot_isa.Isa.Out _ -> true | _ -> false) in
+    let want_push = is_c (match d with Polyglot_isa.Isa.Push _ -> true | _ -> false) in
+    let want_pull = is_c (match d with Polyglot_isa.Isa.Pull _ -> true | _ -> false) in
+    let want_mov = is_c (match d with Polyglot_isa.Isa.Mov _ -> true | _ -> false) in
+    let want_irq = is_c (match d with Polyglot_isa.Isa.Irq _ -> true | _ -> false) in
+    let want_set = is_c (match d with Polyglot_isa.Isa.Set _ -> true | _ -> false) in
+    let want_lcu =
+      match d with
+      | Polyglot_isa.Isa.In { source = In_lcu; _ }
+      | Polyglot_isa.Isa.Mov { source = Ms_crc; _ }
+      | Polyglot_isa.Isa.Set { dest = Set_lcu; _ } -> 1
+      | _ -> 0
+    in
+    let want_bc =
+      match d with
+      | Polyglot_isa.Isa.In { bit_count; _ } | Polyglot_isa.Isa.Out { bit_count; _ } when legal ->
+        bit_count
+      | _ -> 0
+    in
+    List.iter
+      (fun (count, enable) ->
+        set_in "instr" w;
+        set_in "sideset_count" count;
+        set_in "side_en" (if enable then 1 else 0);
+        Cyclesim.cycle_check sim;
+        Cyclesim.cycle_before_clock_edge sim;
+        incr n_checked;
+        let b x = if x then 1 else 0 in
+        let split =
+          Polyglot_isa.Isa.Side.split
+            { Polyglot_isa.Isa.Side.count; enable }
+            ((w lsr 8) land 31)
+        in
+        let want_sv = Option.value split.side ~default:0 in
+        let want_sval = if Option.is_some split.side then 1 else 0 in
+        let got name v = if get_out name <> v then (incr failures; Printf.printf "FAIL decode %s w=0x%04x count=%d en=%b: got %d want %d\n%!" name w count enable (get_out name) v) in
+        got "legal" (b legal);
+        got "is_jmp" (b want_jmp);
+        got "is_wait" (b want_wait);
+        got "is_in" (b want_in);
+        got "is_out" (b want_out);
+        got "is_push" (b want_push);
+        got "is_pull" (b want_pull);
+        got "is_mov" (b want_mov);
+        got "is_irq" (b want_irq);
+        got "is_set" (b want_set);
+        got "uses_lcu" want_lcu;
+        got "side_valid" want_sval;
+        got "side_value" want_sv;
+        got "delay" split.delay;
+        got "bit_count" want_bc;
+        Cyclesim.cycle_at_clock_edge sim;
+        Cyclesim.cycle_after_clock_edge sim)
+      configs
+  done;
+  expect "decoder mismatches" ~cyc:0 (!failures - before) 0;
+  Printf.printf "decoder: %d words x %d side-set configs = %d evaluations checked\n%!"
+    0x10000 (List.length configs) !n_checked
+;;
+
+(* ---------- 2. SET PINS / JMP loop, with the pin timing of R1 ---------- *)
+
+(* IMEM: 0 SET PINDIRS,1; 1 SET PINS,1; 2 SET PINS,0; 3 JMP 1. SET_COUNT 1 at pin 0.
+   Enabled in cycle 0. Program counter, one instruction per cycle:
+     c0 pc0 (dir write) -> c1 pc1 (set 1) -> c2 pc2 (set 0) -> c3 pc3 (JMP 1) -> c4 pc1
+     -> c5 pc2 -> c6 pc3 (JMP) -> c7 pc1 ...
+   A write in cycle k is on pins_out in cycle k+1 (R1). pins_oe becomes 1 in cycle 1.
+   Level writes happen in c1, c2, c4, c5, c7, ...:
+     pins_out: c0 0, c1 0, c2 1, c3 0, c4 0, c5 1, c6 0, c7 0, c8 1
+     pins_oe:  c0 0, c1 1, and 1 from then on. *)
+let set_pins_loop () =
+  let tb = make ~num_sms:1 in
+  List.iteri
+    (fun addr w -> load_imem tb addr w)
+    [ 0xE081 (* SET PINDIRS,1 *); 0xE001 (* SET PINS,1 *); 0xE000 (* SET PINS,0 *); 0x0001 (* JMP 1 *) ];
+  configure
+    tb
+    ~sm:0
+    ~clkdiv:clkdiv_1
+    ~execctrl:execctrl_default
+    ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  let want_out = [| 0; 0; 1; 0; 0; 1; 0; 0; 1 |] in
+  let want_pc = [| 0; 1; 2; 3; 1; 2; 3; 1; 2 |] in
+  let want_oe = [| 0; 1; 1; 1; 1; 1; 1; 1; 1 |] in
+  run
+    tb
+    9
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 1)
+    ~check:(fun c () ->
+      expect "set_pins pins_out" ~cyc:c (get tb "pins_out") want_out.(c);
+      expect "set_pins pins_oe" ~cyc:c (get tb "pins_oe") want_oe.(c);
+      expect "set_pins dbg_pc0" ~cyc:c (get tb "dbg_pc0") want_pc.(c))
+    ()
+;;
+
+(* ---------- 3. Side-set on a stalled instruction (R11) ---------- *)
+
+(* SIDESET_COUNT 1 (no enable), SIDESET_BASE 5. IMEM: 0 PULL block side 1 (0x90A0);
+   1 SET PINS,1 side 0 (0xE001). Enabled in cycle 0, TX empty.
+     c0: PULL stalls (TX empty). Side-set applies on this first attempt: pin 5 -> 1, on
+         pins_out from c1. TXSTALL is set, visible from c1.
+     c1, c2: still stalled. No second side-set (R11).
+     c2: host pushes a word (H1). The SM sees it from c3.
+     c3: PULL completes. Its side-set was already done, so pin 5 keeps 1.
+     c4: SET PINS,1 side 0 runs: pin 5 -> 0 and pin 0 -> 1, on pins_out from c5. *)
+let side_set_stall () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0x90A0;
+  load_imem tb 1 0xE001;
+  configure
+    tb
+    ~sm:0
+    ~clkdiv:clkdiv_1
+    ~execctrl:execctrl_default
+    ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ~sideset_count:1 ~sideset_base:5 ());
+  let want_out_bit5 = [| 0; 1; 1; 1; 1; 0 |] in
+  let want_out_bit0 = [| 0; 0; 0; 0; 0; 1 |] in
+  (* c3: PULL completes, pc 1 from c4. c4: SET completes, pc 2 from c5. *)
+  let want_pc = [| 0; 0; 0; 0; 1; 2 |] in
+  run
+    tb
+    6
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      if c = 2 then (
+        set tb "txf_push" 1;
+        set tb "txf_data" 0x1234_5678))
+    ~check:(fun c () ->
+      let po = get tb "pins_out" in
+      expect "side_set pin5" ~cyc:c ((po lsr 5) land 1) want_out_bit5.(c);
+      expect "side_set pin0" ~cyc:c (po land 1) want_out_bit0.(c);
+      expect "side_set dbg_pc0" ~cyc:c (get tb "dbg_pc0") want_pc.(c);
+      (* TXSTALL is bit 24 of FDEBUG, set by the empty-TX stall of c0 and visible from c1. *)
+      if c = 1 then expect "side_set TXSTALL" ~cyc:c ((get tb "fdebug" lsr 24) land 1) 1;
+      if c = 1 then expect "side_set stall reason" ~cyc:c ((get tb "dbg_cnt0" lsr 24) land 15) 1)
+    ()
+;;
+
+(* ---------- 4. WAIT on a pin, synchroniser on and bypassed (R1) ---------- *)
+
+(* IMEM: 0 WAIT 1 PIN 0; 1 SET PINS,1. Enabled in cycle 0. External pin 0 is 0 until cycle
+   10, then 1. Bypassed: the WAIT sees r1, which is pins_in one cycle earlier, so it
+   completes in cycle 11 and pc is 1 from cycle 12. Synchronised: it sees r3, which is
+   pins_in three cycles earlier, so it completes in cycle 13 and pc is 1 from cycle 14. *)
+let wait_pin ~bypass =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0x20A0;
+  load_imem tb 1 0xE001;
+  configure
+    tb
+    ~sm:0
+    ~clkdiv:clkdiv_1
+    ~execctrl:execctrl_default
+    ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  set tb "sync_bypass" (if bypass then 1 else 0);
+  let rise = 10 in
+  let n = 16 in
+  let want_pc_change = if bypass then 12 else 14 in
+  let label = if bypass then "wait_pin bypassed" else "wait_pin synchronised" in
+  run
+    tb
+    n
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      set tb "pins_in" (if c >= rise then 1 else 0))
+    ~check:(fun c () ->
+      (* pc is 0 until the WAIT completes, then 1 for one cycle. The SET after it moves
+         the pc on to 2, and the JMP after that returns it to 0. Only the change is
+         checked here. *)
+      let pc = get tb "dbg_pc0" in
+      if c < want_pc_change then expect (label ^ " pc before") ~cyc:c pc 0;
+      if c = want_pc_change then expect (label ^ " pc change") ~cyc:c pc 1)
+    ()
+;;
+
+(* ---------- 5. IRQ set by one engine, WAIT by another (num_sms = 2) ---------- *)
+
+(* The engines share IMEM, so the second engine starts at address 8 (a forced JMP 8 while
+   it is disabled, F1). IMEM: 0 IRQ set 3; 1 JMP 0; 8 WAIT 1 IRQ 3; 9 JMP 9.
+   Both enabled in cycle 0, clock divider 1.
+     SM0 sets flag 3 in c0, c2, c4 ... (IRQ instruction at pc0 on even cycles).
+     SM1 at c0 waits for flag 3, which reads 0 (stall). At c1 the flag reads 1 (R9: a set
+     is seen one cycle later), so SM1 completes and clears it. Its pc is 9 from c2.
+   irq: c0 0, c1 1, c2 0 (SM1 cleared it in c1), c3 1 (SM0 set it in c2), then 1 (no more
+   clears). *)
+let irq_between_engines () =
+  let tb = make ~num_sms:2 in
+  load_imem tb 0 0xC003 (* IRQ set 3 *);
+  load_imem tb 1 0x0000 (* JMP 0 *);
+  load_imem tb 8 0x20C3 (* WAIT 1 IRQ 3 *);
+  load_imem tb 9 0x0009 (* JMP 9 *);
+  List.iter
+    (fun sm ->
+      configure
+        tb
+        ~sm
+        ~clkdiv:clkdiv_1
+        ~execctrl:execctrl_default
+        ~shiftctrl:shiftctrl_default
+        ~pinctrl_v:(pinctrl ()))
+    [ 0; 1 ];
+  (* Engine 1 starts at address 8: forced JMP 8 while disabled (F1). The write is in the
+     cycle before, and the JMP runs in the next, so pc is 8 from the first run cycle. *)
+  cyc tb
+    ~f:(fun () ->
+      set tb "instr_write" 1;
+      set tb "instr_sm" 1;
+      set tb "instr_data" 0x0008)
+    ();
+  cyc tb ();
+  (* Flag 3 is bit 3, so its value is 8. *)
+  let want_irq = [| 0; 8; 0; 8; 8 |] in
+  let want_pc1 = [| 8; 8; 9; 9; 9 |] in
+  run
+    tb
+    5
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 3)
+    ~check:(fun c () ->
+      expect "irq irq" ~cyc:c (get tb "irq") want_irq.(c);
+      expect "irq dbg_pc1" ~cyc:c (get tb "dbg_pc1") want_pc1.(c))
+    ()
+;;
+
+(* ---------- 6. Forced instructions while disabled, F1, F3, F4 ---------- *)
+
+(* SM disabled throughout. Host writes INSTR in cycle w; the instruction runs in w+1.
+   1. SET PINDIRS,1 (0xE081) in cycle 0: pins_oe 1 from cycle 2.
+   2. SET PINS,1 [7] (0xE701) in cycle 2: pins_out 1 from cycle 4, and the delay field
+      is ignored: DBG_CNT delay stays 0.
+   3. JMP 5 (0x0005) in cycle 4: pc 5 from cycle 6.
+   4. PULL block (0x80A0) in cycle 6 with TX empty: it stalls. EXEC_STALLED is 1 and the
+      latch stall reason is 1 from cycle 8. pc stays 5.
+   5. Host pushes a word in cycle 8. The SM sees it in cycle 9, the PULL completes, and
+      EXEC_STALLED and the stall reason clear from cycle 10. pc stays 5. *)
+let forced_while_disabled () =
+  let tb = make ~num_sms:1 in
+  configure
+    tb
+    ~sm:0
+    ~clkdiv:clkdiv_1
+    ~execctrl:execctrl_default
+    ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  (* (cycle of the INSTR write, word). Each runs in the following cycle. *)
+  let forced = [ 0, 0xE081; 2, 0xE701; 4, 0x0005; 6, 0x80A0 ] in
+  let push_at = 8 in
+  run
+    tb
+    11
+    ~f:(fun c () ->
+      List.iter
+        (fun (k, w) ->
+          if k = c
+          then (
+            set tb "instr_write" 1;
+            set tb "instr_data" w))
+        forced;
+      if c = push_at
+      then (
+        set tb "txf_push" 1;
+        set tb "txf_data" 0xABCD))
+    ~check:(fun c () ->
+      let oe = get tb "pins_oe" in
+      let po = get tb "pins_out" in
+      expect "forced pins_oe" ~cyc:c (oe land 1) (if c >= 2 then 1 else 0);
+      expect "forced pins_out" ~cyc:c (po land 1) (if c >= 4 then 1 else 0);
+      expect "forced delay" ~cyc:c ((get tb "dbg_cnt0" lsr 16) land 31) 0;
+      expect "forced pc" ~cyc:c (get tb "dbg_pc0") (if c >= 6 then 5 else 0);
+      if c >= 8
+      then (
+        let stalled = if c < 10 then 1 else 0 in
+        expect "forced exec_stalled" ~cyc:c (get tb "dbg_exec_stalled0") stalled;
+        expect "forced latch stall reason" ~cyc:c ((get tb "dbg_cnt0" lsr 24) land 15) stalled))
+    ()
+;;
+
+(* ---------- 7. OUT EXEC (F2) ---------- *)
+
+(* IMEM: 0 PULL block; 1 OUT EXEC,32; 2 JMP 1. SET_COUNT 1. Enabled in cycle 0, and the
+   host pushes 0x0000E001 (SET PINS,1) in cycle 0, so the TX FIFO has it from cycle 1.
+     c0: PULL stalls (TX empty at the start of c0). Stall reason 1 is visible from c1.
+     c1: PULL pops the word; pc 1 from c2.
+     c2: OUT EXEC runs, latches the low 16 bits (0xE001), and pc 2 from c3.
+     c3: the latched SET PINS,1 runs. It does not advance pc, so pc stays 2 in c4.
+         pins_out 1 from c4.
+     c4: JMP 1 runs, so pc is 1 from c5. *)
+let out_exec () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0x80A0;
+  load_imem tb 1 0x60E0;
+  load_imem tb 2 0x0001;
+  configure
+    tb
+    ~sm:0
+    ~clkdiv:clkdiv_1
+    ~execctrl:execctrl_default
+    ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  let want_pc = [| 0; 0; 1; 2; 2; 1 |] in
+  let want_out = [| 0; 0; 0; 0; 1; 1 |] in
+  run
+    tb
+    6
+    ~f:(fun c () ->
+      if c = 0 then (
+        set tb "sm_enable" 1;
+        set tb "txf_push" 1;
+        set tb "txf_data" 0x0000_E001))
+    ~check:(fun c () ->
+      expect "out_exec dbg_pc0" ~cyc:c (get tb "dbg_pc0") want_pc.(c);
+      expect "out_exec pins_out" ~cyc:c (get tb "pins_out" land 1) want_out.(c);
+      if c = 1 then expect "out_exec stall reason" ~cyc:c ((get tb "dbg_cnt0" lsr 24) land 15) 1;
+      if c = 2 then expect "out_exec stall cleared" ~cyc:c ((get tb "dbg_cnt0" lsr 24) land 15) 0)
+    ()
+;;
+
+(* ---------- 8. Clock divider, INT 2 FRAC 128 (R10) ---------- *)
+
+(* D = 2.5. The phase P is the value in units of 1/256 cycle, and each cycle adds 256.
+   A tick comes when P + 256 >= 640. From c0, P is 0, 256, 512, 128, 384, 0, 256, ...,
+   so ticks fall in c2, c4, c7, c9, c12, c14 (gaps 2, 3, 2, 3 ...).
+   IMEM: 0 SET PINS,1; 1 SET PINS,0; 2 JMP 0. Ticks execute pc0 at c2, pc1 at c4, pc2 at
+   c7, pc0 at c9, pc1 at c12, pc2 at c14. *)
+let clock_divider () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0xE001;
+  load_imem tb 1 0xE000;
+  load_imem tb 2 0x0000;
+  configure
+    tb
+    ~sm:0
+    ~clkdiv:0x0002_8000
+    ~execctrl:execctrl_default
+    ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  (* The divider runs while the SM is disabled, so restart it in the cycle before enabling.
+     Its phase is then 0 in cycle 0. *)
+  cyc tb ~f:(fun () -> set tb "clkdiv_restart" 1) ();
+  let want_phase = [| 0; 256; 512; 128; 384; 0; 256; 512; 128; 384; 0; 256; 512; 128; 384; 0 |] in
+  let want_pc = [| 0; 0; 0; 1; 1; 2; 2; 2; 0; 0; 1; 1; 1; 2; 2; 0 |] in
+  let want_out = [| 0; 0; 0; 1; 1; 0; 0; 0; 0; 0; 1; 1; 1; 0; 0; 0 |] in
+  run
+    tb
+    16
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 1)
+    ~check:(fun c () ->
+      expect "clkdiv phase" ~cyc:c (get tb "dbg_phase0") want_phase.(c);
+      expect "clkdiv pc" ~cyc:c (get tb "dbg_pc0") want_pc.(c);
+      expect "clkdiv pins_out" ~cyc:c (get tb "pins_out" land 1) want_out.(c))
+    ()
+;;
+
+(* ---------- 9. FIFO join and FIFO status (engine.md 2, 3, H1, H2, H6) ---------- *)
+
+let fifo_status () =
+  (* Not joined: 4 words accepted, the 5th dropped with TXOVER. *)
+  let tb = make ~num_sms:1 in
+  for k = 1 to 5 do
+    cyc tb ~f:(fun () -> set tb "txf_push" 1; set tb "txf_data" k) ()
+  done;
+  cyc tb
+    ~check:(fun () ->
+      (* FSTAT: TXFULL bit 16, RXEMPTY bit 8. FLEVEL: TX level 4. FDEBUG: TXOVER bit 16. *)
+      expect "fifo fstat (4 deep)" ~cyc:0 (get tb "fstat") 0x0001_0100;
+      expect "fifo flevel (4 deep)" ~cyc:0 (get tb "flevel") 0x4;
+      expect "fifo fdebug (4 deep)" ~cyc:0 (get tb "fdebug") 0x0001_0000)
+    ();
+  (* Joined to TX: 8 words accepted, RX has no capacity. *)
+  let tb = make ~num_sms:1 in
+  set tb "shiftctrl0" (shiftctrl_default lor (1 lsl 30));
+  for k = 1 to 9 do
+    cyc tb ~f:(fun () -> set tb "txf_push" 1; set tb "txf_data" k) ()
+  done;
+  cyc tb
+    ~check:(fun () ->
+      (* TXFULL bit 16, RXEMPTY bit 8 and RXFULL bit 0 both set. TX level 8. TXOVER from the
+         9th push. *)
+      expect "fifo fstat (joined TX)" ~cyc:0 (get tb "fstat") 0x0001_0101;
+      expect "fifo flevel (joined TX)" ~cyc:0 (get tb "flevel") 0x8;
+      expect "fifo fdebug (joined TX)" ~cyc:0 (get tb "fdebug") 0x0001_0000)
+    ();
+  (* Flush empties both FIFOs (H6). *)
+  cyc tb ~f:(fun () -> set tb "fifo_flush" 1) ();
+  cyc tb
+    ~check:(fun () ->
+      expect "fifo flush level" ~cyc:0 (get tb "flevel") 0;
+      (* TXEMPTY bit 24 (level 0), RXEMPTY bit 8, RXFULL bit 0 (RX has no capacity). *)
+      expect "fifo flush fstat" ~cyc:0 (get tb "fstat") 0x0100_0101)
+    ();
+  (* Joined to RX: a host pop from an empty RX FIFO sets RXUNDER (bit 8). *)
+  let tb = make ~num_sms:1 in
+  set tb "shiftctrl0" (shiftctrl_default lor (1 lsl 31));
+  cyc tb ~f:(fun () -> set tb "rxf_pop" 1; set tb "rxf_sm" 0) ();
+  cyc tb
+    ~check:(fun () ->
+      expect "fifo rxunder" ~cyc:0 (get tb "fdebug") 0x100;
+      expect "fifo rxf_data empty" ~cyc:0 (get tb "rxf_data") 0)
+    ()
+;;
+
+(* ---------- 10. OUT with autopull from host-pushed TX words (R5) ---------- *)
+
+(* IMEM 0: OUT PINS,8. WRAP_TOP = WRAP_BOTTOM = 0, so pc stays 0. OUT_COUNT 8 at pin 0.
+   Autopull on, thresholds 32. Words W1 = 0xC3 (pushed in c0) and W2 = 0xA5 (pushed in c1).
+     c0: OSR count 32 >= threshold, TX empty: stall, TXSTALL set (visible c1).
+     c1: TX has W1: refill (count 0, pop W1), stall with reason 3. W2 is pushed at its end.
+     c2: shifts out 0xC3 to pins 0 to 7; count 8. pins_out 0xC3 from c3.
+     c3, c4: shift out 0; count 16, 24.
+     c5: shifts out 0 and reaches count 32, so it refills from W2 (not empty). count 0 from c6.
+     c6: shifts out 0xA5 (low 8 bits of W2); pins_out 0xA5 from c7. count 8.
+     c7, c8: count 16, 24. c9: count 32, TX empty, no refill.
+     c10: stall (reason 3) with TXSTALL. *)
+let autopull_out () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0x6008 (* OUT PINS,8 *);
+  configure
+    tb
+    ~sm:0
+    ~clkdiv:clkdiv_1
+    ~execctrl:0
+    ~shiftctrl:(shiftctrl_default lor (1 lsl 17))
+    ~pinctrl_v:(pinctrl ~out_count:8 ~set_count:0 ());
+  (* Indexed by cycle. The stall of c10 shows from c11 (the stall is decided in c10). *)
+  let want_pins = [| 0; 0; 0; 0xC3; 0; 0; 0; 0xA5; 0; 0; 0; 0 |] in
+  let want_count = [| 32; 32; 0; 8; 16; 24; 0; 8; 16; 24; 32; 32 |] in
+  let want_stall = [| 0; 3; 3; 0; 0; 0; 0; 0; 0; 0; 0; 3 |] in
+  run
+    tb
+    12
+    ~f:(fun c () ->
+      if c = 0
+      then (
+        set tb "sm_enable" 1;
+        set tb "txf_push" 1;
+        set tb "txf_data" 0xC3);
+      if c = 1
+      then (
+        set tb "txf_push" 1;
+        set tb "txf_data" 0xA5))
+    ~check:(fun c () ->
+      expect "autopull pins" ~cyc:c (get tb "pins_out" land 0xFF) want_pins.(c);
+      expect "autopull osr count" ~cyc:c ((get tb "dbg_cnt0" lsr 8) land 63) want_count.(c);
+      expect "autopull stall reason" ~cyc:c ((get tb "dbg_cnt0" lsr 24) land 15) want_stall.(c);
+      if c = 1 then expect "autopull TXSTALL" ~cyc:c ((get tb "fdebug" lsr 24) land 1) 1)
+    ()
+;;
+
+let () =
+  decoder_exhaustive ();
+  set_pins_loop ();
+  side_set_stall ();
+  wait_pin ~bypass:true;
+  wait_pin ~bypass:false;
+  irq_between_engines ();
+  forced_while_disabled ();
+  out_exec ();
+  clock_divider ();
+  fifo_status ();
+  autopull_out ();
+  Printf.printf "smoke: %d checks, %d failures\n%!" !checks !failures;
+  if !failures > 0 then exit 1
+;;

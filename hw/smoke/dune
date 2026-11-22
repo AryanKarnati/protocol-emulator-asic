@@ -1,0 +1,6 @@
+; Smoke tests for the block 2 RTL (engine.md). Expected values are derived by hand from
+; the datasheet and the contract; the Isa library is used only for the decoder check.
+
+(test
+ (name smoke)
+ (libraries polyglot_hw polyglot_isa hardcaml))
