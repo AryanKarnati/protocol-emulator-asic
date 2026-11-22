@@ -207,7 +207,9 @@ Each ruling cites the datasheet text it settles. Items marked V1 are to be check
 
 **Forced and EXEC instructions** (datasheet §3.5.7, §3.4.5.2):
 
-- **F1. Forced instructions.** An instruction written to INSTR in cycle k is attempted in cycle k+1, whatever the divider, `sm_enable` or a pending delay. While it stays latched (because it stalled), it is retried every cycle. Meanwhile the SM's normal execution is frozen: no delay countdown, no EXEC or IMEM instruction, and no autopull refill. The divider keeps running.
+- **F1. Forced instructions.** An instruction written to INSTR in cycle k is attempted in cycle k+1, whatever the divider, `sm_enable` or a pending delay. If it stalls, it stays latched and is retried every cycle.
+  - Every cycle with a forced attempt replaces the SM's normal activity for that cycle. This covers the first attempt and every retry. In such a cycle there is no delay countdown, no EXEC or IMEM attempt, and no autopull refill.
+  - The divider keeps running, so a tick that falls in such a cycle is used up. For example, a forced instruction that lands during a delay makes the delay end one tick later if that cycle was a tick. **V1 item f.**
   - The instruction's own delay field is ignored, and it never changes the delay counter.
   - It changes the PC only if it writes the PC (JMP, OUT PC, MOV PC). Otherwise the PC stays where it was.
 - **F2. EXEC instructions.** `OUT EXEC` and `MOV EXEC` complete in their own cycle, ignore their own delay field, and latch the new instruction. That instruction runs on the SM's next enabled tick, uses its own delay, and does not advance the PC unless it writes it. It can stall and be retried on later ticks like any instruction.
