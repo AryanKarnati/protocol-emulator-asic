@@ -1187,7 +1187,295 @@ let two_engines_sm1 () =
     ()
 ;;
 
+(* ---------- 13. Round 4 ---------- *)
+
+let ones = 0xFFFF_FFFF
+
+(* STATUS_SEL (datasheet 3.7): 0 is TXLEVEL, 1 is RXLEVEL. MOV X,STATUS, one instruction,
+   wrap 0 to 0 (execctrl = N in bits 3:0, SEL in bit 4, wrap fields 0).
+   A: SEL 0, N 2. TX level 0 in c0, 1 in c1 (push in c0), 2 in c2 (push in c1). The
+      attempts in c0, c1 see a level below 2 (X all ones from c1 to c2), and c2 sees 2 (X 0
+      from c3).
+   B: SEL 1, N 1. RX stays empty, so RX is 0 < 1 and X is all ones in every cycle. TX
+      reaches 1 from c1, which would give X 0 if TX were compared.
+   C: SEL 1, N 2, wrap 2 to 0. PUSH noblock (c0, c3) and MOV X,STATUS (c1, c4) against
+      the RX level: 1 < 2 gives ones in c2, and 2 gives zero in c5 (the RX boundary). *)
+let status_sel () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0xA025;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:2 ~shiftctrl:shiftctrl_default ~pinctrl_v:(pinctrl ());
+  run tb 4
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      if c <= 1 then (set tb "txf_push" 1; set tb "txf_data" (c + 1)))
+    ~check:(fun c () -> check_arr "status A X" tb ~name:"dbg_x0" ~mask:ones [| 0; ones; ones; 0 |] c)
+    ();
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0xA025;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:0x11 ~shiftctrl:shiftctrl_default ~pinctrl_v:(pinctrl ());
+  run tb 4
+    ~f:(fun c () ->
+      if c = 0 then (set tb "sm_enable" 1; set tb "txf_push" 1; set tb "txf_data" 7))
+    ~check:(fun c () -> check_arr "status B X" tb ~name:"dbg_x0" ~mask:ones [| 0; ones; ones; ones |] c)
+    ();
+  let tb = make ~num_sms:1 in
+  List.iteri (fun a w -> load_imem tb a w) [ 0x8000 (* PUSH noblock *); 0xA025 (* MOV X,STATUS *); 0x0000 ];
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:0x2012 ~shiftctrl:shiftctrl_default ~pinctrl_v:(pinctrl ());
+  run tb 6
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 1)
+    ~check:(fun c () ->
+      check_arr "status C pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 1; 2; 0; 1; 2 |] c;
+      check_arr "status C X" tb ~name:"dbg_x0" ~mask:ones [| 0; 0; ones; ones; ones; 0 |] c;
+      check_arr "status C RX level" tb ~name:"flevel" ~mask:0xF0 [| 0; 0x10; 0x10; 0x10; 0x20; 0x20 |] c)
+    ()
+;;
+
+(* Checker reproducer, R4: autopull on, threshold 32. Push 0xAAAA (c0) and 0xBBBB (c1).
+   PULL block; OUT NULL,8; PULL block. The first PULL loads 0xAAAA; OUT NULL,8 shifts
+   it to 0xAA with count 8; the second PULL is not a no-op (count is not 0), so it loads
+   0xBBBB at once. *)
+let r4_checker () =
+  let tb = make ~num_sms:1 in
+  List.iteri (fun a w -> load_imem tb a w) [ 0x80A0; 0x6068 (* OUT NULL,8 *); 0x80A0; 0x0003 ];
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default
+    ~shiftctrl:(shiftctrl_default lor (1 lsl 17)) ~pinctrl_v:(pinctrl ());
+  run tb 6
+    ~f:(fun c () ->
+      if c = 0 then (set tb "sm_enable" 1; set tb "txf_push" 1; set tb "txf_data" 0xAAAA)
+      else if c = 1 then (set tb "txf_push" 1; set tb "txf_data" 0xBBBB))
+    ~check:(fun c () ->
+      check_arr "r4c pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 0; 1; 2; 3; 3 |] c;
+      check_arr "r4c OSR" tb ~name:"dbg_osr0" ~mask:ones [| 0; 0; 0xAAAA; 0xAA; 0xBBBB; 0xBBBB |] c;
+      check_arr "r4c count" tb ~name:"dbg_cnt0" ~mask:0x3F00
+        (Array.map (fun n -> n lsl 8) [| 32; 32; 0; 8; 0; 0 |]) c)
+    ()
+;;
+
+(* Checker reproducer, F6. IMEM WAIT 1 GPIO 0 stalls with reason 4 (pin 0 low). In c2 the
+   host forces JMP 1, which runs in c3 and writes the PC. F6 clears the IMEM stall reason
+   at the end of c3, so DBG_CNT shows 0 from c4 (and pc is 1 from c4). *)
+let f6_checker () =
+  let tb = make ~num_sms:1 in
+  List.iteri (fun a w -> load_imem tb a w) [ 0x2080 (* WAIT 1 GPIO 0 *); 0x0001 (* JMP 1 *) ];
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  run tb 6
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      if c = 2 then (set tb "instr_write" 1; set tb "instr_sm" 0; set tb "instr_data" 0x0001))
+    ~check:(fun c () ->
+      check_arr "f6c stall" tb ~name:"dbg_cnt0" ~mask:0x0F00_0000
+        (Array.map (fun r -> r lsl 24) [| 0; 4; 4; 4; 0; 0 |]) c;
+      check_arr "f6c pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 0; 0; 0; 1; 1 |] c)
+    ()
+;;
+
+(* Checker reproducer, OUT_STICKY. SM0 (lower) sticky on; SM1 (higher) writes pin 0
+   direction 0 once, in c5. A: OUT PINS then SET PINDIRS. The last write is a direction
+   write, so SM0 re-asserts direction 1 after SM1 stops: pin 0 is 1 from c7.
+   B: SET PINDIRS then OUT PINS. The last write is a level write, so only the level is
+   sticky, and direction stays 0 after SM1 stops (pin 0 stays 0). *)
+let out_sticky_checker () =
+  let run_case ~prog ~want_oe label =
+    let tb = make ~num_sms:2 in
+    List.iteri (fun a w -> load_imem tb a w) prog;
+    load_imem tb 8 0xE080 (* SM1: SET PINDIRS,0 *);
+    load_imem tb 9 0x0009;
+    configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:(execctrl_default lor (1 lsl 17))
+      ~shiftctrl:shiftctrl_default ~pinctrl_v:(pinctrl ~out_count:1 ());
+    configure tb ~sm:1 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default
+      ~shiftctrl:shiftctrl_default ~pinctrl_v:(pinctrl ~out_count:1 ());
+    force_jmp tb ~sm:1 ~addr:8;
+    run tb 9
+      ~f:(fun c () ->
+        if c = 0 then (set tb "sm_enable" 1; set tb "txf_push" 1; set tb "txf_data" 1);
+        if c = 5 then set tb "sm_enable" 3)
+      ~check:(fun c () -> check_arr label tb ~name:"pins_oe" ~mask:1 want_oe c)
+      ()
+  in
+  run_case
+    ~prog:[ 0x80A0 (* PULL block *); 0x6001 (* OUT PINS,1 *); 0xE081 (* SET PINDIRS,1 *); 0x0003 ]
+    ~want_oe:[| 0; 0; 0; 0; 1; 1; 0; 1; 1 |] "oe sticky A";
+  run_case
+    ~prog:[ 0x80A0; 0xE081; 0x6001; 0x0003 ]
+    ~want_oe:[| 0; 0; 0; 1; 1; 1; 0; 0; 0 |] "oe sticky B"
+;;
+
+(* JMP conditions, and X-- decrements X whether or not the jump is taken.
+   0 SET X,2; 1 JMP X--,1; 2 SET Y,7; 3 JMP 3. c1 and c2 jump (X 2 and 1), c3 does not
+   (X 0, so the fall-through is taken and X becomes -1). *)
+let jmp_conditions () =
+  let tb = make ~num_sms:1 in
+  List.iteri (fun a w -> load_imem tb a w) [ 0xE022; 0x0041 (* JMP X--,1 *); 0xE047; 0x0003 ];
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  run tb 7
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 1)
+    ~check:(fun c () ->
+      check_arr "jmp pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 1; 1; 1; 2; 3; 3 |] c;
+      check_arr "jmp X" tb ~name:"dbg_x0" ~mask:ones [| 0; 2; 1; 0; ones; ones; ones |] c;
+      check_arr "jmp Y" tb ~name:"dbg_y0" ~mask:ones [| 0; 0; 0; 0; 0; 7; 7 |] c)
+    ();
+  (* JMP PIN with JMP_PIN 0: 0 JMP PIN,2; 1 SET X,1; 2 JMP 2. Not taken when pin 0 is low. *)
+  let jmp_pin level =
+    let tb = make ~num_sms:1 in
+    List.iteri (fun a w -> load_imem tb a w) [ 0x00C2; 0xE021; 0x0002 ];
+    set tb "pins_in" level;
+    set tb "sync_bypass" ones;
+    preload tb;
+    configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+      ~pinctrl_v:(pinctrl ());
+    tb
+  in
+  let tb = jmp_pin 0 in
+  run tb 4
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 1)
+    ~check:(fun c () ->
+      check_arr "jmp pin low pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 1; 2; 2 |] c;
+      check_arr "jmp pin low X" tb ~name:"dbg_x0" ~mask:ones [| 0; 0; 1; 1 |] c)
+    ();
+  let tb = jmp_pin 1 in
+  run tb 3
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 1)
+    ~check:(fun c () ->
+      check_arr "jmp pin high pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 2; 2 |] c;
+      check_arr "jmp pin high X" tb ~name:"dbg_x0" ~mask:ones [| 0; 0; 0 |] c)
+    ()
+;;
+
+(* MOV PC, OUT PC, OUT ISR (PC is set with no wrap, datasheet 3.4.5.2 and 3.4.8.2).
+   MOV PC,X with X=5: pc 5 from c2. OUT PC,5 of OSR 9 from c3. OUT ISR,8 of OSR 0xAB:
+   ISR 0xAB with count 8 from c3, and OSR shifted to 0 with count 8. *)
+let pc_isr_moves () =
+  let tb = make ~num_sms:1 in
+  List.iteri (fun a w -> load_imem tb a w)
+    [ 0xE025 (* SET X,5 *); 0xA0A1 (* MOV PC,X *) ];
+  load_imem tb 5 0xE049 (* SET Y,9 *);
+  load_imem tb 6 0x0006;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  run tb 4
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 1)
+    ~check:(fun c () ->
+      check_arr "mov pc pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 1; 5; 6 |] c;
+      check_arr "mov pc Y" tb ~name:"dbg_y0" ~mask:ones [| 0; 0; 0; 9 |] c)
+    ();
+  let tb = make ~num_sms:1 in
+  List.iteri (fun a w -> load_imem tb a w)
+    [ 0x80A0 (* PULL block *); 0x60A5 (* OUT PC,5 *); 0x0000; 0x0000; 0x0000; 0x0000; 0x0000;
+      0x0000; 0x0000; 0xE043 (* SET Y,3 *); 0x000A (* JMP 10 *) ];
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  run tb 6
+    ~f:(fun c () ->
+      if c = 0 then (set tb "sm_enable" 1; set tb "txf_push" 1; set tb "txf_data" 9))
+    ~check:(fun c () ->
+      check_arr "out pc pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 0; 1; 9; 10; 10 |] c;
+      check_arr "out pc Y" tb ~name:"dbg_y0" ~mask:ones [| 0; 0; 0; 0; 3; 3 |] c)
+    ();
+  let tb = make ~num_sms:1 in
+  List.iteri (fun a w -> load_imem tb a w)
+    [ 0x80A0; 0x60C8 (* OUT ISR,8 *); 0x0002 ];
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  run tb 5
+    ~f:(fun c () ->
+      if c = 0 then (set tb "sm_enable" 1; set tb "txf_push" 1; set tb "txf_data" 0xAB))
+    ~check:(fun c () ->
+      check_arr "out isr isr" tb ~name:"dbg_isr0" ~mask:ones [| 0; 0; 0; 0xAB; 0xAB |] c;
+      check_arr "out isr count" tb ~name:"dbg_cnt0" ~mask:63 [| 0; 0; 0; 8; 8 |] c;
+      check_arr "out isr osr" tb ~name:"dbg_osr0" ~mask:ones [| 0; 0; 0xAB; 0; 0 |] c;
+      check_arr "out isr osr count" tb ~name:"dbg_cnt0" ~mask:0x3F00
+        (Array.map (fun n -> n lsl 8) [| 32; 32; 0; 8; 8 |]) c)
+    ()
+;;
+
+(* ILLEGAL (reserved SET destination 5, word 0xE3A0 with delay 3). It runs as a NOP, sets
+   FDEBUG.ILLEGAL (bit 28), and keeps its delay field: the delay counter then counts 3, 2,
+   1, 0 in c1 to c4, and SET X,1 runs in c4 (X is 1 from c5). *)
+let illegal_keeps_delay () =
+  let tb = make ~num_sms:1 in
+  List.iteri (fun a w -> load_imem tb a w) [ 0xE3A0 (* reserved, delay 3 *); 0xE021 (* SET X,1 *); 0x0002 ];
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  run tb 6
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 1)
+    ~check:(fun c () ->
+      check_arr "illegal pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 1; 1; 1; 1; 2 |] c;
+      check_arr "illegal delay" tb ~name:"dbg_cnt0" ~mask:0x1F_0000
+        (Array.map (fun d -> d lsl 16) [| 0; 3; 2; 1; 0; 0 |]) c;
+      check_arr "illegal flag" tb ~name:"fdebug" ~mask:0x1000_0000
+        (Array.map (fun b -> b * 0x1000_0000) [| 0; 1; 1; 1; 1; 1 |]) c;
+      check_arr "illegal X" tb ~name:"dbg_x0" ~mask:ones [| 0; 0; 0; 0; 0; 1 |] c)
+    ()
+;;
+
+(* irq_force and irq_clear from the host (H5). Each cycle's pulses take effect at its
+   end: irq(k+1) = (irq(k) & ~clear) | force.
+   c0 force 0x05 -> 5. c1 clear 0x01 -> 4. c2 clear 0x04 and force 0x01 (the force
+   wins only over other bits; the cleared bit 2 goes) -> 1. c3 clear 0x02 and force 0x02:
+   a set beats a clear -> 3. *)
+let host_irq () =
+  let tb = make ~num_sms:1 in
+  run tb 5
+    ~f:(fun c () ->
+      match c with
+      | 0 -> set tb "irq_force" 0x05
+      | 1 -> set tb "irq_clear" 0x01
+      | 2 -> set tb "irq_clear" 0x04; set tb "irq_force" 0x01
+      | 3 -> set tb "irq_clear" 0x02; set tb "irq_force" 0x02
+      | _ -> ())
+    ~check:(fun c () -> check_arr "host irq" tb ~name:"irq" ~mask:0xFF [| 0; 5; 4; 1; 3 |] c)
+    ()
+;;
+
+(* INT = 0 means 65536 (engine.md R10): with INT 0 FRAC 0 the phase grows by 256 a cycle
+   and no tick comes in these cycles. CLKDIV_RESTART in c0 sets the phase to 0 for c1.
+   A restart in c3 sets it to 0 for c4 (the restart clears the phase mid-run). *)
+let clkdiv_int0_restart () =
+  let tb = make ~num_sms:1 in
+  configure tb ~sm:0 ~clkdiv:0 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  cyc tb ~f:(fun () -> set tb "clkdiv_restart" 1) ();
+  run tb 6
+    ~f:(fun c () -> if c = 3 then set tb "clkdiv_restart" 1)
+    ~check:(fun c () ->
+      check_arr "int0 phase" tb ~name:"dbg_phase0" ~mask:0x1FF_FFFF [| 0; 256; 512; 768; 0; 256 |] c)
+    ()
+;;
+
+(* num_sms 4: pin priority across all engines (R2). Engines 0, 2 and 3 are at addresses
+   0, 16 and 24, writing pin 0 level 1, 1 and 0. Engine 1 at 8 writes 0. The highest,
+   engine 3, wins: pin 0 reads 0 in c1. *)
+let pin_priority_four () =
+  let tb = make ~num_sms:4 in
+  List.iter (fun (a, w) -> load_imem tb a w)
+    [ 0, 0xE001 (* SET PINS,1 *); 1, 0x0001; 8, 0xE000; 9, 0x0009; 16, 0xE001; 17, 0x0011;
+      24, 0xE000; 25, 0x0019 ];
+  cfg_all tb ~sms:[ 0; 1; 2; 3 ] ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  force_jmp tb ~sm:1 ~addr:8;
+  force_jmp tb ~sm:2 ~addr:16;
+  force_jmp tb ~sm:3 ~addr:24;
+  run tb 3
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 15)
+    ~check:(fun c () -> check_arr "four pins_out" tb ~name:"pins_out" ~mask:ones [| 0; 0; 0 |] c)
+    ()
+;;
+
+(* Port list for num_sms = 1 to 4 is in port_check (section 3). *)
+
 let () =
+  status_sel ();
+  r4_checker ();
+  f6_checker ();
+  out_sticky_checker ();
+  jmp_conditions ();
+  pc_isr_moves ();
+  illegal_keeps_delay ();
+  host_irq ();
+  clkdiv_int0_restart ();
+  pin_priority_four ();
   port_check ();
   r11_latch_flag ();
   restart_clears_sticky ();
