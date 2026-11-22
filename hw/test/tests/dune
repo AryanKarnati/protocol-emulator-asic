@@ -1,0 +1,13 @@
+(test
+ (name test_lockstep)
+ (modules test_lockstep)
+ (deps (source_tree ../../../sw/pgasm/test/corpus))
+ (libraries
+  polyglot_lockstep
+  polyglot_pgsim
+  pgsim_mut_delay_off_by_one
+  pgsim_mut_sideset_loses_to_out
+  pgsim_mut_autopull_no_refill_non_out
+  pgsim_mut_irq_clear_beats_set
+  pgsim_mut_input_latency_2
+  pgsim_mut_host_push_same_cycle))

@@ -1,0 +1,8 @@
+; Enabled only with POLYGLOT_RTL=1, because Polyglot_hw.Pio_block is not on main yet.
+; Build and run it with: POLYGLOT_RTL=1 dune build --root . ./hw/test/rtl
+(library
+ (name polyglot_rtl_dut)
+ (modules rtl_dut)
+ (enabled_if
+  (= %{env:POLYGLOT_RTL=0} 1))
+ (libraries polyglot_lockstep polyglot_hw hardcaml))
