@@ -1,0 +1,18 @@
+[tasks]
+prove
+
+[options]
+mode prove
+depth 2
+
+[engines]
+smtbmc z3
+
+[script]
+read_verilog -formal fifo_4x32_dbg.v
+read_verilog -formal fifo_ind_harness.v
+prep -top fifo_ind_harness
+
+[files]
+build/fifo_4x32_dbg.v
+fifo_ind_harness.v

@@ -1,24 +1,31 @@
-// Unbounded proof of the block 2 divider against a reference accumulator (engine.md R10).
+// Unbounded proof of the divider against the reference accumulator in engine.md R10.
+// Used for both netlists: the block 2 divider (clkdiv_dbg, from formal/gen) and the block 1
+// divider in debug form (clkdiv, with a phase output added by tools/add_clkdiv_debug.py).
 //
 // Source: docs/engine.md R10 alone. D = 256*INT + FRAC, with INT = 0 meaning 65536.
 // Each cycle: S = P + 256; tick = (S >= D); P becomes S - D on a tick, otherwise S.
 // P resets to 0, and a restart sets it to 0 at the end of the cycle (H4). The divider runs
-// whether or not the SM is enabled. The harness does not look inside clkdiv_dbg.
+// whether or not the SM is enabled.
 //
-// INT, FRAC, restart and reset are free in every cycle, so every divisor and every
-// restart pattern is covered. The only input constraint is the contract's exclusion
-// (INT = 0 with FRAC != 0).
+// INT, FRAC, restart and reset are free in every cycle, so every divisor, every change of
+// divisor in the middle of a run, every restart pattern and every reset in the middle of a
+// run is covered. The only input constraint is the contract's exclusion (INT = 0 with
+// FRAC != 0).
 //
-// The invariant is phase equality: dbg_phase == P_ref. It is inductive by itself (both
-// registers see the same inputs and the same update rule), so k-induction with k = 1
-// proves it for all reachable and unreachable states, which means unboundedly.
+// Checked (k-induction, k = 1, unbounded):
+//   - while rst_n is low: the phase is 0 and TICK is (256 >= D), the reset state;
+//   - in every cycle with rst_n high: dbg_phase == P_ref and tick == tick_ref.
+// The invariant is phase equality. It is inductive by itself, since both registers see the
+// same inputs and the same update rule. The properties D1 to D5 and the gap properties are
+// consequences of this equality (PROPERTIES.md), not separate checks here.
 
 module clkdiv_dbg_harness (input clk);
 
-  // Reset: rst_n is low in the first step only, then high for the rest of the run.
+  // Reset: low in the first step, and again whenever rst_req is high (a mid-run reset).
   reg started = 1'b0;
   always @(posedge clk) started <= 1'b1;
-  wire rst_n = started;
+  (* anyseq *) wire rst_req;
+  wire rst_n = started && !rst_req;
 
   (* anyseq *) wire [15:0] int_;
   (* anyseq *) wire [7:0] frac;
@@ -53,9 +60,18 @@ module clkdiv_dbg_harness (input clk);
     else P_ref <= tick_ref ? (S_ref - D) : S_ref;
   end
 
-  // The invariant: DUT phase and tick equal the reference, in every cycle after reset.
+  // Reset state: while rst_n is low, the phase is 0 and TICK is 1 iff 256 >= D (the reset
+  // phase is 0, so the first cycle's tick is (0 + 256 >= D)).
   always @(*) begin
-    if (started) begin
+    if (!rst_n) begin
+      assert (phase == 25'd0);
+      assert (tick == (25'd256 >= D));
+    end
+  end
+
+  // The invariant: DUT phase and tick equal the reference, in every cycle with rst_n high.
+  always @(*) begin
+    if (started && rst_n) begin
       assert (phase == P_ref);
       assert (tick == tick_ref);
     end
@@ -69,7 +85,8 @@ module clkdiv_dbg_harness (input clk);
       cover (restart && P_ref != 25'd0);
       cover (int_ == 16'd0);
       // The divisor was lowered without a restart, so the phase is above it (clkdiv.mli).
-      cover (phase > D);
+      cover (rst_n && phase > D);
+      cover (!rst_n && P_ref != 25'd0);
     end
   end
 

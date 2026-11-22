@@ -19,9 +19,13 @@ Inputs:
 - The TT top: `src/project.v` and `src/polyglot.v`, module `tt_um_aryankarnati_polyglot`. This
   is the block 1 gate design, because the block 2 top does not exist until block 3.
 - Liberty: IHP `sg13g2_stdcell`, slow corner (`sg13g2_stdcell_slow_1p08V_125C.lib`) by
-  default, typ with `CORNER=typ`. Cached in `~/.cache/polyglot/ihp/`. If a file is missing,
-  the script fetches it from IHP-Open-PDK, but only when `IHP_PDK_COMMIT` is set to a pinned
-  commit. It refuses to fetch without one.
+  default, typ with `CORNER=typ`. Cached in `~/.cache/polyglot/ihp/`. The files come from
+  IHP-Open-PDK at commit `e73adb4045731ddec21634146d536380057f6a26` (the `main` head on
+  2026-11-22). A missing file is fetched from that commit. Each file, cached or fetched, must
+  match its pinned sha256, and the script refuses any other copy:
+  - slow: `1ac6a0301184b3a8aa1a4a01910967f624c8e869517777f529985f11f04588c3`
+  - typ: `7677a8918689f452e80405ad16a83e744709342574f2aedcc507c2758986b396`
+  Set `IHP_PDK_COMMIT` only together with matching checksums.
 
 ## What runs
 

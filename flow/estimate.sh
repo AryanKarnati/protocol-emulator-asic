@@ -7,8 +7,9 @@
 # Environment:
 #   CORNER           slow (default) or typ. The liberty file for the corner.
 #   POLYGLOT_CACHE   cache root (default ~/.cache/polyglot). Liberty files go in $POLYGLOT_CACHE/ihp.
-#   IHP_PDK_COMMIT   IHP-Open-PDK commit to fetch the liberty files from, if they are missing.
-#                    Required only when a file is missing; the script says so if it is unset.
+#   IHP_PDK_COMMIT   IHP-Open-PDK commit to fetch the liberty files from when they are missing.
+#                    Defaults to the pinned commit in this script. Each liberty file is
+#                    checked against its pinned sha256 whether it was cached or fetched.
 #   OPAM_EXEC        command prefix for dune (default "opam exec --").
 #   SYNTH_ONLY=1     skip the timing run.
 #
@@ -32,15 +33,31 @@ lib="$cache/$lib_name"
 pdk_path="ihp-sg13g2/libs.ref/sg13g2_stdcell/lib/$lib_name"
 OPAM_EXEC=${OPAM_EXEC:-opam exec --}
 
+# IHP-Open-PDK main as of the pin (api.github.com/repos/IHP-GmbH/IHP-Open-PDK/commits/main).
+# The sha256 values are of the liberty files at that commit. Override IHP_PDK_COMMIT only
+# together with the matching checksums.
+IHP_PDK_COMMIT=${IHP_PDK_COMMIT:-e73adb4045731ddec21634146d536380057f6a26}
+case "$lib_name" in
+  sg13g2_stdcell_slow_1p08V_125C.lib)
+    lib_sha256=1ac6a0301184b3a8aa1a4a01910967f624c8e869517777f529985f11f04588c3 ;;
+  sg13g2_stdcell_typ_1p20V_25C.lib)
+    lib_sha256=7677a8918689f452e80405ad16a83e744709342574f2aedcc507c2758986b396 ;;
+esac
+
 if [ ! -s "$lib" ]; then
-  if [ -z "${IHP_PDK_COMMIT:-}" ]; then
-    echo "missing $lib, and IHP_PDK_COMMIT is not set; cannot fetch it" >&2
-    exit 2
-  fi
   mkdir -p "$cache"
   echo "fetching $lib_name from IHP-Open-PDK $IHP_PDK_COMMIT"
   curl -fsSL -o "$lib" "https://raw.githubusercontent.com/IHP-GmbH/IHP-Open-PDK/$IHP_PDK_COMMIT/$pdk_path"
 fi
+
+# The file in use must be the pinned one. A cached copy from another commit is refused.
+got_sha256=$(sha256sum "$lib" | awk '{print $1}')
+if [ "$got_sha256" != "$lib_sha256" ]; then
+  echo "$lib: sha256 $got_sha256 does not match the pinned $lib_sha256" >&2
+  echo "delete it to fetch the pinned copy, or fix the cache" >&2
+  exit 2
+fi
+echo "liberty: $lib_name sha256 $got_sha256 (IHP-Open-PDK $IHP_PDK_COMMIT)"
 
 # Verilog for the two block 2 modules, from the generator (engine.md section 8).
 (cd "$root" && $OPAM_EXEC dune build --root . --display=quiet ./hw/bin/gen_verilog.exe)

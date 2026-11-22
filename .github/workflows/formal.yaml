@@ -2,12 +2,25 @@ name: formal
 
 on:
   push:
+    paths:
+      - 'hw/**'
+      - 'formal/**'
+      - 'flow/**'
+      - '.github/workflows/formal.yaml'
   pull_request:
+    paths:
+      - 'hw/**'
+      - 'formal/**'
+      - 'flow/**'
+      - '.github/workflows/formal.yaml'
+  workflow_dispatch:
 
 jobs:
   proofs:
+    # Measured locally: `make -C formal all` from a clean build takes about 7 minutes (410 s).
+    # The token BMC (fifo_join token_bmc, 297 s) is most of it.
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - name: checkout repo
         uses: actions/checkout@v6
@@ -30,6 +43,7 @@ jobs:
         uses: YosysHQ/setup-oss-cad-suite@v4
         with:
           version: '2026-11-17'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Generate Verilog, run proofs and mutant checks
         shell: bash

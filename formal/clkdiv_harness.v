@@ -17,7 +17,7 @@
 // tick = 1 iff A + 256 >= Dq. Equivalently N = floor(256*c / Dq). The harness keeps A as a
 // reference register (additions and comparisons only). K1 is checked on every cycle.
 // It is stronger than the spec, which only bounds the first tick (C2). The spec
-// properties C2 to C5 follow from K1 by arithmetic. C2 to C4 are also checked directly on
+// properties D2 to D5 follow from K1 by arithmetic. D2 to D4 are also checked directly on
 // the observed ticks.
 
 module clkdiv_harness (input clk);
@@ -88,20 +88,20 @@ module clkdiv_harness (input clk);
   // Properties, checked at each rising edge for the cycle that edge ends.
   always @(posedge clk) begin
     if (started) begin
-      // C1. INT = 1 and FRAC = 0: TICK is 1 in every cycle.
+      // D1. INT = 1 and FRAC = 0: TICK is 1 in every cycle.
       if (H_INT == 16'd1 && H_FRAC == 8'd0) assert (tick);
 
       // K1. Closed form of the tick schedule from the last restart (see header).
       assert (tick == (A + 16'd256 >= dq));
       assert (A < dq);
 
-      // C2. The first tick after a restart comes at cycle INT + 1 or earlier.
+      // D2. The first tick after a restart comes at cycle INT + 1 or earlier.
       if (!seen && cc == H_INT + 16'd1) assert (tick);
 
       if (tick && seen) begin
-        // C3. Gap between consecutive ticks is INT or INT + 1.
+        // D3. Gap between consecutive ticks is INT or INT + 1.
         assert (cc - last == H_INT || cc - last == H_INT + 16'd1);
-        // C4. With FRAC = 0, every gap is exactly INT.
+        // D4. With FRAC = 0, every gap is exactly INT.
         if (H_FRAC == 8'd0) assert (cc - last == H_INT);
       end
     end
