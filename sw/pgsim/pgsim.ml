@@ -734,7 +734,7 @@ let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
       | Isa.Out { dest = Out_pins | Out_pindirs; _ }
       | Isa.Set { dest = Set_pins | Set_pindirs; _ }
       | Isa.Mov { dest = Mov_pins; _ } ->
-        if c.out_sticky then sm.sticky <- pinw_copy bodyw
+        sm.sticky <- pinw_copy bodyw
       | _ -> ());
      (match src, jump with
       | Imem, Some a -> sm.pc <- a
@@ -1006,7 +1006,9 @@ let step_ex ?(host = []) t =
       (* OUT_STICKY (datasheet 3.7): the last OUT, SET or MOV pin write is kept, forced
          writes included. It is asserted only while the SM is enabled, in the cycles that
          make no new write. *)
-      if sm.cfg.out_sticky && not (pinw_empty bodyw) then sm.sticky <- pinw_copy bodyw;
+      (* The record tracks the most recent write whether or not OUT_STICKY is set (engine.md
+         OUT_STICKY; the record is only asserted while OUT_STICKY is set and enabled). *)
+      if not (pinw_empty bodyw) then sm.sticky <- pinw_copy bodyw;
       let eff =
         if sm.cfg.out_sticky && sm.enabled && pinw_empty bodyw
         then pinw_copy sm.sticky
