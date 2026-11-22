@@ -137,6 +137,8 @@ let create ~num_sms (scope : Scope.t) (i : _ I.t) =
   let engines = Array.make 4 None in
   for k = 0 to n - 1 do
     let imem_word_w = wire 16 in
+    (* F7: an IMEM write whose address is this engine's PC (registered, start of cycle). *)
+    let imem_hit_w = wire 1 in
     let tx_head_w = wire 32 in
     let tx_empty_w = wire 1 in
     let tx_level_w = wire 4 in
@@ -167,6 +169,7 @@ let create ~num_sms (scope : Scope.t) (i : _ I.t) =
         ; rx_full = rx_full_w
         ; rx_level = rx_level_w
         ; irq_q = irq_w
+        ; imem_abandon = imem_hit_w
         }
     in
     let fifo =
@@ -191,6 +194,7 @@ let create ~num_sms (scope : Scope.t) (i : _ I.t) =
     rx_full_w <== fifo.rx_full;
     rx_level_w <== fifo.rx_level;
     imem_word_w <== mux sm.pc imem_words;
+    imem_hit_w <== (i.imem_write &: (i.imem_addr ==: sm.pc));
     engines.(k) <- Some { sm; fifo }
   done;
   let eng k = Option.get engines.(k) in

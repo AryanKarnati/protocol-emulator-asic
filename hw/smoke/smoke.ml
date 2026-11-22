@@ -1465,7 +1465,233 @@ let pin_priority_four () =
 
 (* Port list for num_sms = 1 to 4 is in port_check (section 3). *)
 
+(* ---------- 14. Round 5: F7 and OUT_STICKY against side-set ---------- *)
+
+(* F7 (engine.md): an IMEM write to the PC abandons the IMEM instruction at the end of the
+   write cycle, after that cycle's own attempt. Side-set on pin 5 (SIDESET_COUNT 1, base 5).
+   IMEM 0: IRQ WAIT 3 with side 1 (0xD023). IMEM 1: JMP 1.
+     c0 the wait's first attempt sets flag 3 (visible c1) and side-sets pin 5 to 1; stall 7.
+     c1..c4 stall, and the side-set is not repeated (pin 5 stays 1).
+     c4 IMEM 0 is written with IRQ 5, side 0, delay 3 (0xC305). The stalled attempt in c4
+        is overridden: stall reason and flags are cleared at the end of c4.
+     c5 the new word runs fresh: side 0 applies (pin 5 is 0 from c6), IRQ 5 completes
+        (flag 5 from c6), and delay 3 is counted in c6..c9. pc is 1 from c6. *)
+let f7_irq_wait_rewritten () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0xD023;
+  load_imem tb 1 0x0001;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ~sideset_count:1 ~sideset_base:5 ());
+  run tb 10
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      if c = 4
+      then (
+        set tb "imem_write" 1;
+        set tb "imem_addr" 0;
+        set tb "imem_data" 0xC305))
+    ~check:(fun c () ->
+      check_arr "f7 irq stall" tb ~name:"dbg_cnt0" ~mask:0x0F00_0000
+        (Array.map (fun r -> r lsl 24) [| 0; 7; 7; 7; 7; 0; 0; 0; 0; 0 |]) c;
+      check_arr "f7 irq pin5" tb ~name:"pins_out" ~mask:0x20
+        (Array.map (fun b -> b * 0x20) [| 0; 1; 1; 1; 1; 1; 0; 0; 0; 0 |]) c;
+      check_arr "f7 irq flags" tb ~name:"irq" ~mask:0xFF [| 0; 8; 8; 8; 8; 8; 0x28; 0x28; 0x28; 0x28 |] c;
+      check_arr "f7 irq pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 0; 0; 0; 0; 0; 1; 1; 1; 1 |] c;
+      check_arr "f7 irq delay" tb ~name:"dbg_cnt0" ~mask:0x1F_0000
+        (Array.map (fun d -> d lsl 16) [| 0; 0; 0; 0; 0; 0; 3; 2; 1; 0 |]) c)
+    ()
+;;
+
+(* F7 with a WAIT GPIO 1 (stalls, pin 1 low) with side-set on pin 5. The IMEM write of
+   SET PINS,1 side 0 to address 0 comes in c3, so the WAIT's c3 attempt is overridden. The
+   new word side-sets pin 5 to 0 (from c5) and sets pin 0 (from c5), and pc is 1 from c5. *)
+let f7_wait_rewritten () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0x3081 (* WAIT 1 GPIO 1, side 1 *);
+  load_imem tb 1 0x0001;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ~sideset_count:1 ~sideset_base:5 ());
+  run tb 7
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      if c = 3
+      then (
+        set tb "imem_write" 1;
+        set tb "imem_addr" 0;
+        set tb "imem_data" 0xE001))
+    ~check:(fun c () ->
+      check_arr "f7 wait stall" tb ~name:"dbg_cnt0" ~mask:0x0F00_0000
+        (Array.map (fun r -> r lsl 24) [| 0; 4; 4; 4; 0; 0; 0 |]) c;
+      check_arr "f7 wait pin5" tb ~name:"pins_out" ~mask:0x20
+        (Array.map (fun b -> b * 0x20) [| 0; 1; 1; 1; 1; 0; 0 |]) c;
+      check_arr "f7 wait pin0" tb ~name:"pins_out" ~mask:1 [| 0; 0; 0; 0; 0; 1; 1 |] c;
+      check_arr "f7 wait pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 0; 0; 0; 0; 1; 1 |] c)
+    ()
+;;
+
+(* F7 negative: the same stalled WAIT, but the IMEM write is to address 1. The stall, the
+   side-set flag and pin 5 are all left alone; pc stays 0. *)
+let f7_other_address () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0x3081;
+  load_imem tb 1 0x0001;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ~sideset_count:1 ~sideset_base:5 ());
+  run tb 7
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      if c = 3
+      then (
+        set tb "imem_write" 1;
+        set tb "imem_addr" 1;
+        set tb "imem_data" 0xE001))
+    ~check:(fun c () ->
+      check_arr "f7 other stall" tb ~name:"dbg_cnt0" ~mask:0x0F00_0000
+        (Array.map (fun r -> r lsl 24) [| 0; 4; 4; 4; 4; 4; 4 |]) c;
+      check_arr "f7 other pin5" tb ~name:"pins_out" ~mask:0x20
+        (Array.map (fun b -> b * 0x20) [| 0; 1; 1; 1; 1; 1; 1 |]) c;
+      check_arr "f7 other pc" tb ~name:"dbg_pc0" ~mask:31 (Array.make 7 0) c)
+    ()
+;;
+
+(* OUT_STICKY against side-set (engine.md R2, OUT_STICKY). Sticky on. Side-set on pins 8
+   and 9 (SIDESET_COUNT 2, no enable), SET PINS on pin 8.
+   A: SET PINS,1 side 0 in every cycle (wrap 0 to 0). The SET's new write and the side-set
+      write pin 8 in the same cycle, and the side-set beats it: pin 8 is 0 throughout.
+   The re-asserted record counts as an OUT/SET/MOV write (R2), so side-set also beats it. *)
+let side_beats_new_write () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0xE001 (* SET PINS,1 side 0 *);
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:(1 lsl 17) ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ~set_base:8 ~sideset_count:2 ~sideset_base:8 ());
+  run tb 4
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 1)
+    ~check:(fun c () -> check_arr "stk same cycle pin8" tb ~name:"pins_out" ~mask:0x300 (Array.make 4 0) c)
+    ()
+;;
+
+(* B: sticky on, SET PINS,1 (no side-set, the enable bit is 0) in c0 records pin 8 = 1.
+   c1 is a JMP with side 0 on pin 8 (side enable bit 12 set, data bit 11 clear). In c1 the
+   record is re-asserted (pin 8 = 1), but the side-set beats it. pin 8 is 0 from c2. *)
+let side_beats_sticky () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0xE001 (* SET PINS,1 *);
+  load_imem tb 1 0x1001 (* JMP 1, side 0 (enable set) *);
+  configure tb ~sm:0 ~clkdiv:clkdiv_1
+    ~execctrl:(execctrl_default lor (1 lsl 17) lor (1 lsl 30))
+    ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ~set_base:8 ~sideset_count:2 ~sideset_base:8 ());
+  run tb 4
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 1)
+    ~check:(fun c () -> check_arr "stk beaten pin8" tb ~name:"pins_out" ~mask:0x100 [| 0; 0x100; 0; 0 |] c)
+    ()
+;;
+
+(* C: sticky on, with side-set direction (SIDE_PINDIR). SET PINDIRS,1 (pin 8) records a
+   direction write. Its side-set writes pins 18 and 19 direction 1. The next JMP side-sets
+   them to 0 (every instruction side-sets). Pin 8 is re-asserted as direction 1 and is not
+   affected. Pins 18 and 19 are 1 from c1, and 0 from c2. *)
+let side_pindir_with_sticky () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0xF881 (* SET PINDIRS,1 side 3 *);
+  load_imem tb 1 0x0001 (* JMP 1 side 0 *);
+  configure tb ~sm:0 ~clkdiv:clkdiv_1
+    ~execctrl:(execctrl_default lor (1 lsl 17) lor (1 lsl 29))
+    ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ~set_base:8 ~sideset_count:2 ~sideset_base:18 ());
+  run tb 4
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 1)
+    ~check:(fun c () ->
+      check_arr "stk pindir" tb ~name:"pins_oe" ~mask:0x000C_0100 [| 0; 0x000C_0100; 0x100; 0x100 |] c)
+    ()
+;;
+
+(* D: sticky on, pin 8 level recorded by SET PINS,1 with side 3 (pins 18, 19 level 1 in
+   c0). c1 JMP side 0 sets 18 and 19 to 0 and does not touch pin 8, which stays 1 from the
+   sticky re-assertion. *)
+let side_level_disjoint () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0xF801 (* SET PINS,1 side 3 *);
+  load_imem tb 1 0x0001 (* JMP 1 side 0 *);
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:(execctrl_default lor (1 lsl 17))
+    ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ~set_base:8 ~sideset_count:2 ~sideset_base:18 ());
+  run tb 4
+    ~f:(fun c () -> if c = 0 then set tb "sm_enable" 1)
+    ~check:(fun c () ->
+      check_arr "stk disjoint pins" tb ~name:"pins_out" ~mask:0x000C_0100
+        [| 0; 0x000C_0100; 0x100; 0x100 |] c)
+    ()
+;;
+
+(* ---------- 15. Round 6: a completed pin write with pin count 0 replaces the OUT_STICKY
+   record, leaving it empty (contract, main 2dc00c7). ---------- *)
+
+(* Shared set-up. SM0 (lower): sticky on, pin 0 is the OUT pin. SM1 (higher) lowers pin 0
+   once: it runs JMP 9 with side-set 0 on pin 0 (side enable on) at address 8, then JMP 9
+   without side-set. Side-set never touches the record. SM1 is enabled in c4, so its side-set
+   is visible from c5. The record decides what SM0 re-asserts afterwards. *)
+let zero_count_setup ~sm0_prog ~sm0_pinctrl =
+  let tb = make ~num_sms:2 in
+  List.iteri (fun a w -> load_imem tb a w) sm0_prog;
+  load_imem tb 8 0x1009 (* JMP 9, side 0 (enable set) *);
+  load_imem tb 9 0x0009 (* JMP 9, no side-set *);
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:(execctrl_default lor (1 lsl 17))
+    ~shiftctrl:shiftctrl_default ~pinctrl_v:sm0_pinctrl;
+  configure tb ~sm:1 ~clkdiv:clkdiv_1 ~execctrl:(execctrl_default lor (1 lsl 30))
+    ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ~set_count:0 ~sideset_count:2 ~sideset_base:0 ());
+  force_jmp tb ~sm:1 ~addr:8;
+  tb
+
+(* A: MOV PINS,~OSR (OUT_COUNT 1) in c0 records pin 0 = 1. SET PINDIRS,31 with SET_COUNT 0
+   in c1 is a completed pin write with no pins, so it replaces the record with an empty one.
+   SM1 lowers pin 0 in c4. Nothing is re-asserted afterwards, so pin 0 stays 0 from c5. (With
+   the record kept, SM0 would re-assert 1 from c6.) *)
+let zero_count_set_pindirs () =
+  let tb =
+    zero_count_setup
+      ~sm0_prog:[ 0xA00F (* MOV PINS,~OSR *); 0xE09F (* SET PINDIRS,31 *); 0x0002 (* JMP 2 *) ]
+      ~sm0_pinctrl:(pinctrl ~out_count:1 ~set_count:0 ())
+  in
+  run tb 8
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      if c = 4 then set tb "sm_enable" 3)
+    ~check:(fun c () ->
+      check_arr "zero SET pin0" tb ~name:"pins_out" ~mask:1 [| 0; 1; 1; 1; 1; 0; 0; 0 |] c)
+    ()
+;;
+
+(* B: the same with OUT PINS,1 and OUT_COUNT 0. MOV PINS,~OSR (OUT_COUNT 1) records pin 0 = 1
+   in c0. OUT_COUNT is then changed to 0 (a level input, so it applies in c1). OUT PINS,1 in c1
+   is a completed pin write with no pins: the record is empty. Pin 0 stays 0 from c5 as in A. *)
+let zero_count_out_pins () =
+  let tb =
+    zero_count_setup
+      ~sm0_prog:[ 0xA00F; 0x6001 (* OUT PINS,1 *); 0x0002 ]
+      ~sm0_pinctrl:(pinctrl ~out_count:1 ())
+  in
+  run tb 8
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      if c = 1 then set tb "pinctrl0" (pinctrl ~out_count:0 ());
+      if c = 4 then set tb "sm_enable" 3)
+    ~check:(fun c () ->
+      check_arr "zero OUT pin0" tb ~name:"pins_out" ~mask:1 [| 0; 1; 1; 1; 1; 0; 0; 0 |] c)
+    ()
+;;
+
 let () =
+  zero_count_set_pindirs ();
+  zero_count_out_pins ();
+  f7_irq_wait_rewritten ();
+  f7_wait_rewritten ();
+  f7_other_address ();
+  side_beats_new_write ();
+  side_beats_sticky ();
+  side_pindir_with_sticky ();
+  side_level_disjoint ();
   status_sel ();
   r4_checker ();
   f6_checker ();

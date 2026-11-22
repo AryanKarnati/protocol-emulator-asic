@@ -3,4 +3,11 @@
 
 (test
  (name smoke)
+ (modules smoke)
  (libraries polyglot_hw polyglot_isa hardcaml))
+
+; Replays a lockstep case file (see replay.ml). Not a test: run it by hand.
+(executable
+ (name replay)
+ (modules replay)
+ (libraries polyglot_hw hardcaml yojson))

@@ -41,6 +41,7 @@ module I = struct
     ; rx_full : 'a
     ; rx_level : 'a [@bits 4]
     ; irq_q : 'a [@bits 8]
+    ; imem_abandon : 'a
     }
   [@@deriving hardcaml]
 end
@@ -418,6 +419,8 @@ let create (scope : Scope.t) (i : _ I.t) =
   let pin_mask = rotl_var (thermo32 pin_count) pin_base -- "pin_mask" in
   let pin_val = (rotl_var pin_data pin_base &: pin_mask) -- "pin_val" in
   let m_of f m = repeat f 32 &: m in
+  (* A completed pin write replaces the OUT_STICKY record even when its pin count is 0
+     (the record is then empty). *)
   let lvl_write_now = (out_pins |: mov_pins |: set_pins) -- "lvl_write_now" in
   let lvl_new_mask = m_of lvl_write_now pin_mask -- "lvl_new_mask" in
   let lvl_new_val = m_of lvl_write_now pin_val -- "lvl_new_val" in
@@ -621,25 +624,18 @@ let create (scope : Scope.t) (i : _ I.t) =
   in
   (* IMEM flags are cleared on restart, on a PC write by a latched instruction (the
      instruction they belong to is abandoned), and on completion. *)
-  let imem_ss_next =
-    mux2 i.restart gnd (mux2 pc_write_latch gnd (mux2 attempt_imem stall imem_ss))
-    -- "imem_ss_next"
-  in
+  (* F7: an IMEM write to the PC (imem_abandon) abandons the IMEM instruction, and clears
+     its flags after the attempt of that cycle. *)
+  let imem_clr = (i.restart |: pc_write_latch |: i.imem_abandon) -- "imem_clr" in
+  let imem_ss_next = mux2 imem_clr gnd (mux2 attempt_imem stall imem_ss) -- "imem_ss_next" in
   let imem_irqw_next =
-    mux2
-      i.restart
-      gnd
-      (mux2 pc_write_latch gnd (mux2 attempt_imem irqw_next imem_irqw))
-    -- "imem_irqw_next"
+    mux2 imem_clr gnd (mux2 attempt_imem irqw_next imem_irqw) -- "imem_irqw_next"
   in
   let stall_reason_now = mux2 stall stall_code (zero 4) -- "stall_reason_now" in
   (* F6: a latched instruction that writes the PC abandons the IMEM instruction, and its
      stall reason goes with it. *)
   let imem_stall_next =
-    mux2
-      i.restart
-      (zero 4)
-      (mux2 pc_write_latch (zero 4) (mux2 attempt_imem stall_reason_now imem_stall))
+    mux2 imem_clr (zero 4) (mux2 attempt_imem stall_reason_now imem_stall)
     -- "imem_stall_next"
   in
   let latch_stall_next =
