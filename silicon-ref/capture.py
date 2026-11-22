@@ -48,6 +48,9 @@ PIO_CTRL = 0x000                  # pio.h PIO_CTRL_OFFSET
 CTRL_SM_ENABLE_LSB = 0            # PIO_CTRL_SM_ENABLE_LSB, bits [3:0]
 CTRL_SM_RESTART_LSB = 4           # PIO_CTRL_SM_RESTART_LSB, bits [7:4] (self-clearing)
 CTRL_CLKDIV_RESTART_LSB = 8       # PIO_CTRL_CLKDIV_RESTART_LSB, bits [11:8] (self-clearing)
+PIO_IRQ = 0x030                   # pio.h PIO_IRQ_OFFSET (checked in pico-sdk 2.3.1 rp2350 regs);
+                                  # IRQ flags [7:0], write 1 to clear. Cleared before each run,
+                                  # so a flag left by an earlier job cannot release a WAIT IRQ.
 PIO_FDEBUG = 0x008                # pio.h PIO_FDEBUG_OFFSET; RXSTALL [3:0], RXUNDER [11:8],
                                   # TXOVER [19:16], TXSTALL [27:24]; write 1 to clear
 FDEBUG_CLEAR_ALL = 0x0F0F0F0F     # all four sticky fields, one nibble each
@@ -79,6 +82,12 @@ PAD_IE_BIT = 1 << 6               # pads_bank0.h PADS_BANK0_GPIO0_IE_BITS (0x40)
 PAD_ISO_BIT = 1 << 8              # pads_bank0.h PADS_BANK0_GPIO0_ISO_BITS (0x100), reset value 1
 FUNCSEL_PIO0 = 6                  # rp2350/hardware_structs/io_bank0.h GPIO_FUNC_PIO0 = 6 (PIO2 = 8)
 DREQ_PIO0_RX0 = 4                 # dreq.h DREQ_PIO0_RX0 = 4; RX1 = 5 (TX0 = 0)
+EXECCTRL_OUT_STICKY = 1 << 17     # pio.h PIO_SM0_EXECCTRL_OUT_STICKY_BITS (bit 17) [verify on hardware]
+SIO_BASE = 0xD0000000             # addressmap.h SIO_BASE (checked in pico-sdk 2.3.1 rp2350 headers)
+SIO_GPIO_OUT_SET = 0x018          # sio.h SIO_GPIO_OUT_SET_OFFSET
+SIO_GPIO_OUT_CLR = 0x020          # sio.h SIO_GPIO_OUT_CLR_OFFSET
+SIO_GPIO_OE_SET = 0x038           # sio.h SIO_GPIO_OE_SET_OFFSET
+FUNCSEL_SIO = 5                   # io_bank0.h GPIO_FUNC_SIO = 5
 
 # SET instruction: opcode 111 in [15:13]; destination in [7:5] (pio_instructions.h
 # pio_pins = 0, pio_pindirs = 4); 5-bit data in [4:0].
@@ -298,6 +307,23 @@ def _stop_both(ctrl_addr, en_mask):
     _w(ctrl_addr, _r(ctrl_addr) & ~en_mask)
 
 
+def _do_host_action(act, program_sm, host_log, rx_reads):
+    """One CPU action from run(host_actions). Logged, so the header records what was done."""
+    kind = act[0]
+    if kind == "gpio":
+        _w(SIO_BASE + (SIO_GPIO_OUT_SET if act[2] else SIO_GPIO_OUT_CLR), 1 << (act[1] & 31))
+    elif kind == "rx":
+        for _ in range(act[1]):
+            rx_reads.append(_r(PIO0_BASE + PIO_RXF0 + 4 * program_sm))
+    elif kind == "tx":
+        _w(PIO0_BASE + PIO_TXF0 + 4 * program_sm, act[1] & 0xFFFFFFFF)
+    elif kind == "instr":
+        _w(_sm_reg(program_sm, SM0_INSTR), act[1] & 0xFFFF)
+    else:
+        raise ValueError("unknown host action %r" % (kind,))
+    host_log.append(list(act))
+
+
 def run(program_json, program_name, pins, capture_base, samples, out_path,
         capture_sm=1, program_sm=0, sysclk_hz=None, dma_timeout_ms=5000,
         # --- explicit settings (None = take the pioasm JSON value, else the PIO reset value)
@@ -305,7 +331,20 @@ def run(program_json, program_name, pins, capture_base, samples, out_path,
         push_thresh=None, pull_thresh=None, fifo_join=None, set_count=None,
         sideset_size=None, sideset_optional=None, sideset_pindirs=None, clkdiv=None,
         # --- initial state of the program under test, applied before enable
-        tx_words=None, init_levels=None, init_dirs=None):
+        tx_words=None, init_levels=None, init_dirs=None,
+        # --- OUT_STICKY (EXECCTRL bit 17) on the program under test
+        out_sticky=False,
+        # --- pins driven by the CPU through SIO instead of PIO: list of (pin, level).
+        # PIO still reads them as inputs. Used with host_actions.
+        host_pins=None,
+        # --- CPU actions during the run, each at `after_us` after the enable write:
+        #   (after_us, ("gpio", pin, level))   set a host_pins pin
+        #   (after_us, ("rx", n))              read n words of the program SM's RX FIFO
+        #   (after_us, ("tx", word))           write one word to the program SM's TX FIFO
+        #   (after_us, ("instr", hex_word))    write SMx_INSTR for the program SM (forced)
+        # Timing is set by MicroPython, so it is microseconds, not cycles. The landing cycle of
+        # an action must be read from the trace (its effect on a pin), not from this list.
+        host_actions=None):
     """Load the program under test on program_sm and the capture program on capture_sm,
     capture `samples` pin samples (8 pins), and write a trace file to out_path.
 
@@ -345,6 +384,8 @@ def run(program_json, program_name, pins, capture_base, samples, out_path,
     pr["entry"] = entry
     if entry >= len(words):
         raise ValueError("entry point %d is outside the program" % entry)
+    if out_sticky:
+        pr["execctrl"] |= EXECCTRL_OUT_STICKY
 
     tx_words = list(tx_words or [])
     tx_limit = 8 if pr["fifo"] == "tx" else 4
@@ -364,6 +405,15 @@ def run(program_json, program_name, pins, capture_base, samples, out_path,
     cap_pins = [(capture_base + j) & 31 for j in range(8)]
     # Initial pin levels and directions also touch the pads, so they are driven by the PIO.
     pin_set |= set(init_levels) | set(init_dirs)
+    host_pins = [(int(p) & 31, int(v) & 1) for p, v in (host_pins or [])]
+    host_set = {p for p, _ in host_pins}
+    if host_set & pin_set:
+        raise ValueError("host_pins %s overlap pins the program drives" % sorted(host_set & pin_set))
+    host_actions = sorted(host_actions or [], key=lambda a: a[0])
+    for _, act in host_actions:
+        if act[0] == "gpio" and (act[1] & 31) not in host_set:
+            raise ValueError("gpio action on pin %d, which is not in host_pins" % act[1])
+    pin_set -= host_set
 
     cap_execctrl = ((cap_off & 0x1F) << 12) | ((cap_off & 0x1F) << 7)
     cap_shiftctrl = (1 << 19) | (1 << 18) | (1 << 16)     # out right, in right, autopush, thresh 32
@@ -380,6 +430,7 @@ def run(program_json, program_name, pins, capture_base, samples, out_path,
     # 2. Both SMs disabled. The restart happens later, after all configuration.
     _stop_both(ctrl_addr, en_mask)
     _w(PIO0_BASE + PIO_FDEBUG, FDEBUG_CLEAR_ALL)
+    _w(PIO0_BASE + PIO_IRQ, 0xFF)          # all eight IRQ flags, write 1 to clear
     # 3. Instruction memory: program at 0, capture instruction after it.
     for i, w in enumerate(words):
         _w(PIO0_BASE + PIO_INSTR_MEM0 + 4 * i, w)
@@ -399,10 +450,16 @@ def run(program_json, program_name, pins, capture_base, samples, out_path,
     # 6. Pads: PIO function, ISO and OD cleared; input enable on the sampled pins and on the
     # pins the program reads through jmp_pin and in_base (the rest of an `in` range is not
     # enabled; see README).
-    for p in sorted(pin_set | set(cap_pins)):
+    for p in sorted(pin_set | (set(cap_pins) - host_set)):
         _set_pio_function(p)
-    for p in sorted(set(cap_pins) | {pins["jmp_pin"] & 31, pins["in_base"] & 31}):
-        _enable_input(p)
+    for p in sorted(set(cap_pins) | {pins["jmp_pin"] & 31, pins["in_base"] & 31} | host_set):
+        _enable_input(p)                   # ISO resets to 1 on RP2350: clear it on every input
+    # Host-driven pins: SIO function, output enabled, level set before the run. Input enable
+    # is already set above, so the PIO input path sees them.
+    for p, v in host_pins:
+        _w(IO_BANK0_BASE + 4 + 8 * p, (_r(IO_BANK0_BASE + 4 + 8 * p) & ~0x1F) | FUNCSEL_SIO)
+        _w(SIO_BASE + (SIO_GPIO_OUT_SET if v else SIO_GPIO_OUT_CLR), 1 << p)
+        _w(SIO_BASE + SIO_GPIO_OE_SET, 1 << p)
     # 7. Initial pin directions and levels, through SMn_INSTR `set` (SMs disabled).
     _set_pins_or_dirs(program_sm, init_dirs, SET_DEST_PINDIRS)
     _set_pins_or_dirs(program_sm, init_levels, SET_DEST_PINS)
@@ -420,6 +477,8 @@ def run(program_json, program_name, pins, capture_base, samples, out_path,
     treq = DREQ_PIO0_RX0 + capture_sm
     dma = rp2.DMA()
     fdebug = 0
+    host_log = []                          # (after_us, action) as it was done
+    rx_reads = []                          # words read from the program SM's RX FIFO
     try:
         ctrl_dma = dma.pack_ctrl(size=2, inc_read=False, inc_write=True, treq_sel=treq,
                                  irq_quiet=True, enable=True)   # [verify on hardware: MicroPython API]
@@ -442,9 +501,18 @@ def run(program_json, program_name, pins, capture_base, samples, out_path,
         _w(ctrl_addr, ctrl_after)
 
         deadline = time.ticks_add(t0, dma_timeout_ms * 1000)
-        while dma.active():
+        pending = list(host_actions)
+        while True:
+            now_rel = time.ticks_diff(time.ticks_us(), t0)
+            while pending and pending[0][0] <= now_rel:
+                _do_host_action(pending.pop(0)[1], program_sm, host_log, rx_reads)
+            if not dma.active():
+                break
             if time.ticks_diff(deadline, time.ticks_us()) < 0:
                 raise RuntimeError("DMA did not finish: RX FIFO drain too slow or wiring/config error")
+        if pending:
+            raise RuntimeError("capture ended before host action at %s us; raise samples"
+                               % pending[0][0])
 
         # Stop both SMs with one write, then read the sticky stall flags.
         _stop_both(ctrl_addr, en_mask)
@@ -519,6 +587,16 @@ def run(program_json, program_name, pins, capture_base, samples, out_path,
                     "subtracted here; calibrate it (README). [verify on hardware]",
         },
     }
+    # Optional fields. They appear only when the option is used, so the format fixture
+    # (testdata/uart_tx_example.jsonl) keeps its bytes.
+    if out_sticky:
+        header["program"]["config"]["out_sticky"] = True
+    if host_pins:
+        header["host"] = {"pins": [[p, v] for p, v in host_pins]}
+    if host_actions:
+        header.setdefault("host", {})["actions"] = [[a[0]] + list(a[1]) for a in host_actions]
+        header["host"]["log"] = host_log
+        header["host"]["rx_words"] = ["0x%08x" % w for w in rx_reads]
     with open(out_path, "w") as f:
         f.write(json.dumps(header) + "\n")
         chunk = 256
