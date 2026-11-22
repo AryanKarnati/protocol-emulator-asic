@@ -1,0 +1,5 @@
+.program a
+nop
+% c-sdk { { x
+line2
+%}

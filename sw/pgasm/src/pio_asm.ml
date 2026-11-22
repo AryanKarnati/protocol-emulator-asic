@@ -518,12 +518,17 @@ let raw_encode st (p : prog) (i : inst) : int * int * int =
     5, mov_dst_code dst, mov_src_code src lor (mov_op_code op lsl 3)
   | K_jmp (cond, target) ->
     let dest = ev target in
-    if dest < 0
-    then err (expr_loc target) "jmp target address must be positive";
+    (* a literal target has no location of its own: report the instruction *)
+    let tloc =
+      match target with
+      | Lit _ -> i.iloc
+      | _ -> expr_loc target
+    in
+    if dest < 0 then err tloc "jmp target address must be positive";
     if dest >= p.ninst
     then
       err
-        (expr_loc target)
+        tloc
         (sprintf "jmp target address %d is beyond the end of the program" dest);
     0, jmp_cond_code cond, dest
   | K_wait (pol_e, src) ->

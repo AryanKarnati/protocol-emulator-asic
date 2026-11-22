@@ -44,7 +44,11 @@ let () =
   let text =
     if String.equal a.input "-"
     then In_channel.input_all In_channel.stdin
-    else In_channel.read_all a.input
+    else (
+      try In_channel.read_all a.input with
+      | Stdlib.Sys_error _ ->
+        Stdlib.prerr_endline ("pgasm: can't open input file '" ^ a.input ^ "'");
+        Stdlib.exit 1)
   in
   let emit s =
     match a.output with

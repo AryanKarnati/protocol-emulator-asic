@@ -3,8 +3,13 @@
 
    - A line whose first non-blank character is '%' starts a code block:
        % <lang> {
-     The language is the text between '%' and '{', trimmed. Empty means "c-sdk".
-   - Contents run until a line that starts with "%}" in column 1. Text after "%}" is ignored.
+     This is lexer.ll's token "%" blank* [^%\n]+ blank* "{", the longest match. So the language
+     runs to the LAST '{' before the next '%' on the line (or the end of the line), trimmed of
+     blanks. The language needs at least one character before that '{', so "%{" is not a
+     code block. An empty language means "c-sdk". Without such a '{' the line is an error,
+     "invalid character: %".
+   - Contents run until a line that is "%}" followed by blanks only. A line such as "%}abc" is
+     contents, as in pioasm.
    - Blank lines and leading/trailing blanks of blank lines are dropped. Other lines are
      kept whole, with a trailing newline. *)
 
@@ -18,6 +23,34 @@ type event =
 let is_blank_line s = String.for_all s ~f:is_blank
 
 let default_lang = "c-sdk"
+
+(* The '{' that ends a code block start on [raw], whose '%' is at [first], or None. *)
+let block_start_brace raw first =
+  let n = String.length raw in
+  let stop =
+    match String.index_from raw (first + 1) '%' with
+    | Some j -> j
+    | None -> n
+  in
+  let rec last b =
+    if b < first + 2
+    then None
+    else if Char.equal raw.[b] '{'
+    then Some b
+    else last (b - 1)
+  in
+  last (stop - 1)
+;;
+
+(* pioasm's "%}" rule: "%}" followed by blanks and nothing else. *)
+let is_block_end s = String.is_prefix s ~prefix:"%}" && is_blank_line (String.drop_prefix s 2)
+
+(* Only blanks, space and tab, are stripped from a language. *)
+let trim_lang s =
+  let is_space c = Char.equal c ' ' || Char.equal c '\t' in
+  let s = String.lstrip ~drop:is_space s in
+  String.rstrip ~drop:is_space s
+;;
 
 (* Calls [f] for each event in source order. Parse errors propagate as [Pio_lex.Error]. *)
 let iter_events ~file (text : string) ~(f : event -> unit) =
@@ -51,12 +84,12 @@ let iter_events ~file (text : string) ~(f : event -> unit) =
     then (
       let loc = { file; line = lineno; col = first + 1 } in
       let brace =
-        match String.index_from raw first '{' with
+        match block_start_brace raw first with
         | Some b -> b
-        | None -> raise (Error (loc, "invalid code block start: expected '{' after '%'"))
+        | None -> raise (Error (loc, "invalid character: %"))
       in
       let lang_raw = String.sub raw ~pos:(first + 1) ~len:(brace - first - 1) in
-      let lang = String.strip lang_raw in
+      let lang = trim_lang lang_raw in
       let lang = if String.is_empty lang then default_lang else lang in
       let buf = Buffer.create 256 in
       let add_line s =
@@ -68,13 +101,13 @@ let iter_events ~file (text : string) ~(f : event -> unit) =
       (* text after '{' on the start line *)
       let rest = String.drop_prefix raw (brace + 1) in
       let ends = ref false in
-      if String.is_prefix rest ~prefix:"%}"
+      if is_block_end rest
       then ends := true
       else add_line rest;
       incr idx;
       while (not !ends) && !idx < n do
         let s = lines.(!idx) in
-        if String.is_prefix s ~prefix:"%}"
+        if is_block_end s
         then ends := true
         else add_line s;
         incr idx

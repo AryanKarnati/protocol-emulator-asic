@@ -1,0 +1,7 @@
+.program a
+nop
+% python {
+x
+%}abc
+more
+%}
