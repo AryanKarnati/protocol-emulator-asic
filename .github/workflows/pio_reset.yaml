@@ -1,0 +1,79 @@
+name: pio_reset
+
+# cocotb + Icarus reset check of the generated pio_block Verilog (test/pio_block_reset).
+# The Verilog is generated, not committed (engine.md section 8). The job uses the same
+# cocotb pin as the TT test workflow (test/requirements.txt, cocotb 2.0.1).
+
+on:
+  push:
+    paths:
+      - 'hw/**'
+      - 'isa/**'
+      - 'test/pio_block_reset/**'
+      - '.github/workflows/pio_reset.yaml'
+  pull_request:
+    paths:
+      - 'hw/**'
+      - 'isa/**'
+      - 'test/pio_block_reset/**'
+      - '.github/workflows/pio_reset.yaml'
+  workflow_dispatch:
+
+jobs:
+  reset:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v6
+
+      - name: Set up OCaml (caches ~/.opam)
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: 5.3.0
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if [ -f polyglot.opam.locked ]; then
+            opam install . --deps-only --with-test --locked
+          else
+            opam install . --deps-only --with-test
+          fi
+
+      - name: Generate the pio_block Verilog
+        shell: bash
+        run: |
+          mkdir -p build
+          opam exec -- dune exec --root . --display=quiet hw/bin/gen_verilog.exe -- pio_block > build/pio_block.v
+
+      - name: Install Icarus Verilog
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y iverilog
+
+      - name: Setup python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install Python packages (cocotb 2.0.1)
+        shell: bash
+        run: pip install -r test/requirements.txt
+
+      - name: Run the reset test
+        shell: bash
+        run: |
+          cd test/pio_block_reset
+          make clean
+          PIO_VERILOG="$GITHUB_WORKSPACE/build/pio_block.v" make
+          # make returns success even when a test fails, so check results.xml.
+          python -m cocotb_tools.check_results results.xml
+
+      - name: upload test results
+        if: success() || failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pio-reset-results
+          path: |
+            test/pio_block_reset/results.xml
+            test/pio_block_reset/sim_build/*.log
