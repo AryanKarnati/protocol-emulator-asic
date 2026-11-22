@@ -33,8 +33,23 @@ module O : sig
   type 'a t = { tick : 'a } [@@deriving hardcaml]
 end
 
+(** Phase register is 25 bits, in units of 1/256 cycle (engine.md R10). *)
+module O_dbg : sig
+  type 'a t =
+    { tick : 'a
+    ; phase : 'a
+    }
+  [@@deriving hardcaml]
+end
+
 (** Flat instantiation: the logic is inlined into the parent. *)
 val create : Scope.t -> Signal.t I.t -> Signal.t O.t
 
 (** Hierarchical instantiation: the divider appears as module [clkdiv]. *)
 val hierarchical : Scope.t -> Signal.t I.t -> Signal.t O.t
+
+(** Flat instantiation that also returns the phase register. *)
+val create_dbg : Scope.t -> Signal.t I.t -> Signal.t O_dbg.t
+
+(** Hierarchical instantiation with the phase output, as module [clkdiv_dbg]. *)
+val hierarchical_dbg : Scope.t -> Signal.t I.t -> Signal.t O_dbg.t
