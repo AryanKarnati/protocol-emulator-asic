@@ -1,4 +1,5 @@
-(* The comparator must pass the pgsim DUT and must catch every faulty variant. *)
+(* The comparator must pass the pgsim DUT and must catch every faulty variant. The RTL
+   checks are in hw/test/rtl/tests (they are not part of this test). *)
 open Polyglot_lockstep
 
 let run ~dut_of (case : Case.t) =
@@ -18,40 +19,6 @@ let check name = function
   | Lockstep.Fail f -> failwith (name ^ ": unexpected mismatch\n" ^ Lockstep.report f)
 ;;
 
-let mutants : (string * (num_sms:int -> Dut.port_dut)) list =
-  [ ( "delay_off_by_one"
-    , fun ~num_sms ->
-        Dut.pgsim
-          (module Pgsim_mut_delay_off_by_one.Pgsim : Dut.PGSIM)
-          ~name:"m" ~pads_from_pins_in:true ~num_sms )
-  ; ( "sideset_loses_to_out"
-    , fun ~num_sms ->
-        Dut.pgsim
-          (module Pgsim_mut_sideset_loses_to_out.Pgsim : Dut.PGSIM)
-          ~name:"m" ~pads_from_pins_in:true ~num_sms )
-  ; ( "autopull_no_refill_non_out"
-    , fun ~num_sms ->
-        Dut.pgsim
-          (module Pgsim_mut_autopull_no_refill_non_out.Pgsim : Dut.PGSIM)
-          ~name:"m" ~pads_from_pins_in:true ~num_sms )
-  ; ( "irq_clear_beats_set"
-    , fun ~num_sms ->
-        Dut.pgsim
-          (module Pgsim_mut_irq_clear_beats_set.Pgsim : Dut.PGSIM)
-          ~name:"m" ~pads_from_pins_in:true ~num_sms )
-  ; ( "input_latency_2"
-    , fun ~num_sms ->
-        Dut.pgsim
-          (module Pgsim_mut_input_latency_2.Pgsim : Dut.PGSIM)
-          ~name:"m" ~pads_from_pins_in:true ~num_sms )
-  ; ( "host_push_same_cycle"
-    , fun ~num_sms ->
-        Dut.pgsim
-          (module Pgsim_mut_host_push_same_cycle.Pgsim : Dut.PGSIM)
-          ~name:"m" ~pads_from_pins_in:true ~num_sms )
-  ]
-;;
-
 let () =
   let c = Gen.generate_one ~seed:3 5 in
   assert (Case.of_text (Case.to_text c) = c);
@@ -61,8 +28,23 @@ let () =
   List.iter
     (fun (_, c) -> check "corpus" (run ~dut_of:pgsim_dut c))
     (Corpus.cases ~cycles:1000 ~dir:"../../../sw/pgasm/test/corpus" ());
+  (* Directed cases: the reference passes, and the directed case catches the restart mutant
+     that random cases missed. *)
   List.iter
-    (fun (name, dut_of) ->
+    (fun (name, mk) ->
+      let c = mk () in
+      check ("directed " ^ name) (run ~dut_of:pgsim_dut c);
+      match run ~dut_of:(fun ~num_sms -> Option.get (Polyglot_mutant_duts.Mutant_duts.make "x_restart_keeps_latch_irq" ~num_sms)) c with
+      | Lockstep.Fail _ -> ()
+      | Lockstep.Pass _ -> failwith ("directed case does not catch the restart mutant: " ^ name))
+    Directed.all;
+  List.iter
+    (fun name ->
+      let dut_of ~num_sms =
+        match Polyglot_mutant_duts.Mutant_duts.make name ~num_sms with
+        | Some d -> d
+        | None -> failwith ("no mutant " ^ name)
+      in
       let caught = ref false in
       let i = ref 0 in
       while (not !caught) && !i < 1500 do
@@ -72,6 +54,6 @@ let () =
         incr i
       done;
       if not !caught then failwith ("mutant not caught: " ^ name))
-    mutants;
-  print_endline "lockstep: pgsim passes, all 6 mutants caught"
+    (List.filter (fun n -> n <> "x_restart_keeps_latch_irq") Polyglot_mutant_duts.Mutant_duts.names);
+  print_endline "lockstep: pgsim passes, all mutants caught"
 ;;

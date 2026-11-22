@@ -1,4 +1,4 @@
 (library
  (name polyglot_lockstep)
- (modules ports case dut lockstep gen corpus)
+ (modules ports case dut lockstep gen corpus directed)
  (libraries polyglot_pgsim polyglot_isa yojson base base_quickcheck splittable_random))

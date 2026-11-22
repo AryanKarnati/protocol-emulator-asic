@@ -16,9 +16,17 @@ module type PGSIM = module type of Pgsim
    testbench does), instead of the external stimulus. The two agree when the testbench
    computes pins_in as engine.md R1 says, which the lockstep checks cycle by cycle. *)
 let pgsim (module P : PGSIM) ~name ~pads_from_pins_in ~num_sms : port_dut =
-  let t = P.create () in
+  let t_ref = ref (P.create ()) in
   let applied : P.Config.t option array = Array.make 4 None in
+  (* rst_n low resets the model to R0 (engine.md R0). IMEM is not reset, so it is kept. *)
+  let reset () =
+    let imem = Array.copy !t_ref.P.imem in
+    t_ref := P.create ();
+    Array.blit imem 0 !t_ref.P.imem 0 (Array.length imem);
+    Array.fill applied 0 4 None
+  in
   let regs () : Ports.outputs =
+    let t = !t_ref in
     let per f = Array.init 4 (fun i -> if i < num_sms then f i else 0) in
     let dbg i = P.debug t i in
     let smask f = Ports.sm_mask ~num_sms f in
@@ -69,8 +77,11 @@ let pgsim (module P : PGSIM) ~name ~pads_from_pins_in ~num_sms : port_dut =
   in
   let cycle (i : Ports.inputs) : int =
     if not i.rst_n
-    then 0 (* reset: the model is in its reset state and does not count cycles *)
+    then (
+      reset ();
+      0)
     else (
+      let t = !t_ref in
       let rx =
         match i.rxf_pop with
         | Some sm when sm < num_sms -> P.rx_head t sm

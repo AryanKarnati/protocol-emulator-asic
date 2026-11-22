@@ -35,7 +35,9 @@ DESIGN.md), not from RTL. Block 2 compares it with the RTL and with silicon.
   the four FDEBUG flags.
 - `stall_code` maps each stall to the DESIGN §7 `DBG_CNT.stall_reason` code: 0 none, 1
   tx_empty, 2 rx_full, 3 autopull, 4 wait_gpio, 5 wait_pin, 6 wait_irq, 7 irq_wait. DESIGN §7
-  names the field but does not give the encoding. This is a choice for the owner to confirm.
+  names the field, and DESIGN §7 now defines this encoding, so it is no longer an open choice.
+- Configuration changes (the harness and the RTL lane both rely on this) happen only while
+  the SM is disabled. FJOIN changes are outside the harness after the load phase.
 
 ## Ambiguity choices
 
@@ -51,9 +53,12 @@ then the choice in the model.
 2. **!OSRE.** §3.4.2.2: "!OSRE compares the bits shifted out since the last PULL with the
    shift count threshold". *Choice:* the OSR is empty when its count is at or above the
    pull threshold, as for autopull.
-3. **PULL under autopull.** §3.5.4.2: "it becomes a no-op if the OSR is full". *Choice:* the
-   OSR is full while its count is below the threshold. With autopull a PULL is then a no-op,
-   and otherwise it pulls from TX, or stalls, or copies X when non-blocking.
+3. **PULL under autopull (R4, revised).** §3.5.4.2: "it becomes a no-op if the OSR is full",
+   and §3.5.4 defines full as OSR count 0. *Choice:* with autopull a PULL is a no-op only when
+   the OSR count is 0. A partly shifted OSR is not full, so the PULL loads a fresh word from
+   TX, or stalls, or copies X when non-blocking. The earlier reading (no-op below the
+   threshold) is withdrawn; its directed expectations were changed (see test_directed.ml).
+   **V1 items b and b2.**
 4. **OUT refill stall.** §3.5.4.2 pseudocode: when the count is at threshold and TX is not
    empty, the OUT pulls, then stalls (`stall` after the `if`). *Choice:* the stall happens
    on the refill cycle too, and the OUT runs on the next cycle.
@@ -72,7 +77,10 @@ then the choice in the model.
    tick". *Choice:* the datasheet. A forced instruction runs in the next system cycle,
    ignores the divider and the enable, ignores its own delay, and does not change a pending
    delay of the interrupted instruction. While it is latched it blocks the SM's normal
-   execution. **The DESIGN §8.2 wording conflicts with this and is logged for the owner.**
+   execution. **Choice F1 (engine.md):** the forced cycle uses up the divider tick, and the
+   SM's delay counter is untouched. A forced cycle also has no autopull refill. The DESIGN
+   §8.2 wording ("on the next tick") conflicts with the forced timing and is logged for the
+   owner.
 9. **IRQ visibility and set against clear.** §3.2.7: "When a flag is both set and cleared
    on the same cycle, the set takes precedence and the clear is ignored". §3.4.9.3: "results
    in it being set". *Choice:* set wins. WAIT and IRQ read the flags as they were at the

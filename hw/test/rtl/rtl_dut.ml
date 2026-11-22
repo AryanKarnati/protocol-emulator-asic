@@ -1,5 +1,18 @@
 (* Cyclesim adapter: the RTL DUT for the lockstep harness. It drives the port names of
-   docs/engine.md section 3 on a Hardcaml Cyclesim of [Polyglot_hw.Pio_block.circuit]. *)
+   docs/engine.md section 3 on a Hardcaml Cyclesim of [Polyglot_hw.Pio_block.circuit].
+
+   Reset model. The RTL's registers are asynchronous-reset (rst_n low holds them at R0).
+   Cyclesim does not model that: a reset given as a data signal does not take effect at
+   clock edges (checked with hw/test/rtl/reset_probe, round 2). So the adapter takes reset
+   from [Cyclesim.reset] instead. While rst_n is low it calls [Cyclesim.reset] and does not
+   clock, so the registers hold R0 as the async reset would. IMEM is not reset by
+   [Cyclesim.reset], as engine.md R0 requires, and the case's load phase rewrites it
+   regardless. Reset that a Verilog simulator would catch (async, glitch, reset-edge
+   sensitivity) cannot be checked here: it is for block 3's cocotb and gate-level runs.
+
+   Port presence. Engine.md 3 says the ports exist for 4 SMs whatever num_sms is. A port
+   the circuit lacks is recorded in [missing] and treated as 0 (outputs) or ignored
+   (inputs). The missing list is reported by the CLI as triage class 1. *)
 
 open Polyglot_lockstep
 module Sim = Hardcaml.Cyclesim
@@ -7,6 +20,7 @@ module Sim = Hardcaml.Cyclesim
 let bits width v = Hardcaml.Bits.of_int ~width v
 let to_int b = Hardcaml.Bits.to_int b
 
+(* Ports the circuit lacked, from any adapter instance. *)
 let missing : (string, unit) Hashtbl.t = Hashtbl.create 8
 
 let note name = if not (Hashtbl.mem missing name) then Hashtbl.add missing name ()
@@ -17,101 +31,97 @@ let missing_ports () = Hashtbl.fold (fun k () acc -> k :: acc) missing [] |> Lis
 let create ~num_sms : Dut.port_dut =
   let circuit = Polyglot_hw.Pio_block.circuit ~num_sms in
   let sim = Sim.create circuit in
-  (* Cyclesim applies register reset values only through [Sim.reset]: call it before cycle
-     0. The lockstep runner then drives rst_n low for two cycles (Lockstep.run). *)
-  Sim.reset sim;
-  (* Settle the combinational outputs of the reset state (the registered view of cycle 0). *)
-  Sim.cycle_check sim;
-  (* engine.md 3: ports exist for 4 SMs whatever num_sms is. A port that the circuit does not
-     have is recorded in [missing] (reported by the probe), and reads as 0 / ignores writes,
-     which is what engine.md 3 says for an SM with no logic. *)
+  let reset () =
+    Sim.reset sim;
+    (* Settle the combinational outputs of the reset state, so reads see R0. *)
+    Sim.cycle_check sim
+  in
+  reset ();
   let set name width v =
     match Sim.in_port sim name with
     | r -> r := bits width v
     | exception _ -> note name
   in
-  let get ?(before = true) name =
-    match
-      if before
-      then Sim.out_port ~clock_edge:Hardcaml.Side.Before sim name
-      else Sim.out_port sim name
-    with
+  let get name =
+    match Sim.out_port ~clock_edge:Hardcaml.Side.Before sim name with
     | r -> to_int !r
     | exception _ ->
       note name;
       0
   in
-  let per name f = Array.init 4 (fun i -> f (Printf.sprintf "%s%d" name i)) in
+  let per name = Array.init 4 (fun i -> get (Printf.sprintf "%s%d" name i)) in
   let regs () : Ports.outputs =
-    Sim.cycle_before_clock_edge sim;
-    let g = get in
-    { Ports.pins_out = g "pins_out"
-    ; pins_oe = g "pins_oe"
-    ; irq = g "irq"
-    ; fstat = g "fstat"
-    ; flevel = g "flevel"
-    ; fdebug = g "fdebug"
-    ; pc = per "dbg_pc" (fun n -> g n)
-    ; x = per "dbg_x" (fun n -> g n)
-    ; y = per "dbg_y" (fun n -> g n)
-    ; isr = per "dbg_isr" (fun n -> g n)
-    ; osr = per "dbg_osr" (fun n -> g n)
-    ; cnt = per "dbg_cnt" (fun n -> g n)
-    ; exec_stalled = per "dbg_exec_stalled" (fun n -> g n)
-    ; phase = per "dbg_phase" (fun n -> g n)
+    Sim.cycle_check sim;
+    { Ports.pins_out = get "pins_out"
+    ; pins_oe = get "pins_oe"
+    ; irq = get "irq"
+    ; fstat = get "fstat"
+    ; flevel = get "flevel"
+    ; fdebug = get "fdebug"
+    ; pc = per "dbg_pc"
+    ; x = per "dbg_x"
+    ; y = per "dbg_y"
+    ; isr = per "dbg_isr"
+    ; osr = per "dbg_osr"
+    ; cnt = per "dbg_cnt"
+    ; exec_stalled = per "dbg_exec_stalled"
+    ; phase = per "dbg_phase"
     ; rxf_data = 0
     }
   in
   let cycle (i : Ports.inputs) : int =
-    (* Reset cycles do not clock: Sim.reset above has put every register at its R0 value,
-       and clocking with rst_n low would advance the divider (engine.md R0, section 5). *)
     if not i.Ports.rst_n
-    then 0
+    then (
+      reset ();
+      0)
     else (
-    set "rst_n" 1 1;
-    set "sm_enable" 4 i.Ports.sm_enable;
-    for k = 0 to 3 do
-      set (Printf.sprintf "clkdiv%d" k) 32 i.Ports.clkdiv.(k);
-      set (Printf.sprintf "execctrl%d" k) 32 i.Ports.execctrl.(k);
-      set (Printf.sprintf "shiftctrl%d" k) 32 i.Ports.shiftctrl.(k);
-      set (Printf.sprintf "pinctrl%d" k) 32 i.Ports.pinctrl.(k)
-    done;
-    set "sync_bypass" 32 i.Ports.sync_bypass;
-    set "pins_in" 32 i.Ports.pins_in;
-    set "sm_restart" 4 i.Ports.sm_restart;
-    set "clkdiv_restart" 4 i.Ports.clkdiv_restart;
-    set "fifo_flush" 4 i.Ports.fifo_flush;
-    set "irq_clear" 8 i.Ports.irq_clear;
-    set "irq_force" 8 i.Ports.irq_force;
-    set "fdebug_clear" 32 i.Ports.fdebug_clear;
-    (match i.Ports.txf_push with
-     | Some (sm, d) ->
-       set "txf_push" 1 1;
-       set "txf_sm" 2 sm;
-       set "txf_data" 32 d
-     | None -> set "txf_push" 1 0);
-    (match i.Ports.rxf_pop with
-     | Some sm ->
-       set "rxf_pop" 1 1;
-       set "rxf_sm" 2 sm
-     | None -> set "rxf_pop" 1 0);
-    (match i.Ports.instr_write with
-     | Some (sm, d) ->
-       set "instr_write" 1 1;
-       set "instr_sm" 2 sm;
-       set "instr_data" 16 d
-     | None -> set "instr_write" 1 0);
-    (match i.Ports.imem_write with
-     | Some (a, d) ->
-       set "imem_write" 1 1;
-       set "imem_addr" 5 a;
-       set "imem_data" 16 d
-     | None -> set "imem_write" 1 0);
-    Sim.cycle_before_clock_edge sim;
-    let rx = match i.Ports.rxf_pop with Some _ -> get ~before:true "rxf_data" | None -> 0 in
-    Sim.cycle_at_clock_edge sim;
-    Sim.cycle_after_clock_edge sim;
-    rx)
+      set "rst_n" 1 1;
+      set "sm_enable" 4 i.Ports.sm_enable;
+      for k = 0 to 3 do
+        set (Printf.sprintf "clkdiv%d" k) 32 i.Ports.clkdiv.(k);
+        set (Printf.sprintf "execctrl%d" k) 32 i.Ports.execctrl.(k);
+        set (Printf.sprintf "shiftctrl%d" k) 32 i.Ports.shiftctrl.(k);
+        set (Printf.sprintf "pinctrl%d" k) 32 i.Ports.pinctrl.(k)
+      done;
+      set "sync_bypass" 32 i.Ports.sync_bypass;
+      set "pins_in" 32 i.Ports.pins_in;
+      set "sm_restart" 4 i.Ports.sm_restart;
+      set "clkdiv_restart" 4 i.Ports.clkdiv_restart;
+      set "fifo_flush" 4 i.Ports.fifo_flush;
+      set "irq_clear" 8 i.Ports.irq_clear;
+      set "irq_force" 8 i.Ports.irq_force;
+      set "fdebug_clear" 32 i.Ports.fdebug_clear;
+      (match i.Ports.txf_push with
+       | Some (sm, d) ->
+         set "txf_push" 1 1;
+         set "txf_sm" 2 sm;
+         set "txf_data" 32 d
+       | None -> set "txf_push" 1 0);
+      (match i.Ports.rxf_pop with
+       | Some sm ->
+         set "rxf_pop" 1 1;
+         set "rxf_sm" 2 sm
+       | None -> set "rxf_pop" 1 0);
+      (match i.Ports.instr_write with
+       | Some (sm, d) ->
+         set "instr_write" 1 1;
+         set "instr_sm" 2 sm;
+         set "instr_data" 16 d
+       | None -> set "instr_write" 1 0);
+      (match i.Ports.imem_write with
+       | Some (a, d) ->
+         set "imem_write" 1 1;
+         set "imem_addr" 5 a;
+         set "imem_data" 16 d
+       | None -> set "imem_write" 1 0);
+      Sim.cycle_check sim;
+      (* rxf_data is combinational: read it before the clock edge, with this cycle's pop. *)
+      Sim.cycle_before_clock_edge sim;
+      let rx = match i.Ports.rxf_pop with Some _ -> get "rxf_data" | None -> 0 in
+      Sim.cycle_at_clock_edge sim;
+      Sim.cycle_after_clock_edge sim;
+      Sim.cycle_check sim;
+      rx)
   in
   { Dut.name = "rtl"; regs; cycle }
 ;;

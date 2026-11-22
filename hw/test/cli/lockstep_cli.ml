@@ -19,36 +19,17 @@
 
 open Polyglot_lockstep
 
-let mutant_names =
-  [ "delay_off_by_one"
-  ; "sideset_loses_to_out"
-  ; "autopull_no_refill_non_out"
-  ; "irq_clear_beats_set"
-  ; "input_latency_2"
-  ; "host_push_same_cycle"
-  ]
-;;
+let mutant_names = Polyglot_mutant_duts.Mutant_duts.names
 
 let dut_of_name name ~num_sms : Dut.port_dut =
-  let port (module P : Dut.PGSIM) ~pads_from_pins_in =
-    Dut.pgsim (module P) ~name ~pads_from_pins_in ~num_sms
-  in
   match name with
-  | "pgsim" -> port (module Pgsim : Dut.PGSIM) ~pads_from_pins_in:true
+  | "pgsim" ->
+    Dut.pgsim (module Pgsim : Dut.PGSIM) ~name ~pads_from_pins_in:true ~num_sms
   | "rtl" -> Polyglot_rtl_dut.Rtl_dut.create ~num_sms
-  | "delay_off_by_one" ->
-    port (module Pgsim_mut_delay_off_by_one.Pgsim : Dut.PGSIM) ~pads_from_pins_in:true
-  | "sideset_loses_to_out" ->
-    port (module Pgsim_mut_sideset_loses_to_out.Pgsim : Dut.PGSIM) ~pads_from_pins_in:true
-  | "autopull_no_refill_non_out" ->
-    port (module Pgsim_mut_autopull_no_refill_non_out.Pgsim : Dut.PGSIM) ~pads_from_pins_in:true
-  | "irq_clear_beats_set" ->
-    port (module Pgsim_mut_irq_clear_beats_set.Pgsim : Dut.PGSIM) ~pads_from_pins_in:true
-  | "input_latency_2" ->
-    port (module Pgsim_mut_input_latency_2.Pgsim : Dut.PGSIM) ~pads_from_pins_in:true
-  | "host_push_same_cycle" ->
-    port (module Pgsim_mut_host_push_same_cycle.Pgsim : Dut.PGSIM) ~pads_from_pins_in:true
-  | _ -> failwith ("unknown DUT " ^ name)
+  | _ ->
+    (match Polyglot_mutant_duts.Mutant_duts.make name ~num_sms with
+     | Some d -> d
+     | None -> failwith ("unknown DUT " ^ name))
 ;;
 
 let dut_name_of n =

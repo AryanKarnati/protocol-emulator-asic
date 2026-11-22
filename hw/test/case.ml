@@ -22,6 +22,7 @@ type sm_cfg =
 
 type event =
   | Ext_pins of int
+  | Pin_set of int * int (** one pad: pin, level (0 or 1), from this cycle on *)
   | Sm_enable of int
   | Sm_config of int * sm_cfg
   | Sync_bypass of int
@@ -35,6 +36,7 @@ type event =
   | Irq_force of int
   | Fdebug_clear of int
   | Imem_write of int * int
+  | Reset_low (** rst_n low for this cycle and the next (engine.md 5: at least 2 cycles) *)
 
 type t =
   { num_sms : int
@@ -109,6 +111,7 @@ let normalise (c : t) : t =
       (fun (cy, ev) ->
         match ev with
         | Ext_pins v -> Some (cy, Ext_pins (v land m32))
+        | Pin_set (p, l) -> Some (cy, Pin_set (p land 31, l land 1))
         | Sm_enable v ->
           enable := v land 0xF;
           Some (cy, Sm_enable (v land 0xF))
@@ -132,7 +135,8 @@ let normalise (c : t) : t =
         | Irq_force m -> Some (cy, Irq_force (m land 0xFF))
         | Fdebug_clear m -> Some (cy, Fdebug_clear (m land fdebug_layout))
         | Imem_write (a, d) ->
-          if once cy `Imem then Some (cy, Imem_write (a land 31, d land 0xFFFF)) else None)
+          if once cy `Imem then Some (cy, Imem_write (a land 31, d land 0xFFFF)) else None
+        | Reset_low -> Some (cy, Reset_low))
       events
   in
   ignore cur_cfg;
@@ -154,6 +158,14 @@ let dense (c : t) : Ports.inputs array =
   let by_cycle = Array.make c.cycles [] in
   List.iter (fun (cy, ev) -> by_cycle.(cy) <- ev :: by_cycle.(cy)) c.events;
   Array.iteri (fun i l -> by_cycle.(i) <- List.rev l) by_cycle;
+  let rst = Array.make (max 1 c.cycles) false in
+  List.iter
+    (fun (cy, ev) ->
+      if ev = Reset_low
+      then (
+        rst.(cy) <- true;
+        if cy + 1 < c.cycles then rst.(cy + 1) <- true))
+    c.events;
   let sm_enable = ref 0 in
   let clkdiv = Array.map (fun s -> s.clkdiv) c.initial in
   let execctrl = Array.map (fun s -> s.execctrl) c.initial in
@@ -163,6 +175,7 @@ let dense (c : t) : Ports.inputs array =
   let ext = ref 0 in
   Array.init n_total (fun n ->
     let idle = Ports.idle ~rst_n:true in
+    let idle = if n >= load_cycles && rst.(n - load_cycles) then { idle with Ports.rst_n = false } else idle in
     if n < load_cycles
     then
       { idle with
@@ -181,6 +194,7 @@ let dense (c : t) : Ports.inputs array =
         (fun ev ->
           match ev with
           | Ext_pins v -> ext := v
+          | Pin_set (p, l) -> ext := (!ext land lnot (1 lsl p)) lor (l lsl p)
           | Sm_enable v -> sm_enable := v
           | Sm_config (sm, cfg) ->
             clkdiv.(sm) <- cfg.clkdiv;
@@ -197,7 +211,8 @@ let dense (c : t) : Ports.inputs array =
           | Irq_clear m -> pulses := { !pulses with Ports.irq_clear = m }
           | Irq_force m -> pulses := { !pulses with Ports.irq_force = m }
           | Fdebug_clear m -> pulses := { !pulses with Ports.fdebug_clear = m }
-          | Imem_write (a, d) -> pulses := { !pulses with Ports.imem_write = Some (a, d) })
+          | Imem_write (a, d) -> pulses := { !pulses with Ports.imem_write = Some (a, d) }
+          | Reset_low -> ())
         by_cycle.(cy);
       { !pulses with
         Ports.sm_enable = !sm_enable
@@ -220,6 +235,7 @@ let event_to_json cy ev : Yojson.Safe.t =
   let i k v = k, `Int v in
   match ev with
   | Ext_pins v -> base "ext_pins" [ i "pins" v ]
+  | Pin_set (p, l) -> base "pin_set" [ i "pin" p; i "level" l ]
   | Sm_enable v -> base "sm_enable" [ i "mask" v ]
   | Sm_config (sm, c) ->
     base
@@ -241,6 +257,7 @@ let event_to_json cy ev : Yojson.Safe.t =
   | Irq_force m -> base "irq_force" [ i "mask" m ]
   | Fdebug_clear m -> base "fdebug_clear" [ i "mask" m ]
   | Imem_write (a, d) -> base "imem_write" [ i "addr" a; i "data" d ]
+  | Reset_low -> base "reset_low" []
 ;;
 
 let cfg_to_json c : Yojson.Safe.t =
@@ -280,6 +297,7 @@ let of_json (j : Yojson.Safe.t) : t =
     let ev =
       match to_string (member "op" o) with
       | "ext_pins" -> Ext_pins (int "pins" o)
+      | "pin_set" -> Pin_set (int "pin" o, int "level" o)
       | "sm_enable" -> Sm_enable (int "mask" o)
       | "sm_config" -> Sm_config (int "sm" o, cfg o)
       | "sync_bypass" -> Sync_bypass (int "value" o)
@@ -293,6 +311,7 @@ let of_json (j : Yojson.Safe.t) : t =
       | "irq_force" -> Irq_force (int "mask" o)
       | "fdebug_clear" -> Fdebug_clear (int "mask" o)
       | "imem_write" -> Imem_write (int "addr" o, int "data" o)
+      | "reset_low" -> Reset_low
       | op -> failwith ("unknown event op " ^ op)
     in
     cy, ev
@@ -322,6 +341,7 @@ let write_file path c =
 
 let kind_name = function
   | Ext_pins _ -> "ext_pins"
+  | Pin_set _ -> "pin_set"
   | Sm_enable _ -> "sm_enable"
   | Sm_config _ -> "sm_config"
   | Sync_bypass _ -> "sync_bypass"
@@ -335,4 +355,5 @@ let kind_name = function
   | Irq_force _ -> "irq_force"
   | Fdebug_clear _ -> "fdebug_clear"
   | Imem_write _ -> "imem_write"
+  | Reset_low -> "reset_low"
 ;;

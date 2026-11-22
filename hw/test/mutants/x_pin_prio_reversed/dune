@@ -1,0 +1,10 @@
+(rule
+ (targets pgsim.ml)
+ (deps ../../../../sw/pgsim/pgsim.ml)
+ (action
+  (run %{exe:../tool/mutate.exe} ../../../../sw/pgsim/pgsim.ml pgsim.ml "    pin_writes;" "    (Array.of_list (List.rev (Array.to_list pin_writes)));")))
+(rule (targets pgsim.mli) (deps ../../../../sw/pgsim/pgsim.mli) (action (copy ../../../../sw/pgsim/pgsim.mli pgsim.mli)))
+(library
+ (name pgsim_mut_x_pin_prio_reversed)
+ (modules pgsim)
+ (libraries polyglot_isa))

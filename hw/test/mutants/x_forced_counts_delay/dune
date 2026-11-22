@@ -1,0 +1,10 @@
+(rule
+ (targets pgsim.ml)
+ (deps ../../../../sw/pgsim/pgsim.ml)
+ (action
+  (run %{exe:../tool/mutate.exe} ../../../../sw/pgsim/pgsim.ml pgsim.ml "ignore (attempt ~src:Host ~word:w);\n    Idle" "if sm.enabled && tick && sm.delay > 0 then sm.delay <- sm.delay - 1;\n    ignore (attempt ~src:Host ~word:w);\n    Idle")))
+(rule (targets pgsim.mli) (deps ../../../../sw/pgsim/pgsim.mli) (action (copy ../../../../sw/pgsim/pgsim.mli pgsim.mli)))
+(library
+ (name pgsim_mut_x_forced_counts_delay)
+ (modules pgsim)
+ (libraries polyglot_isa))

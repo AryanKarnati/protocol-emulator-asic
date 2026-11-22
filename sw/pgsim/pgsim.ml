@@ -694,9 +694,11 @@ let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
   if not legal then sm.illegal <- true;
   let ds = delay_side_of ins in
   let host = src = Host in
-  (* Side-set is tracked per instruction source, so a forced instruction does not change
-     the side-set state of the instruction it interrupted (AMBIGUITY, see README). *)
-  let first = not (if host then sm.host_side_done else sm.side_done) in
+  (* R11: the IMEM instruction and the latched one (forced or EXEC) each keep their own
+     side-set-done flag. [host_side_done] is the latched flag, so an EXEC completing does not
+     change the flag of the IMEM instruction it came from. *)
+  let latched = src <> Imem in
+  let first = not (if latched then sm.host_side_done else sm.side_done) in
   let side, delay = split_side c ds in
   let ins_body = if legal then ins else Isa.Illegal word in
   let is_out = match ins with Isa.Out _ -> true | _ -> false in
@@ -710,7 +712,7 @@ let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
      then add_dir sidew (group_mask c.sideset_base sbits) (place c.sideset_base sbits v)
      else add_lvl sidew (group_mask c.sideset_base sbits) (place c.sideset_base sbits v)
    | _ -> ());
-  let set_flag b = if host then sm.host_side_done <- b else sm.side_done <- b in
+  let set_flag b = if latched then sm.host_side_done <- b else sm.side_done <- b in
   (match outcome with
    | Stalled r ->
      (match src with
@@ -741,6 +743,8 @@ let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
         register"). OUT EXEC's own delay is ignored too (3.4.5.2). *)
      if not host then sm.delay <- (if delay_applies then delay else 0);
      if src <> Imem then sm.latch_irq_wait <- None;
+     (* R11: a new EXEC latch starts with its own side-set flag clear. *)
+     (match exec with Some _ -> sm.host_side_done <- false | None -> ());
      sm.latch
      <- (match exec with
          | Some w -> Exec_latch w
@@ -1197,8 +1201,7 @@ type debug =
   ; rxstall : bool
   }
 
-(* DESIGN.md 7 names DBG_CNT.stall_reason but does not give its encoding. The encoding
-   used here is 3 bits, one code per stall reason, 0 for no stall. AMBIGUITY for the owner. *)
+(* DBG_CNT.stall_reason, as DESIGN.md 7 now defines it: one code per stall reason, 0 for none. *)
 let stall_code = function
   | No_stall -> 0
   | Stall_tx_empty -> 1

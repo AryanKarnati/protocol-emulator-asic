@@ -273,7 +273,8 @@ type debug =
 val debug : t -> int -> debug
 
 (** DESIGN.md 7 DBG_CNT.stall_reason code: 0 none, 1 tx_empty, 2 rx_full, 3 autopull,
-    4 wait_gpio, 5 wait_pin, 6 wait_irq, 7 irq_wait. AMBIGUITY, see README. *)
+    4 wait_gpio, 5 wait_pin, 6 wait_irq, 7 irq_wait. The encoding is the one DESIGN §7 now
+    defines. *)
 val stall_code : stall -> int
 
 val stall_name : stall -> string

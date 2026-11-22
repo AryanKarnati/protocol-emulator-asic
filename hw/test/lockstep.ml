@@ -30,7 +30,9 @@ let run ?(waive_cycle0_fstat = false) ~(reference : Dut.port_dut) ~(dut : Dut.po
   let result = ref None in
   let n = ref 0 in
   let total = Array.length inputs in
-  while Option.is_none !result && !n < total do
+  (* The loop runs one compare past the last cycle: the state after the last clock edge is
+     compared too (engine.md 5). Inputs are only driven for cycles below [total]. *)
+  while Option.is_none !result && !n <= total do
     let r = reference.regs () in
     let d = dut.regs () in
     let rf = Ports.fields r in
@@ -49,6 +51,7 @@ let run ?(waive_cycle0_fstat = false) ~(reference : Dut.port_dut) ~(dut : Dut.po
                ; history = List.of_seq (Queue.to_seq hist)
                ; dut_name = dut.name
                })
+     | None when !n = total -> incr n
      | None ->
        let pins_in =
          Ports.pins_in_of ~pins_out:d.Ports.pins_out ~pins_oe:d.Ports.pins_oe

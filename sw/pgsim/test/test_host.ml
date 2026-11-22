@@ -408,3 +408,41 @@ let%test_unit "OUT_STICKY keeps only the most recent write (levels replaced by a
   step t;
   check "still asserted in a cycle with no write" (t.Pgsim.pin_dir land 1 = 1)
 ;;
+
+(* ------------------------------------------------------------------------------------ *)
+(* R11: an EXEC completing does not change the side-set flag of the IMEM instruction it came
+   from. Reproducer from the checker: an IMEM wait with side 1 stalls; a forced MOV EXEC
+   latches a SET PINS 0 (side 0); when it completes the stalled wait must not re-apply its
+   side-set. *)
+let%test_unit "R11: EXEC completion does not re-apply the IMEM instruction's side-set" =
+  let wait_side = enc (Isa.Wait { delay_side = 0x10; polarity = true; source = Wsrc_gpio 5 }) in
+  let t = make ~cfg:side_cfg [ wait_side; jmp 0 ] in
+  t.Pgsim.sms.(0).Pgsim.x <- set_pins 0;
+  step t;
+  check "side-set applied on the first attempt" (t.Pgsim.pin_level land 1 = 1);
+  let mov_exec_x = enc (Isa.Mov { delay_side = 0; dest = Mov_exec; op = Op_none; source = Ms_x }) in
+  step ~host:[ H.Instr_write { sm = 0; data = mov_exec_x } ] t;
+  step t;
+  (* The forced MOV EXEC completed and latched the SET; its side 0 drove pin 0 low. *)
+  check "forced MOV EXEC latched the SET" ((dbg t 0).Pgsim.latch = Pgsim.Exec_latch (set_pins 0));
+  step t;
+  (* The SET runs and the IMEM wait is still stalled on pin 5. *)
+  check "imem wait still stalled" ((dbg t 0).Pgsim.stall_code = 4);
+  step t;
+  check "pin 0 stays low: the IMEM side-set is not re-applied (R11)" (t.Pgsim.pin_level land 1 = 0)
+;;
+
+(* ------------------------------------------------------------------------------------ *)
+(* H3: SM_RESTART clears the latched instruction's IRQ wait. A forced IRQ-with-wait stalls and
+   keeps its wait slot; after a restart the slot must be empty, so that a later EXEC IRQ
+   sets its flag and stalls on its first attempt. (The checker's mutant x_restart_keeps_latch_irq
+   survived 3000 random cases; this is the directed case.) *)
+let%test_unit "H3: SM_RESTART clears the latched IRQ wait" =
+  let t = make [ jmp 0 ] in
+  Pgsim.write_instr t 0 (enc (Isa.Irq { delay_side = 0; clear = false; wait = true; index = 3; rel = false }));
+  step t;
+  check "forced irq wait raised" ((dbg t 0).Pgsim.latch_irq_wait = Some 3);
+  Pgsim.sm_restart t 1;
+  check "restart clears the latch" ((dbg t 0).Pgsim.latch = Pgsim.No_latch);
+  check "restart clears the latched IRQ wait" ((dbg t 0).Pgsim.latch_irq_wait = None)
+;;
