@@ -1,643 +1,782 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# cocotb test for the block 1 gate design, written from docs/gate.md only.
+# cocotb tests of the block 3 chip (docs/chip.md), through the top-level pins only.
 #
-# Only top-level pins are used, so the same file runs on the RTL and on the
-# gate-level netlist. Each cycle:
-#   - inputs are driven just after the falling edge (ena, rst_n release too),
-#   - outputs are sampled 4 ns later, still well before the rising edge,
-#   - a command takes effect at the following rising edge.
-# The Python reference model (class Model) is the scoreboard. Every cycle, all
-# outputs are compared with it, except where the spec leaves behaviour open.
+# The host is a cocotbext-spi SpiMaster in mode 0, MSB first. Nothing in this file
+# comes from the Python model (pgsim) or the RTL. Expected values come from chip.md,
+# engine.md, DESIGN.md and the RP2040 datasheet (section 3.7 layouts), and the PIO
+# programs are assembled with the official pioasm (2.3.1). The same file runs on the
+# RTL and on the gate-level netlist (GATES=yes).
 #
-# Edge numbering after reset release: the first rising edge after rst_n goes high
-# is edge 1. Commands are ignored at edges 1 and 2 and run from edge 3.
+# Timing. clk is 60 MHz (16666 ps, as in the template). SCK is 1/8 of clk, so each SCK
+# half period is 4 clk cycles (chip.md 6.6 asks for at least 2). Every pin change is
+# made at a falling edge of clk, and so is every SCK edge, so no pin changes in the same
+# step as a rising edge. CS_N falls, then the first SCK rise follows 1.5 SCK periods
+# later, which is 12 cycles (chip.md 6.6 asks for at least 3). Between frames CS_N is
+# high for at least 4 cycles, and each master's frame spacing is 0.
 #
-# Default tests run in a few tens of thousands of cycles. Set POLYGLOT_LONG=1 to
-# also run the tests that need ~65k cycles per tick (INT=0 and INT=300).
-
-import os
-import random
+# Expected values that depend on timing (for example the spacing of pin steps) are
+# computed from the contract, not measured and then copied.
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, RisingEdge, Timer
+from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge, Timer
+from cocotbext.spi import SpiBus, SpiConfig, SpiMaster
 
-# 1 / 60 MHz = 16.667 ns. cocotb needs an even period in ps, so use 16666 ps.
 CLK_PERIOD_PS = 16666
-SAMPLE_DELAY_PS = 4000  # after the falling edge, before the rising edge
+SCK_PERIOD_PS = 8 * CLK_PERIOD_PS  # SCK half period = 4 clk cycles
+SCK_FREQ_HZ = 1e12 / SCK_PERIOD_PS
+CS_HIGH_CYCLES = 4  # CS_N high between frames, at least the 4 cycles of chip.md 6.6
 
-CMD_NOP = 0b000
-CMD_PUSH = 0b001
-CMD_POP = 0b010
-CMD_INT_LO = 0b011
-CMD_INT_HI = 0b100
-CMD_FRAC = 0b101
-CMD_DIV_RESTART = 0b110
-CMD_CLEAR_FLAGS = 0b111
+# ---------------------------------------------------------------------------
+# Register map (chip.md 8.1)
+# ---------------------------------------------------------------------------
+A_ID = 0x000
+A_HWCFG = 0x004
+A_CTRL = 0x008
+A_FSTAT = 0x00C
+A_FDEBUG = 0x010
+A_FLEVEL = 0x014
+A_IRQ = 0x018
+A_IRQ_FORCE = 0x01C
+A_HOSTIRQ_EN = 0x020
+A_PAD_OD = 0x024
+A_SYNC_BYPASS = 0x028
+A_PAD_IN = 0x02C
+A_PAD_OUT = 0x030
+A_PAD_OE = 0x034
+A_SCRATCH = 0x038
+A_DBG_CTRL = 0x060
 
-XOR_CONST = 0x0123_4567
-LONG = os.environ.get("POLYGLOT_LONG") == "1"
-
-CYCLES = {"total": 0}  # simulated clock cycles, all tests
-
-
-def cycle_no():
-    return CYCLES["total"]
-
-
-def check(cond, msg):
-    """Assertion that names the cycle number."""
-    if not cond:
-        raise AssertionError(f"cycle {cycle_no()}: {msg}")
-
-
-def read_logic(sig, name):
-    """Read a signal as an int. Fail with the name, cycle and raw value if X or Z."""
-    raw = sig.value
-    if not raw.is_resolvable:
-        raise AssertionError(f"cycle {cycle_no()}: {name} is not resolvable, raw value {raw}")
-    return int(raw)
-
-
-def word_for(data):
-    """W = {DATA,DATA,DATA,DATA} ^ 0x01234567."""
-    return ((data * 0x0101_0101) ^ XOR_CONST) & 0xFFFF_FFFF
-
-
-def pack(cmd, sel, view, hi):
-    return (hi << 6) | (view << 5) | (sel << 3) | cmd
+# Per-SM offsets from 0x200 + 0x40 n (chip.md 8.1)
+O_CLKDIV = 0x00
+O_EXECCTRL = 0x04
+O_SHIFTCTRL = 0x08
+O_ADDR = 0x0C
+O_INSTR = 0x10
+O_PINCTRL = 0x14
+O_EXT = 0x18
+O_LCU = 0x1C
+O_DBG_X = 0x2C
+O_DBG_Y = 0x30
+O_DBG_ISR = 0x34
+O_DBG_OSR = 0x38
+O_DBG_CNT = 0x3C
 
 
-class Model:
-    """Reference model of docs/gate.md. Commands act at rising edges."""
-
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.fifo = []  # index 0 is the head word
-        self.overflow = 0
-        self.underflow = 0
-        self.div_int = 1
-        self.div_frac = 0
-        self.ignore_edges = 0  # rising edges still to ignore after reset release
-
-    def release(self):
-        self.ignore_edges = 2
-
-    def tick_known(self):
-        # Property 1: with INT=1 and FRAC=0, TICK is 1 in every cycle, whatever
-        # writes or restarts came before.
-        return self.div_int == 1 and self.div_frac == 0
-
-    def apply(self, cmd, data):
-        if self.ignore_edges > 0:
-            self.ignore_edges -= 1
-            return
-        if cmd == CMD_PUSH:
-            if len(self.fifo) < 4:
-                self.fifo.append(word_for(data))
-            else:
-                self.overflow = 1
-        elif cmd == CMD_POP:
-            if self.fifo:
-                self.fifo.pop(0)
-            else:
-                self.underflow = 1
-        elif cmd == CMD_INT_LO:
-            self.div_int = (self.div_int & 0xFF00) | data
-        elif cmd == CMD_INT_HI:
-            self.div_int = (self.div_int & 0x00FF) | (data << 8)
-        elif cmd == CMD_FRAC:
-            self.div_frac = data
-        elif cmd == CMD_CLEAR_FLAGS:
-            self.overflow = 0
-            self.underflow = 0
-        # NOP and DIV_RESTART: nothing to model here (ticks are checked by property)
-
-    def head_byte(self, sel):
-        if not self.fifo:
-            return 0
-        return (self.fifo[0] >> (8 * sel)) & 0xFF
-
-    def status_no_tick(self):
-        level = len(self.fifo)
-        return ((level & 0x7) << 4) | ((level == 4) << 3) | ((level == 0) << 2) \
-            | (self.overflow << 1) | self.underflow
+def txf(n):
+    return 0x040 + 4 * n
 
 
-class Bench:
-    """Drives one cycle at a time and checks every output against the model."""
+def rxf(n):
+    return 0x050 + 4 * n
 
-    def __init__(self, dut, seed):
+
+def imem(k):
+    return 0x100 + 4 * k
+
+
+def sm(n, off):
+    return 0x200 + 0x40 * n + off
+
+
+# chip.md 8.1 and 8.2 reset values (SM registers and the others)
+ID_VALUE = 0x504C4754
+HWCFG_VALUE = 0x1040_0404  # FIFO depth 4, 4 SMs, IMEM depth 64, no LCU, no SRAM, version 1
+STATUS_RESET = 0xF0  # TXNFULL[3:0] = 1 (TX empty), RXNEMPTY[3:0] = 0
+FSTAT_RESET = 0x0F00_0F00  # TXEMPTY and RXEMPTY for 4 SMs
+CLKDIV_RESET = 0x0001_0000
+EXECCTRL_RESET = 0x0001_F000
+SHIFTCTRL_RESET = 0x000C_0000
+PINCTRL_RESET = 0x1400_0000
+DBG_CNT_RESET = 32 << 8  # OSR count 32 (engine.md R0)
+
+
+def wrap(top, bottom=0):
+    return (top << 12) | (bottom << 7)
+
+
+# PIO programs. Assembled with pioasm 2.3.1 (the official tool).
+#   pinsdemo:  set pins, 1 [1]; set pins, 30 [1]; set pins, 21 [1]     (wrap 0..2)
+#   pulldrive: pull block; out pins, 6                                  (wrap 0..1)
+#   loopback:  pull block; mov isr, osr; push block                     (wrap 0..2)
+PINSDEMO = [0xE101, 0xE11E, 0xE115]
+PULLDRIVE = [0x80A0, 0x6006]
+LOOPBACK = [0x80A0, 0xA0C7, 0x8020]
+# Forced instructions (pioasm 2.3.1): set pindirs,1 / set pins,1 / set pins,0 /
+# set pindirs,0 / set x,21 / set y,9
+SET_PINDIRS_1 = 0xE081
+SET_PINS_1 = 0xE001
+SET_PINS_0 = 0xE000
+SET_PINDIRS_0 = 0xE080
+SET_X_21 = 0xE035
+SET_Y_9 = 0xE049
+
+# PINCTRL values (RP2040 layout, datasheet table 395)
+PINCTRL_SET_BASE8 = PINCTRL_RESET | (8 << 5)  # SET pins 8..12 = uo_out[4:0]
+PINCTRL_OUT8_6 = PINCTRL_RESET | (6 << 20) | 8  # OUT pins 8..13 = uo_out[5:0]
+PINCTRL_SET14 = (1 << 26) | (14 << 5)  # SET pin 14 = uo_out[6] (HOST_IRQ off)
+PINCTRL_SET0_1 = 1 << 26  # SET pin 0 = uio[0]
+
+# ---------------------------------------------------------------------------
+# Host: a cocotbext-spi master on the pins that tb.v exposes
+# ---------------------------------------------------------------------------
+def spi_config(word_width):
+    return SpiConfig(
+        word_width=word_width,
+        sclk_freq=SCK_FREQ_HZ,
+        cpol=False,
+        cpha=False,
+        msb_first=True,
+        frame_spacing_ns=0,
+        data_output_idle=0,
+        cs_active_low=True,
+    )
+
+
+def hdr(cmd, addr):
+    return bytes([cmd, (addr >> 8) & 0xFF, addr & 0xFF])
+
+
+def be_words(words):
+    return b"".join((w & 0xFFFF_FFFF).to_bytes(4, "big") for w in words)
+
+
+class Link:
+    """SPI frames to the chip. Keeps the last frame for failure messages."""
+
+    def __init__(self, dut):
         self.dut = dut
-        self.model = Model()
-        self.rng = random.Random(seed)
+        self.clk = dut.clk
+        self.bus = SpiBus(
+            entity=dut,
+            sclk_name="spi_sck",
+            mosi_name="spi_mosi",
+            miso_name="spi_miso",
+            cs_name="spi_cs_n",
+        )
+        self.bytes_master = SpiMaster(self.bus, spi_config(8))
+        self._bit_masters = {}
+        self.last = (b"", b"")
 
-    async def cycle(self, cmd=CMD_NOP, data=None, sel=0, view=0, ena=None,
-                    release=False, in_reset=False):
-        """One clock cycle. Returns the sampled uo_out as an int.
+    def _bit_master(self, nbits):
+        if nbits not in self._bit_masters:
+            self._bit_masters[nbits] = SpiMaster(self.bus, spi_config(nbits))
+        return self._bit_masters[nbits]
 
-        release: drive rst_n high at this falling edge. The next rising edge is edge 1.
-        in_reset: rst_n is low, so no command acts and the model stays in reset.
-        """
-        dut = self.dut
-        if data is None:
-            data = self.rng.randrange(256)  # DATA is ignored unless the command uses it
-        if ena is None:
-            ena = self.rng.randrange(2)  # ena is ignored
-        hi = self.rng.randrange(4)  # ui_in[7:6] are ignored
+    async def frame(self, tx):
+        """One byte frame: CS_N low for all of tx, MISO bytes returned."""
+        await FallingEdge(self.clk)
+        self.bytes_master.write_nowait(tx, burst=True)
+        await self.bytes_master.wait()
+        rx = bytes(self.bytes_master.read_nowait())
+        self.last = (bytes(tx), rx)
+        await ClockCycles(self.clk, CS_HIGH_CYCLES)
+        return rx
 
-        await FallingEdge(dut.clk)
-        if release:
-            dut.rst_n.value = 1
-            self.model.release()
-        dut.ui_in.value = pack(cmd, sel, view, hi)
-        dut.uio_in.value = data
-        dut.ena.value = ena
-        await Timer(SAMPLE_DELAY_PS, unit="ps")
+    async def bit_frame(self, nbits, value):
+        """A frame of nbits bits (not a multiple of 8 in general), MSB first."""
+        m = self._bit_master(nbits)
+        await FallingEdge(self.clk)
+        m.write_nowait([value], burst=False)
+        await m.wait()
+        m.read_nowait()
+        self.last = (value.to_bytes((nbits + 7) // 8, "big"), b"")
+        await ClockCycles(self.clk, CS_HIGH_CYCLES)
 
-        uo = read_logic(dut.uo_out, "uo_out")
-        uio_oe = read_logic(dut.uio_oe, "uio_oe")
-        uio_out = read_logic(dut.uio_out, "uio_out")
-        CYCLES["total"] += 1
-        self._check(uo, uio_oe, uio_out, view, sel)
+    async def write(self, addr, *words, fixed=False):
+        await self.frame(hdr(0x40 if fixed else 0x00, addr) + be_words(words))
 
-        await RisingEdge(dut.clk)  # the command takes effect here, if it is not ignored
-        if not in_reset:
-            self.model.apply(cmd, data)
-        return uo
+    async def read(self, addr, n=1, fixed=False):
+        """Returns (STATUS byte, [word 0 .. word n-1])."""
+        rx = await self.frame(hdr(0xC0 if fixed else 0x80, addr) + bytes(1 + 4 * n))
+        words = [int.from_bytes(rx[4 + 4 * m : 8 + 4 * m], "big") for m in range(n)]
+        return rx[0], words
 
-    def _check(self, uo, uio_oe, uio_out, view, sel):
-        m = self.model
-        check(uio_oe == 0x00, f"uio_oe = {uio_oe:#04x}, expected 0x00")
-        check(uio_out == 0x00, f"uio_out = {uio_out:#04x}, expected 0x00")
-        if view == 0:
-            exp = m.head_byte(sel)
-            check(uo == exp, f"uo_out (head byte, sel={sel}) = {uo:#04x}, expected {exp:#04x}; "
-                             f"fifo={[hex(w) for w in m.fifo]}")
-        else:
-            exp = m.status_no_tick()
-            got = uo & 0x7F
-            check(got == exp, f"STATUS without TICK = {got:#04x}, expected {exp:#04x}; "
-                              f"depth={len(m.fifo)} ovf={m.overflow} unf={m.underflow}")
-            if m.tick_known():
-                check(uo & 0x80, f"TICK = 0 but spec says TICK = 1 for INT=1, FRAC=0; STATUS={uo:#04x}")
-
-    async def idle(self, n, view=1):
-        for _ in range(n):
-            await self.cycle(CMD_NOP, view=view)
-
-    async def push(self, data, view=1):
-        await self.cycle(CMD_PUSH, data=data, view=view)
-
-    async def pop(self, view=1):
-        await self.cycle(CMD_POP, view=view)
+    async def reg(self, addr):
+        return (await self.read(addr))[1][0]
 
     async def status(self):
-        return await self.cycle(CMD_NOP, view=1)
-
-    async def head(self, sel=0):
-        return await self.cycle(CMD_NOP, view=0, sel=sel)
-
-    async def load_int(self, value):
-        """Load INT with INT_LO then INT_HI. No restart."""
-        await self.cycle(CMD_INT_LO, data=value & 0xFF)
-        await self.cycle(CMD_INT_HI, data=(value >> 8) & 0xFF)
-
-    async def load_frac(self, value):
-        await self.cycle(CMD_FRAC, data=value)
+        """1-byte frame: the command byte alone. MISO shows STATUS during it."""
+        rx = await self.frame(bytes([0x00]))
+        return rx[0]
 
 
-async def start(dut, seed=1):
-    """Reset, release, and return a Bench whose next command is at edge 3.
-
-    rst_n is released at a falling edge, so that edge is edge 1. Edge 2 is a NOP.
-    """
-    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_PS, unit="ps").start())
-    dut.ena.value = 1
-    dut.ui_in.value = 0
-    dut.uio_in.value = 0
-    dut.rst_n.value = 0
-    for _ in range(5):
-        await RisingEdge(dut.clk)
-    b = Bench(dut, seed)
-    b.model.reset()
-    await b.cycle(CMD_NOP, view=1, release=True)  # edge 1 (ignored)
-    await b.cycle(CMD_NOP, view=1)  # edge 2 (ignored)
-    return b
+def check(link, what, got, want):
+    if got != want:
+        tx, rx = link.last
+        raise AssertionError(
+            f"{what}: got {got:#010x}, expected {want:#010x}; "
+            f"last frame tx={tx.hex()} rx={rx.hex()}"
+        )
 
 
-async def enter_reset(b, dut, hold_cycles):
-    """Assert rst_n between edges, check the reset outputs at once, then hold it."""
+def check_list(link, what, got, want):
+    if list(got) != list(want):
+        tx, rx = link.last
+        raise AssertionError(
+            f"{what}: got {[hex(x) for x in got]}, expected {[hex(x) for x in want]}; "
+            f"last frame tx={tx.hex()} rx={rx.hex()}"
+        )
+
+
+async def set_reset(dut, value):
     await FallingEdge(dut.clk)
-    dut.rst_n.value = 0
-    b.model.reset()
-    dut.ui_in.value = pack(CMD_PUSH, 0, 0, 0)  # PUSH on the pins, must have no effect
-    dut.uio_in.value = 0x5C
-    await Timer(1000, unit="ps")
-    head = read_logic(dut.uo_out, "uo_out")
-    check(head == 0x00, f"under reset, head view = {head:#04x}, expected 0x00")
-    dut.ui_in.value = pack(CMD_PUSH, 0, 1, 0)
-    await Timer(1000, unit="ps")
-    st = read_logic(dut.uo_out, "uo_out")
-    check(st == 0x84, f"under reset, STATUS = {st:#04x}, expected reset value 0x84")
-    for _ in range(hold_cycles):
-        s = await b.cycle(CMD_PUSH, data=0x6B, view=1, in_reset=True)
-        check(s == 0x84, f"still in reset, STATUS = {s:#04x}, expected 0x84")
+    dut.rst_n.value = value
 
 
-async def collect_ticks(b, n_ticks, max_cycles, int_eff):
-    """After a DIV_RESTART, return the cycle indices (from the cycle just after the
-    restart edge, index 0) of the first n_ticks ticks.
-
-    Checks that the first tick is within INT+1 cycles of the restart."""
-    ticks = []
-    for i in range(max_cycles):
-        s = await b.cycle(CMD_NOP, view=1)
-        if s & 0x80:
-            ticks.append(i)
-            if len(ticks) >= n_ticks:
-                break
-    check(len(ticks) >= n_ticks, f"only {len(ticks)} ticks in {max_cycles} cycles, wanted {n_ticks}")
-    check(ticks[0] <= int_eff + 1, f"first tick at index {ticks[0]}, must be <= INT+1 = {int_eff + 1}")
-    return ticks
-
-
-def gaps_after_first(ticks, lo, hi):
-    """Drop the first tick (its phase is not specified), then check every gap is in [lo, hi].
-    Returns the remaining tick list."""
-    t = ticks[1:]
-    gaps = [b - a for a, b in zip(t, t[1:])]
-    bad = [(k, g) for k, g in enumerate(gaps) if not (lo <= g <= hi)]
-    check(not bad, f"tick gaps outside [{lo}, {hi}] at (index, gap): {bad[:8]}")
-    check(len(gaps) >= 1, "not enough ticks to measure a gap")
-    return t
-
-
-def check_256_windows(t, total):
-    """Every window of 256 consecutive gaps (ticks t[i] .. t[i+256]) sums to `total`."""
-    n = 0
-    for i in range(len(t) - 256):
-        span = t[i + 256] - t[i]
-        check(span == total, f"256-gap window at tick {i} spans {span} cycles, expected {total}")
-        n += 1
-    check(n > 0, "not enough ticks for a 256-gap window")
-    return n
-
-
-async def run_fractional(b, int_v, frac, n_ticks):
-    """Load INT and FRAC, restart, and check the fractional-divider properties."""
-    await b.load_int(int_v)
-    await b.load_frac(frac)
-    await b.cycle(CMD_DIV_RESTART, view=1)
-    int_eff = int_v if int_v else 65536
-    max_cycles = (int_eff + 1) * (n_ticks + 2) + 16
-    ticks = await collect_ticks(b, n_ticks, max_cycles, int_eff)
-    t = gaps_after_first(ticks, int_v, int_v + 1)
-    total = 256 * int_v + frac
-    windows = check_256_windows(t, total)
-    b.dut._log.info(f"INT={int_v} FRAC={frac:#04x}: {len(ticks)} ticks, {windows} windows "
-                    f"of 256 gaps each summing to {total}")
-
-
-# ---------------------------------------------------------------------------
-# 1. Reset state
-# ---------------------------------------------------------------------------
-@cocotb.test()
-async def test_reset_state(dut):
-    b = await start(dut, seed=11)
-
-    # STATUS: TICK=1, LEVEL=0, EMPTY=1, no flags = 0x84.
-    for _ in range(20):
-        s = await b.status()
-        check(s == 0x84, f"reset STATUS = {s:#04x}, expected 0x84 (TICK=1, EMPTY=1)")
-
-    # Head view is 0 when empty, for every BYTE_SEL.
-    for sel in range(4):
-        v = await b.head(sel)
-        check(v == 0x00, f"empty head byte sel={sel} = {v:#04x}")
-
-    # uio pins are all inputs and drive 0.
-    await b.cycle(CMD_NOP, view=0)
-    oe = read_logic(dut.uio_oe, "uio_oe")
-    out = read_logic(dut.uio_out, "uio_out")
-    check(oe == 0 and out == 0, f"uio_oe={oe:#04x} uio_out={out:#04x}, expected both 0")
-
-
-# ---------------------------------------------------------------------------
-# 1b. Reset release: commands ignored at edges 1 and 2, run from edge 3
-# ---------------------------------------------------------------------------
-@cocotb.test()
-async def test_reset_release_edges(dut):
+async def start(dut):
+    """Start the clock, reset, release, and return a Link."""
     cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_PS, unit="ps").start())
     dut.ena.value = 1
-    dut.ui_in.value = 0
-    dut.uio_in.value = 0
+    dut.spi_sck.value = 0
+    dut.spi_mosi.value = 0
+    dut.spi_cs_n.value = 1
+    dut.ext_ui.value = 0
+    dut.ext_uio.value = 0xFF  # pads pulled up
     dut.rst_n.value = 0
-    for _ in range(5):
-        await RisingEdge(dut.clk)
-    b = Bench(dut, seed=12)
-    b.model.reset()
-
-    # Release at a falling edge. Each cycle's sample shows the state after the
-    # previous rising edge, so:
-    #   r0: before edge 1      r1: after edge 1      r2: after edge 2      r3: after edge 3
-    r0 = await b.cycle(CMD_PUSH, data=0x42, view=1, release=True)  # PUSH at edge 1
-    r1 = await b.cycle(CMD_PUSH, data=0x43, view=1)                # PUSH at edge 2
-    r2 = await b.cycle(CMD_PUSH, data=0x44, view=1)                # PUSH at edge 3
-    r3 = await b.cycle(CMD_NOP, view=1)
-    check(r0 == 0x84, f"before edge 1 STATUS = {r0:#04x}, expected 0x84")
-    check(r1 == 0x84, f"after edge 1 (PUSH ignored) STATUS = {r1:#04x}, expected 0x84, LEVEL 0")
-    check(r2 == 0x84, f"after edge 2 (PUSH ignored) STATUS = {r2:#04x}, expected 0x84, LEVEL 0")
-    check(r3 == 0x90, f"after edge 3 (PUSH runs) STATUS = {r3:#04x}, expected 0x90, LEVEL 1")
-    v = await b.head(0)
-    check(v == word_for(0x44) & 0xFF, f"head after edge 3 = {v:#04x}, expected word for DATA 0x44")
-    await b.idle(3)
-    s = await b.status()
-    check(s == 0x90, f"after idle, STATUS = {s:#04x}, expected 0x90 (LEVEL 1, TICK 1)")
+    await ClockCycles(dut.clk, 5)
+    link = Link(dut)
+    await set_reset(dut, 1)
+    await ClockCycles(dut.clk, 8)  # rst_n release goes through two flops
+    return link
 
 
-# ---------------------------------------------------------------------------
-# 2. Push / pop ordering, data word, LEVEL
-# ---------------------------------------------------------------------------
-@cocotb.test()
-async def test_push_pop_order(dut):
-    b = await start(dut, seed=22)
+class Pads:
+    """Samples uo_out at every falling edge. Sample k is the state after rising edge k."""
 
-    # Hand-computed: 0x5A5A5A5A ^ 0x01234567 = 0x5B791F3D.
-    check(word_for(0x5A) == 0x5B791F3D, "model word formula is wrong")
+    def __init__(self, dut):
+        self.dut = dut
+        self.samples = []  # (edge index, uo_out)
+        self.edge = 0
+        cocotb.start_soon(self._run())
 
-    datas = [0x5A, 0x00, 0xFF, 0x3C]
-    levels = []
-    for d in datas:
-        await b.push(d)
-        levels.append(((await b.status()) >> 4) & 0x7)
-    check(levels == [1, 2, 3, 4], f"LEVEL after each push = {levels}")
-
-    # Head word shows through all four BYTE_SELs.
-    head = word_for(datas[0])
-    for sel in range(4):
-        v = await b.head(sel)
-        check(v == (head >> (8 * sel)) & 0xFF, f"head sel={sel}: {v:#04x}")
-
-    # Pops return words in push order. LEVEL drops after each pop.
-    for k, d in enumerate(datas):
-        head = word_for(d)
-        for sel in range(4):
-            v = await b.head(sel)
-            check(v == (head >> (8 * sel)) & 0xFF, f"word {k} sel {sel} mismatch")
-        await b.pop()
-        lvl = ((await b.status()) >> 4) & 0x7
-        check(lvl == len(datas) - k - 1, f"LEVEL after pop {k} = {lvl}")
-
-    # Interleaved push/pop keeps FIFO order.
-    await b.push(0x11)
-    await b.push(0x22)
-    await b.pop()
-    await b.push(0x33)
-    await b.pop()
-    await b.pop()
-    s = await b.status()
-    check(s == 0x84, f"empty again but STATUS = {s:#04x}")
+    async def _run(self):
+        while True:
+            await FallingEdge(self.dut.clk)
+            self.samples.append((self.edge, int(self.dut.uo_out.value)))
+            await RisingEdge(self.dut.clk)
+            self.edge += 1
 
 
-# ---------------------------------------------------------------------------
-# 3. FULL, OVERFLOW, UNDERFLOW, CLEAR_FLAGS, NOP
-# ---------------------------------------------------------------------------
-@cocotb.test()
-async def test_full_and_flags(dut):
-    b = await start(dut, seed=33)
+def steps(pads, first_edge, shift, mask):
+    """The value changes of (uo_out >> shift) & mask from first_edge on.
+    Returns [(edge, value)]. The first entry is the value at first_edge."""
+    out = []
+    prev = None
+    for edge, uo in pads.samples:
+        if edge < first_edge:
+            continue
+        v = (uo >> shift) & mask
+        if v != prev:
+            out.append((edge, v))
+            prev = v
+    return out
 
-    # POP on empty sets UNDERFLOW.
-    await b.pop()
-    s = await b.status()
-    check(s == 0x85, f"after POP on empty STATUS = {s:#04x}, expected 0x85")
 
-    # NOP changes nothing.
-    await b.idle(5)
-    check((await b.status()) == 0x85, "NOP changed STATUS")
+def check_cycle(link, what, vals, cycle):
+    """vals must be cycle repeated (starting at its first element)."""
+    want = [cycle[i % len(cycle)] for i in range(len(vals))]
+    if list(vals) != want:
+        raise AssertionError(f"{what}: pin steps {vals}, expected the cycle {cycle} repeated")
 
-    # CLEAR_FLAGS clears UNDERFLOW.
-    await b.cycle(CMD_CLEAR_FLAGS, view=1)
-    check((await b.status()) == 0x84, "CLEAR_FLAGS did not clear UNDERFLOW")
 
-    # Fill to FULL at 4 words.
-    for d in [0x10, 0x20, 0x30, 0x40]:
-        await b.push(d)
-    s = await b.status()
-    check(s == 0xC8, f"FULL STATUS = {s:#04x}, expected 0xC8")
+async def settle(dut, cycles=3):
+    await ClockCycles(dut.clk, cycles)
 
-    # 5th push: dropped, OVERFLOW set, FIFO unchanged.
-    await b.push(0x99)
-    s = await b.status()
-    check(s == 0xCA, f"after overflow STATUS = {s:#04x}, expected 0xCA")
-    v = await b.head(0)
-    check(v == word_for(0x10) & 0xFF, "head changed by overflowing push")
 
-    # Drain with OVERFLOW set, then UNDERFLOW as well.
-    for _ in range(4):
-        await b.pop()
-    s = await b.status()
-    check(s == 0x86, f"drained with OVERFLOW set, STATUS = {s:#04x}, expected 0x86")
-    await b.pop()
-    s = await b.status()
-    check(s == 0x87, f"both flags set, STATUS = {s:#04x}, expected 0x87")
+async def assert_reset(dut, cycles):
+    """rst_n low for the given cycles, asserted and released at falling edges."""
+    await set_reset(dut, 0)
+    await ClockCycles(dut.clk, cycles)
+    await set_reset(dut, 1)
 
-    # Flags stay set through NOPs.
-    await b.idle(4)
-    check((await b.status()) == 0x87, "flags changed without CLEAR_FLAGS")
 
-    # CLEAR_FLAGS clears both.
-    await b.cycle(CMD_CLEAR_FLAGS, view=1)
-    check((await b.status()) == 0x84, "CLEAR_FLAGS did not clear both flags")
-
-    # Sticky: UNDERFLOW stays set across many clocks until cleared.
-    await b.pop()
-    await b.idle(30)
-    check((await b.status()) == 0x85, "UNDERFLOW was not sticky")
-    await b.cycle(CMD_CLEAR_FLAGS, view=1)
+async def check_reset_values(link, full):
+    """Every reset value of chip.md 8 and engine.md R0 that the host can read."""
+    st, (idv,) = await link.read(A_ID)
+    check(link, "STATUS after reset", st, STATUS_RESET)
+    check(link, "ID", idv, ID_VALUE)
+    checks = [
+        (A_CTRL, 0),
+        (A_FSTAT, FSTAT_RESET),
+        (A_FDEBUG, 0),
+        (A_FLEVEL, 0),
+        (A_IRQ, 0),
+        (A_IRQ_FORCE, 0),
+        (A_HOSTIRQ_EN, 0),
+        (A_PAD_OD, 0),
+        (A_SYNC_BYPASS, 0),
+        (A_PAD_OUT, 0),
+        (A_PAD_OE, 0),
+        (A_SCRATCH, 0),
+        (A_DBG_CTRL, 0),
+        (sm(0, O_CLKDIV), CLKDIV_RESET),
+        (sm(0, O_EXECCTRL), EXECCTRL_RESET),
+        (sm(0, O_PINCTRL), PINCTRL_RESET),
+        (sm(0, O_ADDR), 0),
+        (sm(0, O_EXT), 0),
+        (sm(0, O_DBG_CNT), DBG_CNT_RESET),
+        (sm(0, O_DBG_X), 0),
+        (sm(0, O_DBG_Y), 0),
+        (sm(0, O_DBG_ISR), 0),
+        (sm(0, O_DBG_OSR), 0),
+    ]
+    if full:
+        checks += [(A_HWCFG, HWCFG_VALUE), (sm(0, O_SHIFTCTRL), SHIFTCTRL_RESET)]
+        for n in range(1, 4):
+            checks += [
+                (sm(n, O_CLKDIV), CLKDIV_RESET),
+                (sm(n, O_EXECCTRL), EXECCTRL_RESET),
+                (sm(n, O_SHIFTCTRL), SHIFTCTRL_RESET),
+                (sm(n, O_PINCTRL), PINCTRL_RESET),
+                (sm(n, O_DBG_CNT), DBG_CNT_RESET),
+            ]
+    for addr, want in checks:
+        check(link, f"reset value of {addr:#05x}", await link.reg(addr), want)
 
 
 # ---------------------------------------------------------------------------
-# 4. Divider with FRAC = 0
+# 1. Identity, status, scratch
 # ---------------------------------------------------------------------------
 @cocotb.test()
-async def test_divider_frac0(dut):
-    b = await start(dut, seed=44)
-
-    # INT = 1: first tick at index 0, then every cycle.
-    await b.load_int(1)
-    await b.load_frac(0)
-    await b.cycle(CMD_DIV_RESTART, view=1)
-    ticks = await collect_ticks(b, 40, 80, int_eff=1)
-    check(ticks[0] == 0, f"INT=1: first tick at index {ticks[0]}, expected 0")
-    gaps_after_first(ticks, 1, 1)
-
-    # INT = 3: ticks exactly 3 cycles apart.
-    await b.load_int(3)
-    await b.cycle(CMD_DIV_RESTART, view=1)
-    ticks = await collect_ticks(b, 12, 60, int_eff=3)
-    t = gaps_after_first(ticks, 3, 3)
-    check(len(t) >= 10, f"INT=3: only {len(t)} ticks checked")
-
-    # INT = 0x0102 = 258, loaded with INT_LO then INT_HI. A handful of gaps only.
-    await b.cycle(CMD_INT_LO, data=0x02)
-    await b.cycle(CMD_INT_HI, data=0x01)
-    await b.load_frac(0)
-    await b.cycle(CMD_DIV_RESTART, view=1)
-    ticks = await collect_ticks(b, 4, 258 * 6, int_eff=258)
-    gaps_after_first(ticks, 258, 258)
-
-
-# ---------------------------------------------------------------------------
-# 4b. TICK is 1 at INT=1, FRAC=0 at all times, including after restarts
-# ---------------------------------------------------------------------------
-@cocotb.test()
-async def test_tick_int1_always(dut):
-    b = await start(dut, seed=45)
-    await b.cycle(CMD_INT_LO, data=1, view=1)
-    await b.cycle(CMD_INT_HI, data=0, view=1)
-    await b.cycle(CMD_FRAC, data=0, view=1)
-    await b.cycle(CMD_DIV_RESTART, view=1)
-    ticks = await collect_ticks(b, 30, 40, int_eff=1)
-    check(ticks == list(range(30)), f"INT=1 FRAC=0 after restart: tick indices {ticks[:10]}...")
-    for _ in range(30):
-        s = await b.status()
-        check(s & 0x80, "INT=1 FRAC=0: TICK was 0 with no restart pending")
-    await b.cycle(CMD_DIV_RESTART, view=1)
-    for _ in range(30):
-        s = await b.status()
-        check(s & 0x80, "INT=1 FRAC=0: TICK was 0 on the cycle after a second restart")
-
-
-# ---------------------------------------------------------------------------
-# 4c. Each byte of INT is independent
-# ---------------------------------------------------------------------------
-@cocotb.test()
-async def test_int_byte_independence(dut):
-    b = await start(dut, seed=46)
-
-    # INT_HI first, then INT_LO. A mutant that clears INT[15:8] on INT_LO shows as 3.
-    await b.cycle(CMD_INT_HI, data=0x01)
-    await b.cycle(CMD_INT_LO, data=0x03)
-    await b.load_frac(0)
-    await b.cycle(CMD_DIV_RESTART, view=1)
-    ticks = await collect_ticks(b, 4, 259 * 5, int_eff=259)
-    gaps_after_first(ticks, 259, 259)
-
-    # INT_LO first, then INT_HI. A mutant that clears INT[7:0] on INT_HI shows as 256.
-    await b.cycle(CMD_INT_LO, data=0x05)
-    await b.cycle(CMD_INT_HI, data=0x02)
-    await b.cycle(CMD_DIV_RESTART, view=1)
-    ticks = await collect_ticks(b, 4, 517 * 5, int_eff=517)
-    gaps_after_first(ticks, 517, 517)
-
-
-# ---------------------------------------------------------------------------
-# 5. Divider with FRAC != 0
-# ---------------------------------------------------------------------------
-@cocotb.test()
-async def test_divider_frac_2_5(dut):
-    b = await start(dut, seed=55)
-    await run_fractional(b, 2, 0x80, 300)  # 2.5
+async def test_id_hwcfg(dut):
+    link = await start(dut)
+    st, (idv,) = await link.read(A_ID)
+    check(link, "ID", idv, ID_VALUE)
+    check(link, "STATUS with ID read (reset)", st, STATUS_RESET)
+    check(link, "HWCFG", await link.reg(A_HWCFG), HWCFG_VALUE)
 
 
 @cocotb.test()
-async def test_divider_frac_1_25(dut):
-    b = await start(dut, seed=66)
-    await run_fractional(b, 1, 0x40, 300)  # 1.25
+async def test_status_one_byte(dut):
+    link = await start(dut)
+    st = await link.status()
+    check(link, "1-byte frame STATUS (reset)", st, STATUS_RESET)
+    check(link, "1-byte frame returns one byte", len(link.last[1]), 1)
 
 
 @cocotb.test()
-async def test_divider_frac_extremes(dut):
-    b = await start(dut, seed=67)
-    await run_fractional(b, 3, 0x01, 300)  # smallest non-zero FRAC
-    await run_fractional(b, 3, 0xFF, 300)  # largest FRAC
+async def test_scratch_write_read(dut):
+    link = await start(dut)
+    for v in [0x5A5A_5A5A, 0xDEAD_BEEF, 0x0000_0000, 0x0123_4567]:
+        await link.write(A_SCRATCH, v)
+        check(link, f"SCRATCH after writing {v:#010x}", await link.reg(A_SCRATCH), v)
+    # Two words in one frame with F = 0: the second goes to SCRATCH + 4 (unmapped, ignored).
+    await link.write(A_SCRATCH, 0x1111_2222, 0x3333_4444)
+    check(link, "SCRATCH after two words F=0", await link.reg(A_SCRATCH), 0x1111_2222)
+    # F = 1: each word goes to SCRATCH in turn, so the last one stays.
+    await link.write(A_SCRATCH, 0x5555_6666, 0x7777_8888, fixed=True)
+    check(link, "SCRATCH after two words F=1", await link.reg(A_SCRATCH), 0x7777_8888)
+
+
+@cocotb.test()
+async def test_write_cut_mid_word(dut):
+    """A write frame that CS_N ends mid-word has no effect (chip.md 6.4)."""
+    link = await start(dut)
+    await link.write(A_SCRATCH, 0x1234_5678)
+    check(link, "SCRATCH before the cut frame", await link.reg(A_SCRATCH), 0x1234_5678)
+
+    # Command 0x00 (write, F = 0), ADDR SCRATCH, then 31 of the 32 data bits: 55 bits.
+    nbits = 8 + 16 + 31
+    value = (0x00 << 47) | (A_SCRATCH << 31) | (0xDEAD_BEEF >> 1)
+    await link.bit_frame(nbits, value)
+    check(link, "SCRATCH after a frame cut one bit before the word's end",
+          await link.reg(A_SCRATCH), 0x1234_5678)
+
+    # Command 0x40 (write, F = 1): word 0 completes at bit 55, word 1 is cut after 20 bits.
+    # Word 0 is written, word 1 is not.
+    nbits = 8 + 16 + 32 + 20
+    value = (((0x40 << 16) | A_SCRATCH) << 52) | (0xCAFE_F00D << 20) | (0x0BAD_BEEF >> 12)
+    await link.bit_frame(nbits, value)
+    check(link, "SCRATCH after a cut in the second word (F = 1)",
+          await link.reg(A_SCRATCH), 0xCAFE_F00D)
 
 
 # ---------------------------------------------------------------------------
-# 6. INT/FRAC loaded without DIV_RESTART, then restarted
+# 2. Register masks, unmapped addresses, read-only registers
 # ---------------------------------------------------------------------------
 @cocotb.test()
-async def test_load_without_restart(dut):
-    b = await start(dut, seed=77)
+async def test_rw_masks_and_unmapped(dut):
+    link = await start(dut)
+    # RW registers store only their write mask (chip.md 8.1). Each row: address, write,
+    # read-back, reset value to restore.
+    rows = [
+        (A_SCRATCH, 0xFFFF_FFFF, 0xFFFF_FFFF, 0),
+        (A_HOSTIRQ_EN, 0xFFFF_FFFF, 0x0000_0FFF, 0),
+        (A_PAD_OD, 0xFFFF_FFFF, 0x0000_00FF, 0),
+        (A_SYNC_BYPASS, 0xFFFF_FFFF, 0x00FF_FFFF, 0),
+        (sm(0, O_CLKDIV), 0xFFFF_FFFF, 0xFFFF_FF00, CLKDIV_RESET),
+        (sm(0, O_EXECCTRL), 0xFFFF_FFFF, 0x7FFF_FF9F, EXECCTRL_RESET),
+        (sm(0, O_SHIFTCTRL), 0x3FFF_0000, 0x3FFF_0000, SHIFTCTRL_RESET),
+        (sm(0, O_PINCTRL), 0xA5A5_A5A5, 0xA5A5_A5A5, PINCTRL_RESET),
+        (sm(0, O_EXT), 0xFFFF_FFFF, 0x0000_0001, 0),
+    ]
+    for addr, wr, want, restore in rows:
+        await link.write(addr, wr)
+        check(link, f"read-back of {addr:#05x} after writing {wr:#010x}", await link.reg(addr), want)
+        await link.write(addr, restore)
+        check(link, f"{addr:#05x} restored", await link.reg(addr), restore)
 
-    # Change the divisor several times with no restart. Tick spacing here is not
-    # asserted. The FIFO and flags are still checked.
-    await b.load_int(5)
-    await b.load_frac(0x40)
-    await b.idle(40, view=1)
-    await b.load_int(6)
-    await b.load_frac(0x10)
-    await b.idle(15, view=1)
+    # CTRL: only SM_ENABLE is stored. The restart bits read 0 (no SM is enabled here).
+    await link.write(A_CTRL, 0x0000_00F0)
+    check(link, "CTRL restart bits read 0", await link.reg(A_CTRL), 0)
 
-    # After a restart, the bounds and the 256-gap window apply to the new divisor.
-    await run_fractional(b, 6, 0x10, 260)
+    # Write-1-to-clear FDEBUG, no flags set: reads 0 and stays 0.
+    await link.write(A_FDEBUG, 0xFFFF_FFFF)
+    check(link, "FDEBUG after clearing an empty flag set", await link.reg(A_FDEBUG), 0)
 
-
-# ---------------------------------------------------------------------------
-# 7. Reset in the middle of activity
-# ---------------------------------------------------------------------------
-@cocotb.test()
-async def test_reset_mid_activity(dut):
-    b = await start(dut, seed=88)
-
-    # Build activity: divider changed, FIFO partly filled, both flags set.
-    await b.load_int(5)
-    await b.load_frac(0x40)
-    await b.cycle(CMD_DIV_RESTART, view=1)
-    await b.idle(20)
-    for d in [0xA1, 0xA2, 0xA3]:
-        await b.push(d)
-    for _ in range(3):
-        await b.push(0xEE)  # the 4th fills the FIFO, the 5th and 6th set OVERFLOW
-    for _ in range(5):
-        await b.pop()  # 4 pops drain, the 5th sets UNDERFLOW
-    s = await b.status()
-    check(s & 0x7F == 0x07, f"setup STATUS without TICK = {s & 0x7F:#04x}, expected 0x07")
-
-    # Reset asserted mid-cycle, held for a few cycles, then released.
-    await enter_reset(b, dut, hold_cycles=3)
-    await b.cycle(CMD_NOP, view=1, release=True)  # edge 1 (reset still ignored)
-    await b.idle(1)  # edge 2
-    for _ in range(20):
-        s = await b.status()
-        check(s == 0x84, f"after reset STATUS = {s:#04x}, expected 0x84")
-    for sel in range(4):
-        v = await b.head(sel)
-        check(v == 0x00, f"after reset head byte sel={sel} = {v:#04x}")
+    # Unmapped and write-only registers: reads 0, writes ignored.
+    for addr in [0x0FC, A_DBG_CTRL, sm(0, O_LCU), sm(0, O_LCU + 0x0C), 0x300, 0x3FC]:
+        await link.write(addr, 0xFFFF_FFFF)
+        check(link, f"unmapped/absent {addr:#05x} reads 0", await link.reg(addr), 0)
+    for addr in [A_IRQ_FORCE, txf(0), rxf(0), imem(0)]:
+        check(link, f"write-only {addr:#05x} reads 0", await link.reg(addr), 0)
 
 
 # ---------------------------------------------------------------------------
-# 8. Random FIFO traffic with the scoreboard (ena and noise pins random)
+# 3. Reset values over SPI
 # ---------------------------------------------------------------------------
 @cocotb.test()
-async def test_random_fifo(dut):
-    b = await start(dut, seed=99)
-    rng = random.Random(4321)
-    cmds = [CMD_NOP, CMD_PUSH, CMD_PUSH, CMD_POP, CMD_POP, CMD_CLEAR_FLAGS]
-    for _ in range(1500):
-        await b.cycle(rng.choice(cmds), sel=rng.randrange(4), view=rng.randrange(2))
+async def test_reset_values(dut):
+    link = await start(dut)
+    await check_reset_values(link, full=True)
 
 
 # ---------------------------------------------------------------------------
-# Long tests: opt-in with POLYGLOT_LONG=1 (each needs ~65k cycles per tick)
+# 4. Forced instructions and debug reads
 # ---------------------------------------------------------------------------
-@cocotb.test(skip=not LONG)
-async def test_long_int0_is_65536(dut):
-    b = await start(dut, seed=101)
-    await b.load_int(0)
-    await b.load_frac(0)
-    await b.cycle(CMD_DIV_RESTART, view=1)
-    ticks = await collect_ticks(b, 3, 3 * 65537 + 16, int_eff=65536)
-    t = gaps_after_first(ticks, 65536, 65536)
-    check(len(t) >= 2, "need two ticks after the first")
+@cocotb.test()
+async def test_forced_instructions(dut):
+    link = await start(dut)
+    # A forced instruction runs even with the SM disabled (engine.md F1).
+    await link.write(sm(0, O_INSTR), SET_X_21)
+    await settle(dut)
+    check(link, "DBG_X after forced set x, 21", await link.reg(sm(0, O_DBG_X)), 21)
+    await link.write(sm(0, O_INSTR), SET_Y_9)
+    await settle(dut)
+    check(link, "DBG_Y after forced set y, 9", await link.reg(sm(0, O_DBG_Y)), 9)
+    check(link, "DBG_X unchanged", await link.reg(sm(0, O_DBG_X)), 21)
+    # EXEC_STALLED is 0 when the forced instruction completed.
+    check(link, "EXECCTRL bit 31 after a completed forced instruction",
+          await link.reg(sm(0, O_EXECCTRL)) >> 31, 0)
 
 
-@cocotb.test(skip=not LONG)
-async def test_long_int300_frac(dut):
-    b = await start(dut, seed=102)
-    await run_fractional(b, 0x012C, 0x80, 258)  # INT=300, FRAC=2.5 in 1/256 units, 256 gaps
+# ---------------------------------------------------------------------------
+# 5. IMEM, SM run, pins
+# ---------------------------------------------------------------------------
+@cocotb.test()
+async def test_program_runs(dut):
+    """Load a program through SPI, run it, and see pins on uo_out[4:0]. Then stop it."""
+    link = await start(dut)
+    pads = Pads(dut)
+    await link.write(imem(0), *PINSDEMO)  # one frame, F = 0: words 0..2
+    await link.write(sm(0, O_CLKDIV), 0x0002_0000)  # INT 2: one tick every 2 cycles
+    await link.write(sm(0, O_EXECCTRL), wrap(2))
+    await link.write(sm(0, O_PINCTRL), PINCTRL_SET_BASE8)
+    check(link, "INSTR0 reads IMEM[PC = 0] before enabling", await link.reg(sm(0, O_INSTR)), PINSDEMO[0])
+    check(link, "ADDR0 (dbg_pc) = 0 before enabling", await link.reg(sm(0, O_ADDR)), 0)
 
+    first = pads.edge
+    await link.write(A_CTRL, 0x1)
+    await ClockCycles(dut.clk, 90)
+    t = steps(pads, first, 0, 0x1F)
+    vals = [v for _, v in t]
+    check(link, "pins before the first instruction", vals[0], 0)
+    check_cycle(link, "uo_out[4:0] while running", vals[1:], [1, 30, 21])
+    if len(vals) < 10:
+        raise AssertionError(f"only {len(vals)} pin steps in 90 cycles")
+    # Each instruction takes two ticks (its own and the delay of 1). At INT = 2 that is four
+    # cycles between steps.
+    edges = [e for e, _ in t[1:]]
+    gaps = [b - a for a, b in zip(edges, edges[1:])]
+    if any(g != 4 for g in gaps):
+        raise AssertionError(f"gaps between pin steps {gaps}, expected all 4 (INT = 2, delay 1)")
+    # uo_out[5] is not a SET pin here (SET_COUNT 5).
+    if any(uo & 0x20 for _, uo in pads.samples[first:]):
+        raise AssertionError("uo_out[5] changed, but only 5 pins are set")
+
+    # CTRL.SM_ENABLE = 0: the pins hold, and no more steps.
+    await link.write(A_CTRL, 0x0)
+    hold = pads.edge
+    await ClockCycles(dut.clk, 40)
+    later = steps(pads, hold, 0, 0x1F)
+    if len(later) > 1:
+        raise AssertionError(f"pins still stepping after SM_ENABLE = 0: {later}")
+
+
+@cocotb.test()
+async def test_program_in_page_1(dut):
+    """EXT.PAGE selects IMEM words 32..63 (engine.md 9). Page 0 holds a decoy."""
+    link = await start(dut)
+    pads = Pads(dut)
+    # Page 0 decoy: set pins, 31 (E11F) in words 0..2, so any use of page 0 shows as 31.
+    await link.write(imem(0), 0xE11F, 0xE11F, 0xE11F)
+    await link.write(imem(32), *PINSDEMO)
+    await link.write(sm(0, O_CLKDIV), 0x0001_0000)
+    await link.write(sm(0, O_EXECCTRL), wrap(2))
+    await link.write(sm(0, O_PINCTRL), PINCTRL_SET_BASE8)
+    await link.write(sm(0, O_EXT), 1)
+    check(link, "EXT0 readback", await link.reg(sm(0, O_EXT)), 1)
+    check(link, "INSTR0 reads page 1 word 0", await link.reg(sm(0, O_INSTR)), PINSDEMO[0])
+    first = pads.edge
+    await link.write(A_CTRL, 0x1)
+    await ClockCycles(dut.clk, 60)
+    vals = [v for _, v in steps(pads, first, 0, 0x1F)]
+    check(link, "pins before the first instruction", vals[0], 0)
+    check_cycle(link, "page 1 program pins", vals[1:], [1, 30, 21])
+    if len(vals) < 9:
+        raise AssertionError(f"page 1 program ran only {len(vals) - 1} steps")
+
+
+@cocotb.test()
+async def test_tx_pull_and_drive(dut):
+    """TX words are pulled by a program and driven on uo_out[5:0]. Checks FIFO flags."""
+    link = await start(dut)
+    pads = Pads(dut)
+    await link.write(imem(0), *PULLDRIVE)
+    await link.write(sm(0, O_CLKDIV), 0x0001_0000)
+    await link.write(sm(0, O_EXECCTRL), wrap(1))
+    await link.write(sm(0, O_PINCTRL), PINCTRL_OUT8_6)
+
+    # Five words into TX0 with the SM disabled: four fit, the fifth is dropped.
+    w = [0x5A5A_5A15, 0xFFFF_FF2A, 0x1234_567F, 0x0000_0041, 0x0000_000B]
+    await link.write(txf(0), *w, fixed=True)
+    check(link, "FSTAT after 5 pushes (TX0 full, not empty)", await link.reg(A_FSTAT), 0x0E01_0F00)
+    check(link, "FLEVEL: TX0 level 4", await link.reg(A_FLEVEL), 0x4)
+    check(link, "FDEBUG: TXOVER0 after the fifth push", await link.reg(A_FDEBUG), 0x0001_0000)
+    await link.write(A_FDEBUG, 0x0001_0000)
+    check(link, "FDEBUG after clearing TXOVER0", await link.reg(A_FDEBUG), 0)
+
+    first = pads.edge
+    await link.write(A_CTRL, 0x1)
+    await ClockCycles(dut.clk, 30)
+    t = steps(pads, first, 0, 0x3F)
+    vals = [v for _, v in t]
+    check(link, "pins before the first pull", vals[0], 0)
+    check_list(link, "uo_out[5:0] values, one per pushed word (low 6 bits)", vals[1:],
+               [0x15, 0x2A, 0x3F, 0x01])
+    edges = [e for e, _ in t[1:]]
+    gaps = [b - a for a, b in zip(edges, edges[1:])]
+    if any(g != 2 for g in gaps):
+        raise AssertionError(f"gaps between pin steps {gaps}, expected all 2 (pull, out)")
+
+    # The program stalls on an empty TX FIFO, and that sets TXSTALL0 (bit 24).
+    check(link, "FDEBUG: TXSTALL0 after the drain", await link.reg(A_FDEBUG), 0x0100_0000)
+    check(link, "FSTAT after the drain: TX0 empty", await link.reg(A_FSTAT), FSTAT_RESET)
+    check(link, "pins hold the last word", pads.samples[-1][1] & 0x3F, 0x01)
+
+
+@cocotb.test()
+async def test_rx_loopback_burst(dut):
+    """A program pushes RX words. A burst read with F = 1 drains them, then FSTAT, FLEVEL
+    and FDEBUG are checked. A burst longer than the FIFO reads 0 and sets RXUNDER0."""
+    link = await start(dut)
+    await link.write(imem(0), *LOOPBACK)
+    await link.write(sm(0, O_CLKDIV), 0x0001_0000)
+    await link.write(sm(0, O_EXECCTRL), wrap(2))
+
+    first_batch = [0x1122_3344, 0x5566_7788, 0x99AA_BBCC, 0xDDEE_FF00]
+    await link.write(txf(0), *first_batch, fixed=True)
+    await link.write(A_CTRL, 0x1)
+    await settle(dut, 40)
+
+    # RX0 full with 4 words, TX0 empty, the program stalled on pull (TXSTALL0 set).
+    check(link, "FSTAT with RX0 full", await link.reg(A_FSTAT), 0x0F00_0E01)
+    check(link, "FLEVEL: RX0 level 4", await link.reg(A_FLEVEL), 0x40)
+    check(link, "FDEBUG: TXSTALL0 only", await link.reg(A_FDEBUG), 0x0100_0000)
+    st = await link.status()
+    check(link, "STATUS with RX0 not empty (TX not full, RXNEMPTY0)", st, 0xF1)
+
+    st, words = await link.read(rxf(0), n=4, fixed=True)
+    check(link, "STATUS at the start of the burst", st, 0xF1)
+    check_list(link, "RX burst of 4 words", words, first_batch)
+    check(link, "FSTAT after the burst: RX0 empty", await link.reg(A_FSTAT), FSTAT_RESET)
+    check(link, "FLEVEL after the burst", await link.reg(A_FLEVEL), 0)
+    check(link, "FDEBUG after the burst (no RXUNDER)", await link.reg(A_FDEBUG), 0x0100_0000)
+
+    # Second batch: five words in one burst. The fifth read finds RX0 empty.
+    second_batch = [0x0102_0304, 0x0506_0708, 0x090A_0B0C, 0x0D0E_0F10]
+    await link.write(txf(0), *second_batch, fixed=True)
+    await settle(dut, 40)
+    st, words = await link.read(rxf(0), n=5, fixed=True)
+    check_list(link, "RX burst of 5 words (the fifth from an empty FIFO)", words,
+               second_batch + [0])
+    check(link, "FDEBUG: RXUNDER0 set by the empty read",
+          await link.reg(A_FDEBUG), 0x0100_0100)
+    await link.write(A_FDEBUG, 0x0000_0100)  # RW1C
+    check(link, "FDEBUG after clearing RXUNDER0", await link.reg(A_FDEBUG), 0x0100_0000)
+
+
+@cocotb.test()
+async def test_open_drain(dut):
+    """PAD_OD on uio[0] (engine.md 9.2 and chip.md 9.2)."""
+    link = await start(dut)
+    await link.write(sm(0, O_PINCTRL), PINCTRL_SET0_1)  # SET pin 0 only, which is uio[0]
+
+    async def pads_now():
+        await FallingEdge(dut.clk)
+        return int(dut.uio_out.value), int(dut.uio_oe.value), int(dut.uo_out.value)
+
+    async def pad_in_low_byte():
+        return (await link.read(0x02C))[1][0] & 0xFF
+
+    # PAD_OD = 0: a driven 1 is a push-pull 1.
+    await link.write(sm(0, O_INSTR), SET_PINDIRS_1)
+    await link.write(sm(0, O_INSTR), SET_PINS_1)
+    await settle(dut)
+    out, oe, _ = await pads_now()
+    check(link, "uio_out[0] driven 1, PAD_OD = 0", out & 1, 1)
+    check(link, "uio_oe[0] = 1, PAD_OD = 0", oe & 1, 1)
+
+    # PAD_OD = 1: a driven 0 pulls low, and a 1 releases the pad.
+    await link.write(A_PAD_OD, 0x01)
+    await link.write(sm(0, O_INSTR), SET_PINS_0)
+    await settle(dut)
+    out, oe, _ = await pads_now()
+    check(link, "uio_out[0] with PAD_OD and level 0", out & 1, 0)
+    check(link, "uio_oe[0] with PAD_OD and level 0 (drive low)", oe & 1, 1)
+    check(link, "PAD_IN[0] reads the low pad", await pad_in_low_byte() & 1, 0)
+
+    await link.write(sm(0, O_INSTR), SET_PINS_1)
+    await settle(dut)
+    out, oe, _ = await pads_now()
+    check(link, "uio_out[0] with PAD_OD and level 1", out & 1, 0)
+    check(link, "uio_oe[0] with PAD_OD and level 1 (released)", oe & 1, 0)
+    check(link, "PAD_IN[0] reads the pulled-up pad", await pad_in_low_byte() & 1, 1)
+
+    # PAD_OD = 0 again, level 1: the pad is driven high.
+    await link.write(A_PAD_OD, 0x00)
+    await settle(dut)
+    out, oe, _ = await pads_now()
+    check(link, "uio_out[0] with PAD_OD cleared, level 1", out & 1, 1)
+    check(link, "uio_oe[0] with PAD_OD cleared, level 1", oe & 1, 1)
+
+    # Input only (pindirs 0): the pad shows the external level.
+    await link.write(sm(0, O_INSTR), SET_PINDIRS_0)
+    dut.ext_uio.value = 0xFE
+    await settle(dut)
+    out, oe, _ = await pads_now()
+    check(link, "uio_oe[0] with pindirs 0", oe & 1, 0)
+    check(link, "PAD_IN[0] shows the external 0", await pad_in_low_byte() & 1, 0)
+    dut.ext_uio.value = 0xFF
+
+
+@cocotb.test()
+async def test_host_irq(dut):
+    """HOST_IRQ on uo_out[6]: HOSTIRQ_EN = 0 gives pins_out[14], otherwise the OR of the
+    enabled sources (chip.md 9.2 and 9.3)."""
+    link = await start(dut)
+    await link.write(sm(0, O_PINCTRL), PINCTRL_SET14)  # SET pin 14 = uo_out[6]
+    await link.write(sm(0, O_INSTR), SET_PINS_1)  # pins_out[14] = 1
+    await settle(dut)
+
+    async def uo6():
+        await FallingEdge(dut.clk)
+        return (int(dut.uo_out.value) >> 6) & 1
+
+    check(link, "HOSTIRQ_EN = 0: uo_out[6] is pins_out[14]", await uo6(), 1)
+
+    await link.write(A_HOSTIRQ_EN, 0x001)  # irq[0] only; irq[0] is clear
+    await settle(dut)
+    check(link, "HOSTIRQ_EN = irq[0], flag clear: uo_out[6] = HOST_IRQ = 0", await uo6(), 0)
+
+    await link.write(A_IRQ_FORCE, 0x01)
+    await settle(dut)
+    check(link, "IRQ after IRQ_FORCE", await link.reg(A_IRQ), 0x01)
+    check(link, "HOSTIRQ_EN = irq[0], flag set: uo_out[6] = 1", await uo6(), 1)
+
+    await link.write(A_IRQ, 0x01)  # RW1C
+    await settle(dut)
+    check(link, "IRQ after clearing", await link.reg(A_IRQ), 0)
+    check(link, "uo_out[6] after the flag clears", await uo6(), 0)
+
+    # TXNFULL0 as the source: TX empty gives 1, TX full gives 0.
+    await link.write(A_HOSTIRQ_EN, 0x100)
+    await settle(dut)
+    check(link, "HOSTIRQ_EN = TXNFULL0, TX empty: uo_out[6] = 1", await uo6(), 1)
+    await link.write(txf(0), 1, 2, 3, 4, fixed=True)
+    await settle(dut)
+    check(link, "HOSTIRQ_EN = TXNFULL0, TX full: uo_out[6] = 0 (pins_out[14] = 1 is masked)",
+          await uo6(), 0)
+
+    await link.write(A_HOSTIRQ_EN, 0x000)
+    await settle(dut)
+    check(link, "HOSTIRQ_EN = 0 again: uo_out[6] = pins_out[14]", await uo6(), 1)
+    check(link, "PAD_OUT bit 14", (await link.reg(A_PAD_OUT)) >> 14 & 1, 1)
+    await FallingEdge(dut.clk)
+    check(link, "uo_out[7] (MISO) is 0 between frames", (int(dut.uo_out.value) >> 7) & 1, 0)
+
+
+# ---------------------------------------------------------------------------
+# 6. Reset (chip.md 10)
+# ---------------------------------------------------------------------------
+@cocotb.test()
+async def test_reset_mid_frame(dut):
+    """rst_n goes low in the middle of a write frame, and the frame ends during reset.
+    The write must not happen, and the reset state must hold for a clean frame."""
+    link = await start(dut)
+    await link.write(A_SCRATCH, 0x1234_5678)
+
+    tx = hdr(0x00, A_SCRATCH) + be_words([0xDEAD_BEEF])
+    await FallingEdge(dut.clk)
+    link.bytes_master.write_nowait(tx, burst=True)
+    # The first SCK rise is 12 cycles after CS_N falls, and bits come every 8 cycles.
+    await ClockCycles(dut.clk, 12 + 8 * 40 + 3)
+    await set_reset(dut, 0)
+    await link.bytes_master.wait()
+    link.bytes_master.read_nowait()
+    await ClockCycles(dut.clk, 2 * CS_HIGH_CYCLES)
+    await set_reset(dut, 1)
+    await ClockCycles(dut.clk, 8)
+
+    st, (idv,) = await link.read(A_ID)
+    check(link, "ID after reset in mid-frame", idv, ID_VALUE)
+    check(link, "STATUS after reset in mid-frame", st, STATUS_RESET)
+    check(link, "SCRATCH after reset in mid-frame: reset value, not the frame's word",
+          await link.reg(A_SCRATCH), 0)
+    await link.write(A_SCRATCH, 0xCAFE_BABE)
+    check(link, "SCRATCH writes work after reset", await link.reg(A_SCRATCH), 0xCAFE_BABE)
+
+
+@cocotb.test()
+async def test_reset_mid_program(dut):
+    """rst_n goes low between clock edges while a program runs. The pins go to 0 at once,
+    the SM stops, the reset values hold, and IMEM survives (it is not reset)."""
+    link = await start(dut)
+    pads = Pads(dut)
+    await link.write(imem(0), *PINSDEMO)
+    await link.write(sm(0, O_CLKDIV), 0x0001_0000)
+    await link.write(sm(0, O_EXECCTRL), wrap(2))
+    await link.write(sm(0, O_PINCTRL), PINCTRL_SET_BASE8)
+    await link.write(A_CTRL, 0x1)
+    await ClockCycles(dut.clk, 30)
+    if pads.samples[-1][1] & 0x1F == 0:
+        raise AssertionError("no pin steps before the reset, so the test would prove nothing")
+
+    await RisingEdge(dut.clk)
+    await Timer(3, unit="ns")
+    dut.rst_n.value = 0
+    await Timer(4, unit="ns")
+    if int(dut.uo_out.value) & 0xFF != 0:
+        raise AssertionError(f"during rst_n low, uo_out = {int(dut.uo_out.value):#04x}, expected 0")
+    await ClockCycles(dut.clk, 3)
+    await set_reset(dut, 1)
+    await ClockCycles(dut.clk, 8)
+    after = pads.edge
+    await ClockCycles(dut.clk, 40)
+    if steps(pads, after, 0, 0x1F)[1:]:
+        raise AssertionError("the SM ran after reset, but SM_ENABLE resets to 0")
+
+    await check_reset_values(link, full=False)
+
+    # IMEM is not reset: reconfigure what reset cleared, enable, and the program runs.
+    await link.write(sm(0, O_EXECCTRL), wrap(2))
+    await link.write(sm(0, O_PINCTRL), PINCTRL_SET_BASE8)
+    first = pads.edge
+    await link.write(A_CTRL, 0x1)
+    await ClockCycles(dut.clk, 30)
+    vals = [v for _, v in steps(pads, first, 0, 0x1F)]
+    check_cycle(link, "program in IMEM after the reset", vals[1:], [1, 30, 21])
+    if len(vals) < 6:
+        raise AssertionError("IMEM program did not run after reset")
