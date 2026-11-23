@@ -131,6 +131,9 @@ type t =
   ; mutable pin_dir : int
   ; mutable ext : int
   ; mutable sync_bypass : int
+  ; mutable pads_given : bool
+    (** true: [ext] is the pad value the engines see, with no override by the pin's own output
+        (chip.md 9.1). false: the block 2 pad rule. *)
   ; hist : int array
   }
 

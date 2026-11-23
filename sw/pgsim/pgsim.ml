@@ -264,6 +264,9 @@ type t =
   ; mutable pin_dir : int (* output enable register, 1 = driven by PIO *)
   ; mutable ext : int (* external pad levels, set by the caller *)
   ; mutable sync_bypass : int (* INPUT_SYNC_BYPASS (datasheet 3.5.6.3) *)
+  ; mutable pads_given : bool
+    (* true: [ext] is the pad value the engines see, with no override by the pin's own
+       output (chip.md 9.1). false: the block 2 pad rule (engine.md R1). *)
   ; hist : int array (* hist.(k) = pad level k cycles ago *)
   }
 
@@ -316,6 +319,7 @@ let create () =
   ; pin_dir = 0
   ; ext = 0
   ; sync_bypass = 0
+  ; pads_given = false
   ; hist = Array.make 4 0
   }
 ;;
@@ -323,7 +327,9 @@ let create () =
 (* Pad level for this cycle: a PIO-driven pin shows its level, others show the external
    level. Writes made in cycle c show on the pad in cycle c+1 (one register stage). *)
 let pad_now t =
-  ((t.pin_level land t.pin_dir) lor (t.ext land lnot t.pin_dir)) land m32
+  if t.pads_given
+  then t.ext land m32
+  else ((t.pin_level land t.pin_dir) lor (t.ext land lnot t.pin_dir)) land m32
 ;;
 
 (* The value IN, JMP PIN, WAIT GPIO and WAIT PIN see. The pad from 1 cycle ago is bypassed

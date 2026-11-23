@@ -69,7 +69,7 @@ let no_bus = { write = false; read = false; commit = false; addr = 0; wdata = 0;
 
 type t =
   { num_sms : int
-  ; pio : Pgsim.t
+  ; mutable pio : Pgsim.t
   ; regs : sm_regs array
   ; mutable ctrl_en : int
   ; mutable hostirq_en : int
@@ -130,6 +130,8 @@ let present t n = n < t.num_sms
    the view is taken at the start of each cycle (chip.md 8.2). *)
 let configure t =
   let pio = t.pio in
+  (* The engines see the pad vector of the chip (chip.md 9.1), not their own output registers. *)
+  pio.Pgsim.pads_given <- true;
   for n = 0 to 3 do
     if present t n
     then (
@@ -464,6 +466,40 @@ let step t ~ui_in ~uio_ext =
   t.rx_pend <- !rx_next;
   t.ncycle <- t.ncycle + 1;
   { uo_out = v.uo_out; uio_out = v.uio_out; uio_oe = v.uio_oe; miso = v.miso; bus = !bus }
+;;
+
+(* Reset (chip.md 10, and chip-serve's reset): every state element except IMEM returns to its
+   reset value, the synchronisers go idle, and the MISO shift register clears. The cycle count
+   keeps counting. *)
+let reset t =
+  let imem = Array.copy t.pio.Pgsim.imem in
+  let fresh = Pgsim.create () in
+  Array.blit imem 0 fresh.Pgsim.imem 0 (Array.length imem);
+  t.pio <- fresh;
+  Array.iter
+    (fun r ->
+      r.clkdiv <- clkdiv_reset;
+      r.execctrl <- execctrl_reset;
+      r.shiftctrl <- shiftctrl_reset;
+      r.pinctrl <- pinctrl_reset;
+      r.ext <- 0)
+    t.regs;
+  t.ctrl_en <- 0;
+  t.hostirq_en <- 0;
+  t.pad_od <- 0;
+  t.sync_bypass <- 0;
+  t.scratch <- 0;
+  Array.fill t.sck 0 3 0;
+  Array.fill t.mosi 0 3 0;
+  Array.fill t.csn 0 3 1;
+  t.in_frame <- false;
+  t.rises <- 0;
+  t.cmd_r <- 0;
+  t.cmd_f <- 0;
+  t.addr_reg <- 0;
+  t.wacc <- 0;
+  t.rx_pend <- None;
+  t.miso_sr <- 0
 ;;
 
 (* The outputs of the next cycle, for the given pads, without changing the state. *)

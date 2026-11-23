@@ -44,6 +44,10 @@ val peek : t -> ui_in:int -> uio_ext:int -> outputs
     as of the start of the last cycle. *)
 val pio : t -> Pgsim.t
 
+(** Reset (chip.md 10): every state element except IMEM returns to its reset value. The cycle
+    count keeps counting. *)
+val reset : t -> unit
+
 (** Cycles stepped since reset. *)
 val cycle : t -> int
 
