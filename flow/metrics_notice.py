@@ -72,6 +72,44 @@ def fmt(value, scale=1.0, digits=3):
     return f"{number * scale:.{digits}f}"
 
 
+def tail(path, n):
+    try:
+        with open(path, errors="replace") as fh:
+            return fh.read().splitlines()[-n:]
+    except OSError as err:
+        return [f"unreadable: {err}"]
+
+
+def diagnose(run_dir):
+    """When the flow stops early, say where and why: the last step directory, error lines and log tails."""
+    if not os.path.isdir(run_dir):
+        emit("warning", "Hardening failure", [f"{run_dir} does not exist."])
+        return
+    steps = sorted(d for d in os.listdir(run_dir) if os.path.isdir(os.path.join(run_dir, d)) and re.match(r"^\d+-", d))
+    lines = [f"steps run: {len(steps)}; last 5: " + ", ".join(steps[-5:])]
+    errors = []
+    for log in sorted(glob.glob(os.path.join(run_dir, "**", "*.log"), recursive=True)):
+        try:
+            with open(log, errors="replace") as fh:
+                for line in fh:
+                    if re.search(r"\[ERROR|ERROR:|Error:|GPL-0302|\bFAILED\b", line):
+                        errors.append(os.path.relpath(log, run_dir) + ": " + line.strip()[:300])
+        except OSError:
+            pass
+    lines.append(f"error lines found: {len(errors)}")
+    lines.extend(errors[-25:])
+    emit("warning", "Hardening failure: errors", lines)
+    for name in ("error.log", "flow.log"):
+        path = os.path.join(run_dir, name)
+        if os.path.exists(path):
+            emit("warning", f"Hardening failure: tail of {name}", tail(path, 40))
+    if steps:
+        last = os.path.join(run_dir, steps[-1])
+        logs = sorted(glob.glob(os.path.join(last, "*.log")), key=os.path.getmtime)
+        if logs:
+            emit("warning", f"Hardening failure: tail of {steps[-1]}/{os.path.basename(logs[-1])}", tail(logs[-1], 40))
+
+
 def main():
     final_dir = os.path.join(ROOT, "runs", "wokwi", "final")
     metrics_path = os.path.join(final_dir, "metrics.csv")
@@ -82,6 +120,7 @@ def main():
                  ["metrics.csv not found under runs/wokwi/final.",
                   "runs/ contents: " + ", ".join(sorted(os.listdir(os.path.join(ROOT, "runs"))))
                   if os.path.isdir(os.path.join(ROOT, "runs")) else "runs/ does not exist."])
+            diagnose(os.path.join(ROOT, "runs", "wokwi"))
             return
         metrics_path = found[0]
 
