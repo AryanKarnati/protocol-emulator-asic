@@ -1,0 +1,80 @@
+; PIO SPI master for the Polyglot host link (chip.md section 6), SPI mode 0, MSB first.
+;
+; Run it on an RP2350 with the SM clock at 60 MHz (clkdiv 2 at a 120 MHz sysclk), so one
+; instruction tick is one chip cycle. This file is for H = 3 (10 MHz SCK: 3 cycles high, 3 low).
+; sw/host/polyglot.py builds the same program for H = 2 (15 MHz) from @rp2.asm_pio.
+;
+; Pins: SCK is side-set and SET base (pin 22), MOSI is OUT base (pin 23), CS_N is SET bit 2
+; (pin 24), MISO is IN base (pin 40, GPIO numbers on the RP2350). SCK, MOSI and CS_N must be
+; consecutive, so one SET group (count 3) drives all three: `set pins, 0` lowers CS_N, and
+; `set pins, 4` raises it. SET also writes SCK and MOSI, which is harmless at frame edges,
+; because SCK is low there and MOSI is don't-care while CS_N is high.
+;
+; Frame: the RP2350 pushes a header word N (the byte count) and then N data words, each with
+; the byte in bits 31:24. The SM pulls N while CS_N is high, then pulls one byte per 8 bits.
+; Each MISO byte is autopushed as one RX word (low 8 bits), so the host reads N RX words per
+; frame. The check at each byte boundary is one `jmp y--` inside the SCK-low phase, so the
+; phase stays H ticks long and the rate is exact.
+;
+; Timing: MISO is sampled one tick after SCK rises (the tick that follows `nop side 1`).
+; MOSI changes one tick after the falling edge for the first bit of a byte (with the boundary
+; jmp), and on the falling edge for the other bits.
+;
+; Program: 32 instructions, exactly one IMEM page.
+
+.program spi_master
+.side_set 1
+.in 32 left auto 8
+.out 32 left auto 8
+
+; Python output (pgasm -o python, pioasm -o python): the pin init and shift settings the
+; MicroPython assembler needs. rp2 is imported by the generated module. The set_init list
+; (SCK, MOSI and CS_N, three pins) cannot be written as a lang option, so the caller passes
+; set_init=[rp2.PIO.OUT_LOW, rp2.PIO.OUT_LOW, rp2.PIO.OUT_HIGH] when it uses the module.
+; sw/host/polyglot.py does that.
+.lang_opt python sideset_init = rp2.PIO.OUT_LOW
+.lang_opt python out_init = rp2.PIO.OUT_LOW
+.lang_opt python in_shiftdir = rp2.PIO.SHIFT_LEFT
+.lang_opt python out_shiftdir = rp2.PIO.SHIFT_LEFT
+.lang_opt python autopush = True
+.lang_opt python push_thresh = 8
+.lang_opt python autopull = True
+.lang_opt python pull_thresh = 8
+
+frame:
+    pull block side 0          ; header N (CS_N high, SCK low), stalls until the host sends it
+    mov y, osr side 0          ; Y = N, the bytes left in the frame
+    out null, 32 side 0        ; empty OSR, so the first OUT autopulls a data word
+    set pins, 0 side 0 [3]     ; CS_N low, 4 cycles before the first SCK rise
+    jmp check side 0
+
+send:                          ; bit 0 of a byte: check and send share the low phase
+    out pins, 1 side 0 [1]     ; MOSI bit 7 (autopull happens here; stalls with SCK low)
+    nop side 1                 ; SCK rises
+    in pins, 1 side 1 [1]      ; sample MISO one tick after the rise
+    out pins, 1 side 0 [2]     ; bit 6 on the falling edge
+    nop side 1
+    in pins, 1 side 1 [1]
+    out pins, 1 side 0 [2]     ; bit 5
+    nop side 1
+    in pins, 1 side 1 [1]
+    out pins, 1 side 0 [2]     ; bit 4
+    nop side 1
+    in pins, 1 side 1 [1]
+    out pins, 1 side 0 [2]     ; bit 3
+    nop side 1
+    in pins, 1 side 1 [1]
+    out pins, 1 side 0 [2]     ; bit 2
+    nop side 1
+    in pins, 1 side 1 [1]
+    out pins, 1 side 0 [2]     ; bit 1
+    nop side 1
+    in pins, 1 side 1 [1]
+    out pins, 1 side 0 [2]     ; bit 0
+    nop side 1
+    in pins, 1 side 1 [1]      ; the 8th IN autopushes the byte
+
+check:                         ; SCK low: another byte, or the end of the frame
+    jmp y--, send side 0
+    set pins, 4 side 0 [3]     ; CS_N high, 4 cycles
+    jmp frame side 0
