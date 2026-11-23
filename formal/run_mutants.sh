@@ -73,6 +73,9 @@ for sedf in mutants/*.sed; do
     fifo_join)
       src=build/fifo_join.v
       ;;
+    hostlink|hostlink_deep)
+      src=build/hostlink.v
+      ;;
     *)
       echo "unknown mutant family in $name" >&2
       exit 2
@@ -114,6 +117,18 @@ for sedf in mutants/*.sed; do
       if run_task "$dir/join.sby" flags_prove "$dir" "$name"; then killed=flags_prove; fi
       # The token kill-check uses a witness-writing engine (boolector) at a small depth.
       if [ -z "$killed" ] && run_task "$dir/join.sby" token_kill "$dir" "$name"; then killed=token_kill; fi
+      ;;
+    hostlink)
+      # Host link, read/commit/MISO/pin paths: bounded BMC to 72 cycles.
+      mk_sby hostlink.sby 'build/hostlink.v' hostlink.v "$dir/mutant.v" "$dir/hostlink.sby"
+      if run_task "$dir/hostlink.sby" bmc "$dir" "$name"; then killed=bmc; fi
+      ;;
+    hostlink_deep)
+      # Host link, write-side mutants: the first write word is at cycle 114, so BMC to 72
+      # cannot kill them. They run with the 184-cycle BMC (hostlink.sby bmc_deep), in the
+      # HOSTLINK_DEEP=1 nightly target.
+      mk_sby hostlink.sby 'build/hostlink.v' hostlink.v "$dir/mutant.v" "$dir/hostlink.sby"
+      if run_task "$dir/hostlink.sby" bmc_deep "$dir" "$name"; then killed=bmc_deep; fi
       ;;
   esac
 
