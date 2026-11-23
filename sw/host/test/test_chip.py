@@ -134,9 +134,9 @@ def test_sm_init_sets_clkdiv_execctrl_shiftctrl_pinctrl_and_entry():
     assert (pc >> 10) & 0x1F == 21  # SIDESET_BASE
     assert (pc >> 15) & 0x1F == 24  # IN_BASE
     assert (pc >> 5) & 0x1F == 22  # SET_BASE
-    assert (pc >> 26) & 7 == 1  # SET_COUNT, one pin by default
+    assert (pc >> 26) & 7 == 0  # SET_COUNT: no init list, so 0 (pio_get_default_sm_config)
     assert pc & 0x1F == 23  # OUT_BASE
-    assert (pc >> 20) & 0x3F == 1  # OUT_COUNT, one pin by default
+    assert (pc >> 20) & 0x3F == 0  # OUT_COUNT: no init list, so 0
     assert fake.regs[base + 0x18] == 0  # EXT: page 0
     assert (1, 0x0004) in fake.instr  # entry: forced JMP to the offset
     assert fake.regs[0x008] & 0xF == 0  # not enabled by init

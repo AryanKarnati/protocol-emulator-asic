@@ -89,22 +89,3 @@ def test_missing_server_is_an_error(tmp_path):
         pg.SimTransport(pgsim=str(tmp_path / "no-such-pgsim"))
 
 
-def test_sim_real_when_available():
-    """The real chip-serve, when the pgsim build has it. Skips until the Model & tests lane lands it."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    repo = os.path.abspath(os.path.join(here, "..", "..", ".."))
-    exe = os.path.join(repo, "_build", "default", "sw", "pgsim", "cli", "pgsim_cli.exe")
-    if not os.path.exists(exe):
-        pytest.skip("pgsim not built")
-    t = None
-    try:
-        t = pg.SimTransport(pgsim=exe)
-        chip = pg.Chip(t)
-        if chip.id() != 0x504C4754:
-            pytest.skip("chip-serve not in this build yet")
-        assert chip.check() in (True, False)
-    except pg.ChipError:
-        pytest.skip("chip-serve not in this build yet")
-    finally:
-        if t is not None:
-            t.close()

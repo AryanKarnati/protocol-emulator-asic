@@ -85,12 +85,15 @@ Checked against the Tiny Tapeout MicroPython firmware, `src/ttboard/pins/gpio_ma
 (`GPIOMapTTDBv3`, the map the firmware uses by default, read from `main` on 2026-11-22): `UI_IN0..7`
 are GPIO 17 to 24, `UIO0..7` are 25 to 32, `UO_OUT0..7` are 33 to 40, the project clock is GPIO 16
 and the project reset is GPIO 14. The pins above match. The firmware's older `GPIOMapTTDBv3Alpha`
-puts `ui_in` on GPIO 12 to 19, so a board with that revision needs other pin numbers (pass `sck=`
-and `miso=`, and the CS_N and MOSI pins must follow SCK, so this is not a configuration the library
-supports as it stands).
+puts `ui_in` on GPIO 12 to 19, so a board with that revision needs other pin numbers.
 
 The PIO needs `gpio_base = 16` to reach GPIO 40 (MicroPython's `PIO.gpio_base`, which the library
-sets). SCK, MOSI and CS_N must stay consecutive, because the master drives them with one SET group.
+sets).
+
+**Constraint: SCK, MOSI and CS_N must be consecutive pins, in that order.** `PioSpiTransport(sck=s)`
+takes MOSI as `s + 1` and CS_N as `s + 2`, because the master drives all three with one SET group of
+three pins. A board whose pins are not consecutive needs a different master program, and the library
+does not have one. On the demo board they are 22, 23 and 24.
 
 ## API reference
 
@@ -131,9 +134,12 @@ sets). SCK, MOSI and CS_N must stay consecutive, because the master drives them 
   - Pins are chip pad numbers 0 to 31. Pin directions and levels from the program's
     `set_init`, `out_init` and `sideset_init` are applied with forced `set pins` and `set pindirs`
     instructions, as pico-sdk does.
-  - `out_count` and `set_count` default to the length of the program's init list, or to one pin.
-    MicroPython's `rp2` uses the init list length alone (zero when there is none). The one-pin default
-    is a deliberate difference, so `out pins, n` needs `out_count=n`.
+  - `out_count` and `set_count` default to the length of the program's init list, or to 0. An
+    explicit count wins. The 0 comes from the references, not from a choice: pico-sdk's
+    `pio_get_default_sm_config()` leaves PINCTRL at 0 (`pio.h`, lines 780-790), and MicroPython's
+    `rp2_pio.c` gives a base with no init list count 0 (`ASM_PIO_CONFIG_DEFAULT`, line 209;
+    `asm_pio_get_pins`, lines 238-257; the `sm_config_set_out_pins` and `sm_config_set_set_pins` calls,
+    lines 693-703). So `out pins, n` needs `out_count=n` or an `out_init` list of length n.
   - `fifo_join` takes `PIO_JOIN_NONE`, `PIO_JOIN_TX` or `PIO_JOIN_RX`. Changing it flushes both FIFOs.
   - The SM is left disabled. `active(1)` starts it.
 - `active(on=None)`: reads or sets the SM_ENABLE bit.
@@ -188,9 +194,21 @@ chip has its own pins, with no gpio base.
 - The RP2350 MicroPython build: `rp2.PIO.gpio_base` and the `rp2.asm_pio` keyword arguments used by
   the library (`autopush`, `pull_thresh`, `set_init` as a list). They match the MicroPython source at
   commit `1c8e397` (see `test/vendor/README.txt`), but the board build is not yet checked.
-- The pad registers the library writes for GPIO 40 (`_pio_pad_claim`): the IO_BANK0 FUNCSEL (PIO0 = 6)
-  and the PADS_BANK0 ISO and IE bits. The offsets come from the SDK's RP2350 headers.
+- The raw register writes that `_pio_pad_claim(40)` makes, for the owner to check on a Pico 2
+  (RP2350). Addresses come from the SDK's RP2350 headers (`hardware/regs/io_bank0.h`,
+  `pads_bank0.h`, `addressmap.h`), and the bit positions too:
+  1. Pad control, `PADS_BANK0` base `0x40038000`, GPIO 40 at offset `0x04 + 4*40`, so address
+     `0x400380A4`. The library clears bit 8 (ISO, `0x100`) and sets bit 6 (IE, `0x40`), keeping the
+     other bits as read. Clearing ISO matters on RP2350, where pads are isolated after reset.
+  2. Function select, `IO_BANK0` base `0x40028000`, GPIO 40 control at offset `0x04 + 8*40`, so
+     address `0x40028144`. The library replaces bits 4:0 (FUNCSEL) with 6, which is PIO0 in the
+     RP2350 function table. The SDK's `GPIO_FUNC_PIO0` is 6 (`hardware/structs/io_bank0.h`).
+  3. The MicroPython call `rp2.PIO(0).gpio_base(16)` (`rp2_pio.c` around line 415). It is not a
+     register write, but it sets the PIO's GPIO window, so GPIO 40 is reachable.
 - Timing on the wire: the scope trace of SCK, MOSI and CS_N at 10 MHz and at 15 MHz, against chip.md 6.6.
+- The MISO sample point. The PIO samples one chip cycle after SCK rises. chip.md 6.6 now allows the
+  rise cycle or up to two cycles later, and recommends about one cycle later. Check the margin on
+  the board with the real input path.
 
 ## Tests
 
@@ -210,7 +228,16 @@ The test groups:
   pgasm JSON and pgasm `-o python`, cross-checked word for word.
 - `test_spi_pgsim.py`: the PIO SPI master in `pgsim` at the RP2350 clock, sampled at 60 MHz, checked
   against chip.md 6.6 at 10 MHz and at 15 MHz.
-- `test_sim_transport.py`: `SimTransport` against a stand-in server, and the real `chip-serve` when
-  pgsim has it.
+- `test_sim_transport.py`: `SimTransport` against a stand-in server (the protocol and error paths).
+- `test_defaults.py`: the pin-count defaults for each program source, with the references cited.
+- `test_end_to_end.py`: the library through `SimTransport` to the real `pgsim chip-serve`: ID and
+  HWCFG, STATUS after reset, `check()` replaying after a SCRATCH write, a program loaded into page 1,
+  `init` and `active`, `put` observed on the pads, `init` pin levels, `exec` (a forced `set pins`),
+  TX and RX levels, and `restart` clearing the shift counters.
+
+Two cases are strict `xfail`s for a model bug, reported to the Model & tests lane: `get()` returns 0
+while RX holds the word. A read of RXFn through a read frame returns 0 (chip.md 8.3 says the head
+word). ID and CLKDIV reads through the same frame path are correct. Removing the marks makes them
+run again.
 
 The `pgasm` and `pgsim` tests need `dune build --root .` first. They skip if the binaries are missing.

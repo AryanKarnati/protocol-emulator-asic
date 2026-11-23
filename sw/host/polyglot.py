@@ -668,8 +668,8 @@ class StateMachine(object):
         freq is in Hz, relative to the chip clock (60 MHz). clkdiv is the divider as a float.
         Pins are chip pin numbers 0 to 31. Pin directions and levels come from the program's
         init lists, applied with forced SET instructions (pico-sdk's order: config, then pins).
-        out_count and set_count default to the length of the program's init list, or to one.
-        Returns the Loaded handle.
+        out_count and set_count default to the length of the program's init list, or to 0
+        (see _count for the references). Returns the Loaded handle.
         """
         c = self._c
         h = c._loaded_for(prog, page)
@@ -715,10 +715,10 @@ class StateMachine(object):
             pc = field_set(pc, PINCTRL_SIDESET_BASE, sideset_base & 31)
         if out_base is not None:
             pc = field_set(pc, PINCTRL_OUT_BASE, out_base & 31)
-            pc = field_set(pc, PINCTRL_OUT_COUNT, _count(out_count, out_n, 1))
+            pc = field_set(pc, PINCTRL_OUT_COUNT, _count(out_count, out_n))
         if set_base is not None:
             pc = field_set(pc, PINCTRL_SET_BASE, set_base & 31)
-            pc = field_set(pc, PINCTRL_SET_COUNT, _count(set_count, set_n, 1))
+            pc = field_set(pc, PINCTRL_SET_COUNT, _count(set_count, set_n))
         if in_base is not None:
             pc = field_set(pc, PINCTRL_IN_BASE, in_base & 31)
 
@@ -807,14 +807,19 @@ class StateMachine(object):
         raise NotImplementedError("step needs DBG_CTRL (chip.md section 2 puts it in block 4)")
 
 
-def _count(requested, from_init, default):
+def _count(requested, from_init):
+    """Pin count: the explicit argument, else the program's init list length, else 0.
+
+    0 is what pico-sdk's pio_get_default_sm_config() leaves in PINCTRL (pio.h, lines 780-790),
+    and what MicroPython's rp2_pio.c gives a base with no init list (ASM_PIO_CONFIG_DEFAULT,
+    rp2_pio.c line 209, count 0; asm_pio_get_pins, lines 238-257; sm_config_set_out_pins and
+    sm_config_set_set_pins with that count, lines 693-703).
+    """
     if requested is not None:
         if requested < 0 or requested > 32:
             raise ValueError("pin count out of range")
         return requested
-    if from_init:
-        return from_init
-    return default
+    return from_init
 
 
 def _divider(freq, clkdiv):
