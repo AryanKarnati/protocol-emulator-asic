@@ -13,11 +13,11 @@
 
   "//": "PL_TARGET_DENSITY_PCT - You can increase this if Global Placement fails with error GPL-0302.",
   "//": "Users have reported that values up to 80 worked well for them.",
-  "PL_TARGET_DENSITY_PCT": 60,
+  "PL_TARGET_DENSITY_PCT": 50,
 
   "//": "CLOCK_PERIOD - Increase this in case you are getting setup time violations.",
   "//": "The value is in nanoseconds, so 20ns == 50MHz.",
-  "CLOCK_PERIOD": 15,
+  "CLOCK_PERIOD": 16.67,
 
   "//": "Synthesis: LibreLane's default ABC script is DELAY 4, which buffers and upsizes every net",
   "//": "and doubled this design's cell area (1.12 mm2 against 0.55 mm2). Map for area; placement and",
@@ -60,7 +60,7 @@
   "//": "Absolute die size",
   "FP_SIZING": "absolute",
 
-  "GRT_ALLOW_CONGESTION": 1,
+  "GRT_ALLOW_CONGESTION": 0,
 
   "FP_IO_HLENGTH": 2,
   "FP_IO_VLENGTH": 2,
