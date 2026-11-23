@@ -155,6 +155,21 @@ Status on the real module, from the runs in this session:
 | Write-side mutants (`formal/mutants/hostlink_deep__*`, 2) | Not run to a result. `bmc` to 72 cannot reach the first write word (cycle 114). The deep runs were stopped (see the deep BMC row below). Manual target: `make -C formal hostlink_deep`. |
 | `bmc_deep` (184 cycles, real module) | Stopped at step 115 after about 3.5 hours. No assertion failed through step 115, which includes the first write word (cycle 114). Not completed to 184, so no result is claimed for cycles 116 to 184. Manual only: `cd formal && sby -f hostlink.sby bmc_deep`. Not in CI. |
 
+### Block 3 status (accepted by the orchestrator)
+
+Plain statement of what is established for the host link at the end of block 3.
+
+- **Proven, unbounded:** none of L1 to L6. The k-induction proof and the IC3/PDR run (`abc pdr`) did not close.
+- **Bounded, no failure, real `gen_verilog hostlink`:**
+  - L1 (exact MISO rule), L2 (hold rule under the §6.6 assumptions), L4 (MISO equals the model), L6 (reset): BMC to 72 cycles.
+  - L3 (bus pulses, address, data) and L5 (one pulse per cycle, no partial write), read side: BMC to 72 cycles.
+  - L3 and L5, write side: BMC to 115 cycles, no assertion failure. This covers the first write word (bit 55, cycle 114). Cycles 116 and later are not checked.
+  - Cover (reachability only): 184 cycles, reaches the first and second write words and the first read commit.
+- **Negative check, expected to fail:** L2 without the §6.6 assumptions fails at step 4.
+- **Mutants:** 7 of 7 default host-link mutants killed by BMC to 72. 2 deep write-side mutants: no result (the runs were stopped).
+- **Not done in block 3:** the unbounded write-side proof, and the debug-netlist invariants that would close it.
+- **Planned for block 4:** "Formal on the host link, with all proofs running in CI" (PLAN block 4). That work covers the unbounded proofs for L3 and L5 through debug-netlist invariants with the address mapping, the deep mutant runs, and making the proofs run in CI.
+
 | ID | Sentence | How it is checked |
 | --- | --- | --- |
 | L1 | MISO changes only in the cycle right after a START, RISE or END, and reset clears it. | Unconditional. `bmc` to 72 on the real module. Unbounded: not closed. |
