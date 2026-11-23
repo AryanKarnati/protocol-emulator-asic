@@ -207,12 +207,12 @@ def rx_level(summary):
 @needs_tools
 @pytest.mark.parametrize("h,rate_hz", [(3, 10000000), (2, 15000000)])
 def test_spi_master_waveform_meets_chip_md_6_6(tmp_path, h, rate_hz):
-    # Frame A: header 3, then 0xA5 0x3C 0x0F. Frame B, 1200 cycles later: header 1, then 0x80.
+    # Frame A: header 2 (N-1), then 0xA5 0x3C 0x0F. Frame B, 1200 cycles later: header 0, then 0x80.
     text = run_pgsim(
         tmp_path,
         h,
-        tx_now=[3, 0xA5000000, 0x3C000000, 0x0F000000],
-        tx_later=[(1200, 1), (1200, 0x80000000)],
+        tx_now=[2, 0xA5000000, 0x3C000000, 0x0F000000],
+        tx_later=[(1200, 0), (1200, 0x80000000)],
     )
     report, summary = check_waveform(text, h, [[0xA5, 0x3C, 0x0F], [0x80]])
     assert 60000000 // (2 * h) == rate_hz
@@ -224,7 +224,7 @@ def test_spi_master_waveform_meets_chip_md_6_6(tmp_path, h, rate_hz):
 @needs_tools
 def test_margins_for_the_report(tmp_path):
     """CS setup, CS hold and the MOSI offset at 10 MHz, for the report."""
-    text = run_pgsim(tmp_path, 3, tx_now=[2, 0x5A000000, 0xC3000000], tx_later=[])
+    text = run_pgsim(tmp_path, 3, tx_now=[1, 0x5A000000, 0xC3000000], tx_later=[])
     report, _ = check_waveform(text, 3, [[0x5A, 0xC3]])
     assert min(report["cs_to_first_rise"]) >= 4
     assert max(report["mosi_offset_after_fall"]) <= 1

@@ -24,22 +24,10 @@ needs_pgasm = pytest.mark.skipif(not os.path.exists(PGASM), reason="build pgasm 
 
 
 def pio_text_for_half(h):
-    """The committed SPI program with its delays rewritten for half period h.
+    """The SPI master as pioasm text for half period h (test/pio_gen.py)."""
+    import pio_gen
 
-    In programs/spi_master.pio, [1] is the H-2 delay and [2] is the H-1 delay; [3] is the
-    CS_N hold and does not change.
-    """
-    text = open(SPI_PIO).read()
-
-    def sub(m):
-        d = int(m.group(1))
-        if d == 1:
-            return "[%d]" % (h - 2)
-        if d == 2:
-            return "[%d]" % (h - 1)
-        return m.group(0)
-
-    return re.sub(r"\[(\d+)\]", sub, text)
+    return pio_gen.pio_text(h)
 
 
 def pgasm_json(pio_path, tmp_path):
@@ -67,7 +55,7 @@ def test_committed_spi_program_is_the_h3_closure(rp2, tmp_path):
 
 
 @needs_pgasm
-@pytest.mark.parametrize("h", [2, 3])
+@pytest.mark.parametrize("h", [2, 3, 4, 5, 6])
 def test_rp2_closure_matches_pgasm_for_each_half_period(rp2, tmp_path, h):
     text = pio_text_for_half(h)
     pio = tmp_path / ("spi_h%d.pio" % h)

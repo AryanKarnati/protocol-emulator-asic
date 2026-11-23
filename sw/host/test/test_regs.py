@@ -63,8 +63,6 @@ FIELDS = {
     pg.EXECCTRL_OUT_STICKY: "EXECCTRL_OUT_STICKY",
     pg.EXECCTRL_WRAP_TOP: "EXECCTRL_WRAP_TOP",
     pg.EXECCTRL_WRAP_BOTTOM: "EXECCTRL_WRAP_BOTTOM",
-    pg.EXECCTRL_STATUS_SEL: "EXECCTRL_STATUS_SEL",
-    pg.EXECCTRL_STATUS_N: "EXECCTRL_STATUS_N",
     pg.SHIFTCTRL_FJOIN_RX: "SHIFTCTRL_FJOIN_RX",
     pg.SHIFTCTRL_FJOIN_TX: "SHIFTCTRL_FJOIN_TX",
     pg.SHIFTCTRL_PULL_THRESH: "SHIFTCTRL_PULL_THRESH",
@@ -87,6 +85,48 @@ FIELDS = {
 def test_field_positions_match_sdk(sdk):
     for lib_field, sdk_name in FIELDS.items():
         assert (lib_field[0], lib_field[1]) == _field(sdk, sdk_name), sdk_name
+
+
+REGS40 = os.path.join(SDK, "src/rp2040/hardware_regs/include/hardware/regs/pio.h")
+
+
+def _rp2040_values():
+    vals = {}
+    with open(REGS40) as f:
+        for line in f:
+            m = re.match(r"#define (PIO_\w+)\s+_u\((0x[0-9a-fA-F]+|\d+)\)", line)
+            if m:
+                vals[m.group(1)] = int(m.group(2), 0)
+    return vals
+
+
+@pytest.fixture(scope="module")
+def sdk40():
+    if not os.path.exists(REGS40):
+        pytest.skip("pico-sdk RP2040 headers not in the cache")
+    return _rp2040_values()
+
+
+@needs_sdk
+def test_mov_status_fields_are_the_rp2040_layout(sdk40):
+    # chip.md 8.1 uses the RP2040 EXECCTRL: STATUS_SEL is bit 4, STATUS_N is [3:0].
+    assert sdk40["PIO_SM0_EXECCTRL_STATUS_SEL_LSB"] == 4
+    assert sdk40["PIO_SM0_EXECCTRL_STATUS_SEL_BITS"] == 0x10
+    assert sdk40["PIO_SM0_EXECCTRL_STATUS_N_LSB"] == 0
+    assert sdk40["PIO_SM0_EXECCTRL_STATUS_N_BITS"] == 0x0F
+    assert sdk40["PIO_SM0_EXECCTRL_BITS"] == 0xFFFFFF9F  # the writable bits chip.md calls 0x7FFFFF9F
+    assert pg.EXECCTRL_STATUS_SEL == (4, 1)
+    assert pg.EXECCTRL_STATUS_N == (0, 4)
+
+
+@needs_sdk
+def test_fdebug_sm_flags_match_rp2040_layout(sdk40):
+    # pio_sm_init clears TXOVER, RXUNDER, TXSTALL and RXSTALL for its SM: pio.h's pio.c, pio_sm_init.
+    assert sdk40["PIO_FDEBUG_RXSTALL_LSB"] == 0
+    assert sdk40["PIO_FDEBUG_RXUNDER_LSB"] == 8
+    assert sdk40["PIO_FDEBUG_TXOVER_LSB"] == 16
+    assert sdk40["PIO_FDEBUG_TXSTALL_LSB"] == 24
+    assert pg.FDEBUG_SM_FLAGS == (1 << 0) | (1 << 8) | (1 << 16) | (1 << 24)
 
 
 @needs_sdk

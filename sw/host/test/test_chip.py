@@ -77,16 +77,19 @@ def test_load_page_one_adds_32():
     assert fake.imem[32] == 0xE001
 
 
-def test_load_first_fit_then_full_page():
+def test_load_takes_the_highest_free_run_then_page_1():
+    # pio_add_program works down from the top (pio.c find_offset_for_program, lines 66-82).
     fake, chip = make()
-    a = chip.load(pg.Program([0xE001] * 20, name="a"))
-    b = chip.load(pg.Program([0xE001] * 12, name="b"))
-    assert a.offset == 0
-    assert b.offset == 20
+    a = chip.load(pg.Program([0xE001] * 20, name="a"), page=0)
+    b = chip.load(pg.Program([0xE001] * 12, name="b"), page=0)
+    assert a.offset == 12  # highest run of 20 is at 12
+    assert b.offset == 0  # the 12 words left are at 0
     with pytest.raises(MemoryError):
         chip.load(pg.Program([0xE001], name="c"), page=0)
-    # Page 1 is still free.
-    assert chip.load(pg.Program([0xE001], name="d"), page=1).start == 32
+    # Automatic placement falls back to page 1 when page 0 is full.
+    assert chip.load(pg.Program([0xE001], name="d")).start == 63  # page 1, highest offset
+    # Page 1 is still free for an explicit placement.
+    assert chip.load(pg.Program([0xE001], name="e"), page=1, offset=0).start == 32
 
 
 def test_load_rejects_overlap_and_overrun():
@@ -151,14 +154,38 @@ def test_sm_init_clkdiv_from_freq_and_clkdiv():
     assert fake.regs[sm_reg(0, 0)] == 0x00018000  # 1 + 128/256
 
 
-def test_sm_init_divider_ranges():
+def test_sm_init_divider_ranges_follow_rp2_pio():
     fake, chip = make()
-    with pytest.raises(ValueError):
-        chip.sm(0).init(simple_prog(), freq=0)
+    # rp2_pio.c: freq < 0 is the default clkdiv 1, and freq == 0 writes a zero divider (lines 653-672).
+    chip.sm(0).init(simple_prog(), freq=-1)
+    assert fake.regs[sm_reg(0, 0)] == 0x00010000
+    chip.sm(0).init(simple_prog(), freq=0)
+    assert fake.regs[sm_reg(0, 0)] == 0
     with pytest.raises(ValueError):
         chip.sm(0).init(simple_prog(), freq=1)  # divider over 65536
     with pytest.raises(ValueError):
         chip.sm(0).init(simple_prog(), clkdiv=0.5)
+
+
+def test_divisor_of_65536_writes_int_0():
+    # rp2_pio.c accepts div = clock * 256 / freq up to 65536 * 256 and stores INT truncated to 16
+    # bits, so a divisor of 65536 reads as INT 0. freq cannot give exactly that at 60 MHz in whole
+    # Hz (60e6 * 256 / 65536 is 915.5), so the case is reached with clkdiv=65536.0.
+    fake, chip = make()
+    chip.sm(0).init(simple_prog(), clkdiv=65536.0)
+    assert fake.regs[sm_reg(0, 0)] == 0
+    with pytest.raises(ValueError):
+        chip.sm(0).init(simple_prog(), freq=915)  # divisor 65536.9: over the limit, as rp2 rejects it
+
+
+def test_shiftdir_and_thresholds_take_the_rp2_arg_shifted_and_masked():
+    # rp2_pio.c asm_pio_override_shiftctrl: (arg << lsb) & bits. A value of 2 sets bit 19 (out shift
+    # right) only through the mask, so a non-0/1 shiftdir has the same effect as rp2 gives.
+    fake, chip = make()
+    chip.sm(0).init(simple_prog(), out_shiftdir=1, pull_thresh=0x23)
+    sc = fake.regs[sm_reg(0, 0x08)]
+    assert (sc >> 19) & 1 == 1
+    assert (sc >> 25) & 0x1F == 0x23 & 0x1F
 
 
 def test_sm_init_fifo_join_flushes_and_sets_the_bit():
@@ -176,7 +203,8 @@ def test_sm_init_pin_levels_and_directions_use_forced_set():
     prog = pg.Program([0xE001], name="pins", set_init=[3, 2])
     chip.sm(0).init(prog, set_base=5)
     # The jump to the entry (offset 0), then pins (5 high, 6 low), then directions (both out).
-    assert [i for (sm, i) in fake.instr if sm == 0] == [0x0000, 0xE001, 0xE000, 0xE081, 0xE081]
+    # The program is one instruction, placed at the highest offset, 31: jmp 31 is the entry.
+    assert [i for (sm, i) in fake.instr if sm == 0] == [0x001F, 0xE001, 0xE000, 0xE081, 0xE081]
     # Each forced SET runs with PINCTRL pointing at one pin, with SET_COUNT 1.
     seen = []
     for (a, v) in fake.writes:
@@ -234,12 +262,11 @@ def test_check_reloads_after_deselection_and_passes_when_good():
     chip.load(prog, offset=0)
     chip.sm(0).init(prog, freq=60000000, in_base=24, out_base=23, set_base=22, sideset_base=21)
     chip.sm(0).active(1)
-    # SCRATCH reads 0, which is not the nonce, so the design is loaded again.
-    assert chip.check() is False
+    # The nonce went into SCRATCH with the first configuration, so the design is present.
     assert fake.regs[0x038] == chip._nonce
+    assert chip.check() is True
     snap_imem = dict(fake.imem)
     snap_regs = dict(fake.regs)
-    assert chip.check() is True
     # Deselection: the chip loses everything. check() must put it all back.
     fake.reset()
     assert chip.check() is False

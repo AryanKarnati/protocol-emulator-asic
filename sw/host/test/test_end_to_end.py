@@ -68,8 +68,7 @@ def test_check_replays_after_a_deselection(chip):
     sm = chip.sm(0)
     sm.init(prog, freq=60000000)
     sm.active(1)
-    assert chip.check() is False  # first call: SCRATCH is 0, so the design is (re)loaded
-    assert chip.check() is True
+    assert chip.check() is True  # the nonce went into SCRATCH with the configuration
     before = (chip.read(0x200 + 0x00, 1)[0], chip.read(0x200 + 0x04, 1)[0], chip.read(0x200 + 0x14, 1)[0])
     # A deselection loses the state. Simulate it by writing SCRATCH through the transport.
     chip.write(0x038, [0])
@@ -84,7 +83,7 @@ def test_check_replays_after_a_deselection(chip):
 
 def test_load_into_page_1_and_echo(chip):
     prog = pg.Program(ECHO, name="echo")
-    h = chip.load(prog, page=1)
+    h = chip.load(prog, page=1, offset=0)
     assert h.start == 32
     sm = chip.sm(0)
     sm.init(h)
