@@ -14,6 +14,9 @@ Usage: `pgasm [-o json|hex|python|c-sdk] [--program NAME] INPUT [OUTPUT]`
   `% python { }` and `% c-sdk { }` passthrough blocks, `.lang_opt` arguments, wrap and side-set
   configuration, and the warning pioasm prints on stderr for a `.lang_opt` of the output's own
   language.
+- The python output carries no pin init or shift settings unless `.lang_opt python` lines give
+  them, as with pioasm. For example `.lang_opt python sideset_init = rp2.PIO.OUT_LOW`. A list
+  value cannot be written that way (pioasm writes it quoted), so a caller adds a list init by hand.
 - pioasm's own default is `-o c-sdk` when `-o` is left out. pgasm keeps `json`, so existing scripts
   do not change. Pass `-o c-sdk` for pioasm's behaviour.
 

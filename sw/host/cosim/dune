@@ -1,0 +1,4 @@
+(executable
+ (name cosim)
+ (modules cosim)
+ (libraries polyglot_pgsim))

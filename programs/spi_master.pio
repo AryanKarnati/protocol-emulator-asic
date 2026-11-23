@@ -1,0 +1,77 @@
+; PIO SPI master for the Polyglot host link (chip.md section 6), SPI mode 0, MSB first.
+;
+; Run it on an RP2350 with the SM clock at 60 MHz (clkdiv 2 at a 120 MHz sysclk), so one
+; instruction tick is one chip cycle. This file is for H = 3 (10 MHz SCK: 3 cycles high, 3 low).
+; sw/host/polyglot.py builds the same program for H = 2 to 6 with @rp2.asm_pio (the same text).
+;
+; Pins: SCK is side-set and SET base (pin 22), MOSI is OUT base (pin 23), CS_N is SET bit 2
+; (pin 24), MISO is IN base (pin 40, GPIO numbers on the RP2350B). SCK, MOSI and CS_N must be
+; consecutive, so one SET group (count 3) drives all three: `set pins, 0` lowers CS_N and
+; `set pins, 4` raises it. The SET also writes SCK and MOSI, which is harmless at frame edges
+; (SCK is low there, and MOSI is don't-care while CS_N is high).
+;
+; Frame: the RP2350 pushes a header word N-1 and then N data words, each with the byte in bits
+; 31:24. The header is pulled while CS_N is high and loaded into Y (`out y, 32`), which empties
+; the OSR, so the first OUT autopulls the first byte. Each byte is autopushed as one RX word
+; (its low 8 bits), so the host reads N RX words per frame.
+;
+; Timing: at H = 3 MISO is sampled at tick H, the first tick of the SCK-low phase after each
+; rise (H = 5 and 6 sample at tick 1 instead; see polyglot.SAMPLE_LOW_MAX_H). MOSI changes one
+; tick after the falling edge. The rise of bit 0 tests Y with `jmp y--`, so a byte boundary
+; costs no extra tick. The MISO pin's input synchroniser is bypassed (the library does this).
+;
+; Program: 32 instructions, one IMEM page. Instruction 0 is the entry point.
+
+.program spi_master
+.side_set 1
+.in 32 left auto 8
+.out 32 left auto 8
+
+; Python output (pgasm -o python, pioasm -o python): the pin init and shift settings the
+; MicroPython assembler needs. rp2 is imported by the generated module.
+.lang_opt python sideset_init = rp2.PIO.OUT_LOW
+.lang_opt python out_init = rp2.PIO.OUT_LOW
+.lang_opt python set_init = [rp2.PIO.OUT_LOW,rp2.PIO.OUT_LOW,rp2.PIO.OUT_HIGH]
+.lang_opt python in_shiftdir = rp2.PIO.SHIFT_LEFT
+.lang_opt python out_shiftdir = rp2.PIO.SHIFT_LEFT
+.lang_opt python autopush = True
+.lang_opt python push_thresh = 8
+.lang_opt python autopull = True
+.lang_opt python pull_thresh = 8
+frame:
+    pull block side 0
+    out y, 32 side 0
+    set pins, 0 side 0 [3]
+    out pins, 1 side 0 [1]
+    jmp R7 side 0
+L0:
+    in pins, 1 side 0
+L1:
+    out pins, 1 side 0 [1]
+R7:
+    nop side 1 [2]
+    in pins, 1 side 0
+    out pins, 1 side 0 [1]
+    nop side 1 [2]
+    in pins, 1 side 0
+    out pins, 1 side 0 [1]
+    nop side 1 [2]
+    in pins, 1 side 0
+    out pins, 1 side 0 [1]
+    nop side 1 [2]
+    in pins, 1 side 0
+    out pins, 1 side 0 [1]
+    nop side 1 [2]
+    in pins, 1 side 0
+    out pins, 1 side 0 [1]
+    nop side 1 [2]
+    in pins, 1 side 0
+    out pins, 1 side 0 [1]
+    nop side 1 [2]
+    in pins, 1 side 0
+    out pins, 1 side 0 [1]
+R0:
+    jmp y--, L0 side 1 [2]
+    in pins, 1 side 0
+    set pins, 4 side 0
+    jmp frame side 0
