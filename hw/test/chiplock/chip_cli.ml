@@ -101,6 +101,29 @@ let cmd_corpus args =
   if !fails = 0 then 0 else 1
 ;;
 
+(* trace FILE --from A --to B: the pins and the model's pads of each cycle in the range. *)
+let cmd_trace args file =
+  let c = Chip_case.normalise (Chip_case.read_file file) in
+  let from = int_flag args "--from" 0 and upto = int_flag args "--to" 40 in
+  let m = Chip.create ~num_sms:c.Chip_case.num_sms () in
+  Array.iteri
+    (fun k (y : Chip_case.cyc) ->
+      if y.rst then Chip.reset m
+      else (
+        (match (Pgsim.debug (Chip.pio m) 0).Pgsim.latch with
+         | Pgsim.Host_latch w -> Printf.printf "LATCH at %d word %04x\n" k w
+         | _ -> ());
+        let o = Chip.step m ~ui_in:y.ui ~uio_ext:y.uio in
+        if o.Chip.bus.Chip.write then Printf.printf "WRITE at %d addr %04x data %08x\n" k o.Chip.bus.Chip.addr o.Chip.bus.Chip.wdata;
+        if k >= from && k <= upto then (let (f, r) = Chip.frame_state m in Printf.printf "FS %d ui=%02x open=%b rises=%d\n" k y.ui f r);
+        if (o.Chip.bus.Chip.read || o.Chip.bus.Chip.commit) && k >= from && k <= upto then Printf.printf "BUS at %d read=%b commit=%b addr %04x\n" k o.Chip.bus.Chip.read o.Chip.bus.Chip.commit o.Chip.bus.Chip.addr;
+        if k >= from && k <= upto then
+          Printf.printf "%5d ui=%02x uio=%02x uo=%02x uio_out=%02x uio_oe=%02x\n" k y.ui y.uio o.Chip.uo_out
+            o.Chip.uio_out o.Chip.uio_oe))
+    c.Chip_case.cycles;
+  0
+;;
+
 let cmd_gen args =
   let seed = int_flag args "--seed" 1 in
   let sms = int_flag args "--sms" 4 in
@@ -119,6 +142,7 @@ let () =
     | _ :: "shrink" :: file :: args -> cmd_shrink args file
     | _ :: "corpus" :: args -> cmd_corpus args
     | _ :: "gen" :: args -> cmd_gen args
+    | _ :: "trace" :: file :: args -> cmd_trace args file
     | _ ->
       prerr_endline "usage: chip_cli (triage|replay FILE|shrink FILE|corpus|gen) [options]";
       2

@@ -65,3 +65,6 @@ val observe : t -> (string * int) list
 (** The bus ports of a step's outputs, named as the RTL ports (chip.md 11). The address is
     compared only when a pulse is set, the write data in a write and the read data in a read. *)
 val bus_ports : outputs -> (string * int) list
+
+(** Whether a frame is open and how many RISEs it has counted (chip.md 6.2). For tests. *)
+val frame_state : t -> bool * int

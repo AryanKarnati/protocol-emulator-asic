@@ -45,7 +45,7 @@ let generate ?(target = 4000) ~seed ~num_sms () : Chip_case.t =
     Array.iteri
       (fun j b ->
         (* A reset in the middle of a frame, now and then. *)
-        if chance 0.002 then rst_cycles (1 + rint 2);
+        if chance 0.0003 then rst_cycles (1 + rint 2);
         for _ = 1 to h do
           emit ~csn:0 ~mosi:b ~sck:1 ~rst:false
         done;
@@ -63,7 +63,23 @@ let generate ?(target = 4000) ~seed ~num_sms () : Chip_case.t =
   let cmd_bits ~read ~fixed =
     [| (if read then 1 else 0); (if fixed then 1 else 0); 0; 0; 0; 0; 0; 0 |]
   in
+  (* Keep SM register data inside the contract (engine.md 3, chip.md 8.2): SIDESET_COUNT 0 to 5
+     (PINCTRL), no side-set enable without a count (EXECCTRL), INT 0 only with FRAC 0 (CLKDIV) and
+     never both FJOIN bits (SHIFTCTRL). Random writes to any register go through this too. *)
+  let legal addr data =
+    let sm_reg = addr >= 0x200 && addr < 0x300 in
+    match addr land 0x3F with
+    | 0x14 when sm_reg ->
+      let sc = min 5 ((data lsr 29) land 7) in
+      (data land 0x1FFF_FFFF) lor (sc lsl 29)
+    | 0x04 when sm_reg -> data land lnot (1 lsl 30)
+    | 0x00 when sm_reg ->
+      if (data lsr 16) land 0xFFFF = 0 then data land 0xFFFF_0000 else data land 0xFFFF_FFFF
+    | 0x08 when sm_reg -> if (data lsr 30) land 3 = 3 then data land lnot (1 lsl 30) else data
+    | _ -> data
+  in
   let write_op addr data =
+    let data = legal addr data in
     frame (Array.concat [ cmd_bits ~read:false ~fixed:(chance 0.3); addr_bits addr; word_bits data ])
   in
   let read_op addr n =
@@ -74,12 +90,22 @@ let generate ?(target = 4000) ~seed ~num_sms () : Chip_case.t =
   let rx_addr () = 0x050 + (4 * rint 4) in
   let any_addr () =
     let r = rint 100 in
-    if r < 40 then List.nth reg_addrs (rint (List.length reg_addrs))
+    if r < 10 then 0x02C
+    else if r < 40 then List.nth reg_addrs (rint (List.length reg_addrs))
     else if r < 55 then 0x040 + (4 * rint 4)
     else if r < 70 then rx_addr ()
     else if r < 80 then 0x100 + (4 * rint 64)
     else if r < 97 then 0x200 + (0x40 * rint num_sms) + List.nth sm_offsets (rint (List.length sm_offsets))
     else rint 0x10000 land lnot 3
+  in
+  (* An IMEM word: mostly random, and often an instruction that reads the pads (in pins, wait
+     pin, jmp pin), so the pad vector reaches the engines' state (chip.md 9.1). *)
+  let instr_word () =
+    match rint 10 with
+    | 0 -> 0x4000 lor rint 2
+    | 1 -> 0x20A0 lor rint 32
+    | 2 -> 0x00C0 lor rint 32
+    | _ -> rint 0x10000
   in
   let sm_config sm =
     (* CLKDIV: INT >= 1 (INT 0 with FRAC 0 is the only other legal form, chip.md 8.2). *)
@@ -94,10 +120,25 @@ let generate ?(target = 4000) ~seed ~num_sms () : Chip_case.t =
     (* SIDESET_COUNT 0 to 5 (engine.md 4): the model and the RTL take no other value. *)
     write_op (0x214 + (0x40 * sm)) ((r32 () land 0x1FFF_FFFF) lor (rint 6 lsl 29))
   in
+  (* A pad test (chip.md 9.1): SM0 forces a SET of a pin and sets its direction, then the pad
+     controls and the external levels change. The pins it drives reach the engines and PAD_IN. *)
+  let pad_test () =
+    let base = if chance 0.5 then rint 8 else rint 32 in
+    write_op 0x214 ((1 lsl 26) lor (base lsl 5));
+    (* SET pins (dest 0) and SET pindirs (dest 4), data 0 or 1 *)
+    write_op 0x210 (0xE000 lor (0 lsl 5) lor rint 2);
+    write_op 0x210 (0xE000 lor (4 lsl 5) lor rint 2);
+    write_op 0x024 (rint 256);
+    write_op 0x020 (rint 0x1000);
+    ext_ui := rint 32;
+    ext_uio := rint 256;
+    (* read the pads back: PAD_IN is uio_in, what the pads show (chip.md 8.1) *)
+    read_op 0x02C 1
+  in
   (* Prefix: an IMEM image, configurations and enables, as a host sets up a run. *)
   let image () =
     for k = 0 to rint 8 do
-      write_op (0x100 + (4 * k)) (rint 0x10000)
+      write_op (0x100 + (4 * k)) (instr_word ())
     done
   in
   image ();
@@ -105,25 +146,18 @@ let generate ?(target = 4000) ~seed ~num_sms () : Chip_case.t =
     if chance 0.7 then sm_config sm
   done;
   write_op 0x008 (if chance 0.7 then 1 + rint 15 else 0xF);
+  if chance 0.8 then pad_test ();
   (* Random operations, until the target length. *)
-  while len () < target do
+  (* The random operations run for [target] cycles after the prefix. *)
+  let loop_start = len () in
+  while len () - loop_start < target do
     let r = rint 100 in
     if r < 25
     then write_op (any_addr ()) (r32 ())
     else if r < 45
-    then read_op (if chance 0.4 then rx_addr () else any_addr ()) (1 + rint 3)
+    then read_op (if chance 0.25 then 0x02C else if chance 0.4 then rx_addr () else any_addr ()) (1 + rint 3)
     else if r < 50
-    then (
-      (* A pad test (chip.md 9.1): forced SET of a pin, then the pad controls and external levels. *)
-      let base = rint 32 in
-      write_op 0x214 ((1 lsl 26) lor (base lsl 5));
-      (* SET pins (dest 0) and SET pindirs (dest 4), data 0 or 1 *)
-      write_op 0x210 (0xE000 lor (0 lsl 5) lor rint 2);
-      write_op 0x210 (0xE000 lor (4 lsl 5) lor rint 2);
-      write_op 0x024 (rint 256);
-      write_op 0x020 (rint 0x1000);
-      ext_ui := rint 32;
-      ext_uio := rint 256)
+    then pad_test ()
     else if r < 55
     then frame (Array.init (1 + rint 120) (fun _ -> rint 2))
     else if r < 65
@@ -132,7 +166,7 @@ let generate ?(target = 4000) ~seed ~num_sms () : Chip_case.t =
     then (
       ext_ui := rint 32;
       ext_uio := rint 256)
-    else if r < 74
+    else if r < 74 && chance 0.2
     then rst_cycles (1 + rint 2)
     else (
       (* A 1-byte STATUS poll: the command byte alone. *)

@@ -550,3 +550,6 @@ let bus_ports (o : outputs) : (string * int) list =
   ; "dbg_bus_rdata", (if b.read then b.rdata else 0)
   ]
 ;;
+
+(* The host-link frame state: whether a frame is open, and the RISEs counted in it. For tests. *)
+let frame_state t = t.in_frame, t.rises
