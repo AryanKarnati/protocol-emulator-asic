@@ -57,3 +57,11 @@ val read_reg : t -> ui_in:int -> uio_ext:int -> int -> int
 
 (** Address decode, for tests: is [addr] a mapped register? *)
 val mapped : t -> int -> bool
+
+(** The compared ports of the cycle, before its {!step}, named as the RTL ports (chip.md 11):
+    the pads and the present SMs' pio_block debug ports. *)
+val observe : t -> (string * int) list
+
+(** The bus ports of a step's outputs, named as the RTL ports (chip.md 11). The address is
+    compared only when a pulse is set, the write data in a write and the read data in a read. *)
+val bus_ports : outputs -> (string * int) list

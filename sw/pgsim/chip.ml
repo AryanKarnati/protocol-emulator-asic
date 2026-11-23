@@ -509,3 +509,44 @@ let peek t ~ui_in ~uio_ext =
   ignore (ui_in, uio_ext);
   { uo_out = v.uo_out; uio_out = v.uio_out; uio_oe = v.uio_oe; miso = v.miso; bus = no_bus }
 ;;
+
+(* The compared ports of a cycle, before its step, by their RTL names (chip.md 11): the chip
+   pads and the pio_block debug ports of each present SM and of the whole block. *)
+let observe t : (string * int) list =
+  configure t;
+  let v = view t in
+  let pio = t.pio in
+  let per name f = List.concat (List.init 4 (fun n -> if present t n then [ Printf.sprintf "%s%d" name n, f n ] else [])) in
+  let dbg n f = f (Pgsim.debug pio n) in
+  [ "uo_out", v.uo_out
+  ; "uio_out", v.uio_out
+  ; "uio_oe", v.uio_oe
+  ; "dbg_pins_out", v.pins_out
+  ; "dbg_pins_oe", v.pins_oe
+  ; "dbg_irq", v.irq
+  ; "dbg_fstat", v.fst
+  ; "dbg_flevel", v.flv
+  ; "dbg_fdebug", v.fdb
+  ]
+  @ per "dbg_pc" (fun n -> dbg n (fun d -> d.Pgsim.pc))
+  @ per "dbg_x" (fun n -> dbg n (fun d -> d.Pgsim.x))
+  @ per "dbg_y" (fun n -> dbg n (fun d -> d.Pgsim.y))
+  @ per "dbg_isr" (fun n -> dbg n (fun d -> d.Pgsim.isr))
+  @ per "dbg_osr" (fun n -> dbg n (fun d -> d.Pgsim.osr))
+  @ per "dbg_cnt" (fun n -> Pgsim.dbg_cnt pio n)
+  @ per "dbg_exec_stalled" (fun n -> dbg n (fun d -> Bool.to_int d.Pgsim.exec_stalled))
+  @ per "dbg_phase" (fun n -> dbg n (fun d -> d.Pgsim.acc))
+  @ per "dbg_instr" (fun n -> dbg n (fun d -> d.Pgsim.instr))
+;;
+
+(* The bus pulses and values of a step, by their RTL names (chip.md 6.4). *)
+let bus_ports (o : outputs) : (string * int) list =
+  let b = o.bus in
+  [ "dbg_bus_write", Bool.to_int b.write
+  ; "dbg_bus_read", Bool.to_int b.read
+  ; "dbg_bus_commit", Bool.to_int b.commit
+  ; "dbg_bus_addr", (if b.write || b.read || b.commit then b.addr else 0)
+  ; "dbg_bus_wdata", (if b.write then b.wdata else 0)
+  ; "dbg_bus_rdata", (if b.read then b.rdata else 0)
+  ]
+;;
