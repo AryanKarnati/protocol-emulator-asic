@@ -153,7 +153,7 @@ Status on the real module, from the runs in this session:
 | `hostlink_miso_uncond.sby` (L2 without the host obligations) | FAIL at step 4, as expected. |
 | Mutants (`formal/mutants/hostlink__*`, 7) | 7 of 7 killed by `bmc` (72 cycles). Kills: a missing commit, a commit one cycle late, a read one cycle early, MISO from bit 30, inverted MOSI, CS_N stuck high, and a wrong STATUS bit. |
 | Write-side mutants (`formal/mutants/hostlink_deep__*`, 2) | Not run to a result. `bmc` to 72 cannot reach the first write word (cycle 114). The deep runs were stopped (see the deep BMC row below). Manual target: `make -C formal hostlink_deep`. |
-| `bmc_deep` (184 cycles, real module) | Stopped at step 115 after about 3.5 hours. No assertion failed through step 115, which includes the first write word (cycle 114). Not completed to 184, so no result is claimed for cycles 116 to 184. Manual target only: `make -C formal bmc_deep` (or `sby -f formal/hostlink.sby bmc_deep`). Not in CI. |
+| `bmc_deep` (184 cycles, real module) | Stopped at step 115 after about 3.5 hours. No assertion failed through step 115, which includes the first write word (cycle 114). Not completed to 184, so no result is claimed for cycles 116 to 184. Manual only: `cd formal && sby -f hostlink.sby bmc_deep`. Not in CI. |
 
 | ID | Sentence | How it is checked |
 | --- | --- | --- |
