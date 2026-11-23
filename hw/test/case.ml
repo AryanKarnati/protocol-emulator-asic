@@ -54,7 +54,7 @@ let imem_words = 64
 let load_cycles = imem_words
 let m32 = 0xFFFF_FFFF
 let fjoin_mask = 0xC000_0000
-let fdebug_layout = 0xFF00_FFFF (* bits 31:28, 27:24, 19:16, 11:8, 3:0; see engine.md 3 *)
+let fdebug_layout = 0xFF0F_0F0F (* bits 31:28, 27:24, 19:16, 11:8, 3:0; see engine.md 3 *)
 
 let default_cfg =
   let c = Pgsim.Config.reset in
