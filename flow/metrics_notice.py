@@ -110,6 +110,42 @@ def diagnose(run_dir):
             emit("warning", f"Hardening failure: tail of {steps[-1]}/{os.path.basename(logs[-1])}", tail(logs[-1], 40))
 
 
+def synthesis_report(run_dir):
+    """Publish the flow's own synthesis numbers: chip area, cell count, top cell types, SYNTH_* settings."""
+    lines = []
+    for path in sorted(glob.glob(os.path.join(run_dir, "*-yosys-synth*", "**", "*"), recursive=True)):
+        if not os.path.isfile(path) or not re.search(r"stat|\.rpt$|\.log$", os.path.basename(path)):
+            continue
+        try:
+            with open(path, errors="replace") as fh:
+                text = fh.read().splitlines()
+        except OSError:
+            continue
+        hits = [l.strip() for l in text if re.search(r"Chip area|Number of cells|Number of wire bits", l)]
+        cells = []
+        for l in text:
+            m = re.match(r"^\s+(\d+)\s+([\d.]+)?\s*(\S*sg13\S+)", l) or re.match(r"^\s+(\S*sg13\S+)\s+(\d+)", l)
+            if m:
+                cells.append(l.strip())
+        if hits or cells:
+            lines.append(f"-- {os.path.relpath(path, run_dir)}")
+            lines.extend(hits[-6:])
+            lines.extend(cells[:40])
+    cfg = {}
+    for name in ("resolved.json", "config_merged.json"):
+        p = os.path.join(run_dir, name)
+        if os.path.exists(p):
+            try:
+                with open(p) as fh:
+                    cfg = json.load(fh)
+            except (OSError, ValueError):
+                pass
+            break
+    synth = {k: v for k, v in cfg.items() if k.startswith("SYNTH") or k in ("PL_TARGET_DENSITY_PCT", "FP_CORE_UTIL", "DIE_AREA", "CLOCK_PERIOD")}
+    lines.append("settings: " + json.dumps(synth, sort_keys=True)[:3000])
+    emit("notice", "Synthesis report", lines[:120] if lines else ["no synthesis report found"])
+
+
 def main():
     final_dir = os.path.join(ROOT, "runs", "wokwi", "final")
     metrics_path = os.path.join(final_dir, "metrics.csv")
@@ -121,6 +157,7 @@ def main():
                   "runs/ contents: " + ", ".join(sorted(os.listdir(os.path.join(ROOT, "runs"))))
                   if os.path.isdir(os.path.join(ROOT, "runs")) else "runs/ does not exist."])
             diagnose(os.path.join(ROOT, "runs", "wokwi"))
+            synthesis_report(os.path.join(ROOT, "runs", "wokwi"))
             return
         metrics_path = found[0]
 
