@@ -119,17 +119,22 @@ type sm =
   ; mutable illegal : bool
   ; mutable stall : stall
   ; mutable sticky : pinw
+  ; mutable page : int (** SMn_EXT.PAGE, bit 0 (engine.md 9) *)
+  ; mutable prev_page : int (** PAGE of the previous cycle (engine.md F8) *)
   }
 
 type t =
   { sms : sm array
-  ; imem : int array
+  ; imem : int array (** 64 words: two pages of 32 (engine.md 9) *)
   ; mutable cycle : int
   ; mutable irq : int
   ; mutable pin_level : int
   ; mutable pin_dir : int
   ; mutable ext : int
   ; mutable sync_bypass : int
+  ; mutable pads_given : bool
+    (** true: [ext] is the pad value the engines see, with no override by the pin's own output
+        (chip.md 9.1). false: the block 2 pad rule. *)
   ; hist : int array
   }
 
@@ -161,11 +166,13 @@ module Host_op : sig
     | Irq_clear of int (** H5, IRQ mask, write 1 to clear *)
     | Irq_force of int (** H5, IRQ mask *)
     | Fdebug_clear of int (** H8, FDEBUG layout mask, write 1 to clear *)
+    | Fdebug_set of int
+      (** H8, FDEBUG layout mask: sets the flags. A set wins over a clear in the same cycle. *)
     | Fifo_flush of int (** H6, SM mask: both FIFOs empty at the end of the cycle *)
     | Imem_write of
         { addr : int
         ; data : int
-        } (** H9, usable from the next cycle *)
+        } (** H9, usable from the next cycle. The address is 6 bits (engine.md 9). *)
 end
 
 type step_result =
@@ -217,8 +224,12 @@ val clear_fdebug : t -> int -> unit
 (** Empty both FIFOs of the SMs in the mask. *)
 val flush_fifos : t -> int -> unit
 
-(** Write one IMEM word. *)
+(** Write one IMEM word, at address 0 to 63. *)
 val write_imem : t -> int -> int -> unit
+
+(** SMn_EXT.PAGE of SM [i] (bit 0 of the level). It applies from the next {!step} and
+    {!debug}, because the fetch address is {PAGE, PC} (engine.md 9). *)
+val set_page : t -> int -> int -> unit
 
 (** Block-level views, for the lockstep harness. Register layouts are in engine.md section 3.
     [fstat] and [flevel] are RP2040 FSTAT and FLEVEL. [fdebug] is RP2040 FDEBUG with the
@@ -268,6 +279,7 @@ type debug =
   ; txover : bool
   ; rxunder : bool
   ; rxstall : bool
+  ; instr : int (** IMEM word at the fetch address {PAGE, PC}, dbg_instr (engine.md 3) *)
   }
 
 val debug : t -> int -> debug

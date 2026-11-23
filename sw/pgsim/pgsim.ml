@@ -252,17 +252,22 @@ type sm =
   ; mutable illegal : bool (* FDEBUG.ILLEGAL-like sticky flag, see DESIGN.md 9.1 *)
   ; mutable stall : stall
   ; mutable sticky : pinw (* OUT_STICKY: last OUT/SET/MOV pin write *)
+  ; mutable page : int (* SMn_EXT.PAGE, bit 0 (engine.md 9) *)
+  ; mutable prev_page : int (* PAGE of the previous cycle (engine.md F8) *)
   }
 
 type t =
   { sms : sm array
-  ; imem : int array (* 32 words *)
+  ; imem : int array (* 64 words, two pages of 32 (engine.md 9) *)
   ; mutable cycle : int
   ; mutable irq : int (* 8 flags, datasheet 3.2.6 *)
   ; mutable pin_level : int (* output level register, 32 bits *)
   ; mutable pin_dir : int (* output enable register, 1 = driven by PIO *)
   ; mutable ext : int (* external pad levels, set by the caller *)
   ; mutable sync_bypass : int (* INPUT_SYNC_BYPASS (datasheet 3.5.6.3) *)
+  ; mutable pads_given : bool
+    (* true: [ext] is the pad value the engines see, with no override by the pin's own
+       output (chip.md 9.1). false: the block 2 pad rule (engine.md R1). *)
   ; hist : int array (* hist.(k) = pad level k cycles ago *)
   }
 
@@ -304,16 +309,19 @@ let create () =
       ; illegal = false
       ; stall = No_stall
       ; sticky = pinw_create ()
+      ; page = 0
+      ; prev_page = 0
       })
   in
   { sms
-  ; imem = Array.make 32 0
+  ; imem = Array.make 64 0
   ; cycle = 0
   ; irq = 0
   ; pin_level = 0
   ; pin_dir = 0
   ; ext = 0
   ; sync_bypass = 0
+  ; pads_given = false
   ; hist = Array.make 4 0
   }
 ;;
@@ -321,7 +329,9 @@ let create () =
 (* Pad level for this cycle: a PIO-driven pin shows its level, others show the external
    level. Writes made in cycle c show on the pad in cycle c+1 (one register stage). *)
 let pad_now t =
-  ((t.pin_level land t.pin_dir) lor (t.ext land lnot t.pin_dir)) land m32
+  if t.pads_given
+  then t.ext land m32
+  else ((t.pin_level land t.pin_dir) lor (t.ext land lnot t.pin_dir)) land m32
 ;;
 
 (* The value IN, JMP PIN, WAIT GPIO and WAIT PIN see. The pad from 1 cycle ago is bypassed
@@ -344,8 +354,8 @@ let set_config t i cfg =
 ;;
 
 let load_program t words =
-  Array.fill t.imem 0 32 0;
-  List.iteri (fun i w -> if i < 32 then t.imem.(i) <- w land 0xFFFF) words
+  Array.fill t.imem 0 (Array.length t.imem) 0;
+  List.iteri (fun i w -> if i < Array.length t.imem then t.imem.(i) <- w land 0xFFFF) words
 ;;
 
 (* ------------------------------------------------------------------------------------ *)
@@ -763,6 +773,9 @@ let attempt sm ~src ~word ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw =
   is_out
 ;;
 
+(* The IMEM address an SM fetches in the current cycle: {PAGE, PC} (engine.md 9). *)
+let fetch_addr sm = (sm.page lsl 5) lor sm.pc
+
 (* One SM for one system cycle. [tick] is its clock-divider enable. *)
 let run_sm t sm ~tick ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw : tick_kind =
   let attempt = attempt sm ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw in
@@ -777,7 +790,7 @@ let run_sm t sm ~tick ~synced ~irq_snap ~bodyw ~sidew ~setw ~clrw : tick_kind =
     sm.delay <- sm.delay - 1;
     Other_tick
   | Exec_latch w -> if attempt ~src:Exec ~word:w then Out_tick else Other_tick
-  | No_latch -> if attempt ~src:Imem ~word:t.imem.(sm.pc) then Out_tick else Other_tick
+  | No_latch -> if attempt ~src:Imem ~word:t.imem.(fetch_addr sm) then Out_tick else Other_tick
 ;;
 
 (* Datasheet 3.5.4.2, "On non-OUT cycles": after a non-OUT tick, an osr count at or above
@@ -836,6 +849,7 @@ module Host_op = struct
     | Irq_clear of int (* IRQ mask, write 1 to clear *)
     | Irq_force of int (* IRQ mask *)
     | Fdebug_clear of int (* FDEBUG layout mask, write 1 to clear *)
+    | Fdebug_set of int (* FDEBUG layout mask, sets flags; a set wins over a clear (H8) *)
     | Fifo_flush of int (* SM mask *)
     | Imem_write of
         { addr : int
@@ -942,8 +956,8 @@ let step_ex ?(host = []) t =
   t.hist.(0) <- pad;
   let synced = synced t in
   let irq_snap = t.irq in
-  (* F7 compares the IMEM write address with the PC at the start of the cycle. *)
-  let pc0 = Array.map (fun sm -> sm.pc) t.sms in
+  (* F7 compares the IMEM write address with the fetch address at the start of the cycle. *)
+  let fetch0 = Array.map fetch_addr t.sms in
   (* FDEBUG flags: the start-of-cycle values are kept aside, and the flags are rebuilt from
      the sets of this cycle (H8). *)
   let pre_flags = Array.map fdbg_of_sm t.sms in
@@ -956,6 +970,7 @@ let step_ex ?(host = []) t =
   let irq_clr = ref 0 in
   let irq_frc = ref 0 in
   let fd_mask = ref 0 in
+  let fd_set = ref 0 in
   let tx_in = ref [] in
   let rx_out = ref [] in
   let rx_data = ref [] in
@@ -992,9 +1007,21 @@ let step_ex ?(host = []) t =
       | Irq_clear m -> irq_clr := !irq_clr lor (m land 0xFF)
       | Irq_force m -> irq_frc := !irq_frc lor (m land 0xFF)
       | Fdebug_clear m -> fd_mask := !fd_mask lor m
+      | Fdebug_set m -> fd_set := !fd_set lor m
       | Fifo_flush m -> flush := !flush lor (m land 0xF)
-      | Imem_write { addr; data } -> imem := (addr land 31, data land 0xFFFF) :: !imem)
+      | Imem_write { addr; data } -> imem := (addr land 63, data land 0xFFFF) :: !imem)
     host;
+  (* F8: a change of PAGE since the previous cycle abandons the IMEM instruction in progress. Its
+     side-set flag, IRQ wait and IMEM stall reason are ignored, so a fresh attempt starts from
+     clear. If no IMEM attempt follows in this cycle, they stay clear. *)
+  Array.iter
+    (fun sm ->
+      if sm.page <> sm.prev_page
+      then (
+        sm.side_done <- false;
+        sm.irq_wait <- None;
+        sm.stall <- No_stall))
+    t.sms;
   let setw = ref 0 in
   let clrw = ref 0 in
   let pin_writes = Array.init 4 (fun _ -> pinw_create ()) in
@@ -1058,7 +1085,7 @@ let step_ex ?(host = []) t =
     (fun (addr, _) ->
       Array.iteri
         (fun i sm ->
-          if pc0.(i) = addr
+          if fetch0.(i) = addr
           then (
             sm.side_done <- false;
             sm.irq_wait <- None;
@@ -1066,16 +1093,25 @@ let step_ex ?(host = []) t =
         t.sms)
     !imem;
   List.iter (fun (sm, w) -> latch_instr t.sms.(sm) w) (List.rev !instrs);
-  (* FDEBUG (H8). *)
+  (* FDEBUG (H8): the host set and the SMs' sets both win over a clear. *)
   Array.iteri
     (fun i sm ->
+      let set = fdbg_of_sm sm in
+      let hs = fdbg_clear_of_mask !fd_set i in
       fdbg_store
         sm
         (fdbg_merge
            ~pre:pre_flags.(i)
            ~clear:(fdbg_clear_of_mask !fd_mask i)
-           ~set:(fdbg_of_sm sm)))
+           ~set:
+             { f_txstall = set.f_txstall || hs.f_txstall
+             ; f_txover = set.f_txover || hs.f_txover
+             ; f_rxunder = set.f_rxunder || hs.f_rxunder
+             ; f_rxstall = set.f_rxstall || hs.f_rxstall
+             ; f_illegal = set.f_illegal || hs.f_illegal
+             }))
     t.sms;
+  Array.iter (fun sm -> sm.prev_page <- sm.page) t.sms;
   t.cycle <- t.cycle + 1;
   { pads = pad; rx_data = List.rev !rx_data }
 ;;
@@ -1187,7 +1223,11 @@ let flush_fifos t mask =
     t.sms
 ;;
 
-let write_imem t addr data = t.imem.(addr land 31) <- data land 0xFFFF
+let write_imem t addr data = t.imem.(addr land 63) <- data land 0xFFFF
+
+(* SMn_EXT.PAGE (bit 0 of EXT) for SM [i]. A level: it applies to the fetch of the next step
+   (engine.md 9). *)
+let set_page t i v = (host_sm t i).page <- v land 1
 
 (* ------------------------------------------------------------------------------------ *)
 (* Debug view, for the block 2 lockstep harness. *)
@@ -1225,6 +1265,7 @@ type debug =
   ; txover : bool
   ; rxunder : bool
   ; rxstall : bool
+  ; instr : int (* IMEM word at the fetch address (dbg_instr, engine.md 3) *)
   }
 
 (* DBG_CNT.stall_reason, as DESIGN.md 7 now defines it: one code per stall reason, 0 for none. *)
@@ -1287,6 +1328,7 @@ let debug t i =
   ; txover = sm.txover
   ; rxunder = sm.rxunder
   ; rxstall = sm.rxstall
+  ; instr = t.imem.(fetch_addr sm)
   }
 ;;
 

@@ -231,7 +231,19 @@ let event_g ~len ~cycles (cycle : int) : (int * Case.event) list G.t =
     ; G.map (int_g 0 255) ~f:(fun m -> [ cycle, Case.Irq_clear m ])
     ; G.map (int_g 0 255) ~f:(fun m -> [ cycle, Case.Irq_force m ])
     ; G.map w32_g ~f:(fun m -> [ cycle, Case.Fdebug_clear m ])
-    ; G.map (G.both (int_g 0 31) (word_g ~len:32)) ~f:(fun (a, d) -> [ cycle, Case.Imem_write (a, d) ])
+    ; G.map w32_g ~f:(fun m -> [ cycle, Case.Fdebug_set m ])
+    ; (* a clear and a set of FDEBUG in one cycle (H8: the set wins) *)
+      bind (G.both w32_g w32_g) (fun (c, st) -> ret [ cycle, Case.Fdebug_clear c; cycle, Case.Fdebug_set st ])
+    ; G.map (G.both (int_g 0 63) (word_g ~len:32)) ~f:(fun (a, d) -> [ cycle, Case.Imem_write (a, d) ])
+    ; (* PAGE changes mid-run (engine.md 9) *)
+      G.map (G.both sm_g (int_g 0 1)) ~f:(fun (sm, p) -> [ cycle, Case.Sm_ext (sm, p) ])
+    ; (* PAGE and an IMEM write in one cycle, at {page, PC} for a small PC (engine.md F7: the page
+         presented in this cycle decides which word is the fetch address) *)
+      G.map
+        (G.both (G.both sm_g (int_g 0 1)) (G.both (int_g 0 3) (word_g ~len:32)))
+        ~f:(fun ((sm, p), (k, d)) ->
+          [ cycle, Case.Sm_ext (sm, p); cycle, Case.Imem_write ((p * 32) + k, d) ])
+    ; G.map sm_g ~f:(fun s -> [ cycle, Case.Rxf_sel s ])
     ; single Case.Reset_low
     ]
   in
@@ -253,6 +265,16 @@ let case_g : Case.t G.t =
   let* len = int_g 1 32 in
   let* num_sms = int_g 1 4 in
   let* prog = program_g len in
+  (* A second program in page 1, at IMEM words 32 and up (engine.md 9). *)
+  let* len1 = int_g 1 32 in
+  let* prog1 = program_g len1 in
+  let* page0 =
+    weighted
+      [ 0.6, ret []
+      ; 0.4, G.map (G.all (List.init 4 (fun _ -> int_g 0 1))) ~f:(fun ps ->
+          List.mapi (fun sm p -> 0, Case.Sm_ext (sm, p)) ps)
+      ]
+  in
   let* initial = G.all (List.init 4 (fun _ -> let* fj = fjoin_g in sm_cfg_g ~len ~fjoin:fj)) in
   let* cycles = int_g 20 300 in
   (* Most cases enable an SM at cycle 0, so the program runs from the start. *)
@@ -265,15 +287,16 @@ let case_g : Case.t G.t =
     weighted [ 0.85, ret []; 0.15, G.map (int_g 1 (max 1 (cycles - 2))) ~f:(fun c -> [ c, Case.Reset_low ]) ]
   in
   let+ events = events_g ~len ~cycles in
-  let imem = Array.make 32 0 in
+  let imem = Array.make Case.imem_words 0 in
   List.iteri (fun i w -> imem.(i) <- w) prog;
+  List.iteri (fun i w -> imem.(32 + i) <- w) prog1;
   Case.normalise
     { num_sms
     ; imem
     ; initial = Array.of_list initial
     ; initial_sync = sync
     ; cycles
-    ; events = enable0 @ resets @ events
+    ; events = enable0 @ page0 @ resets @ events
     }
 ;;
 
@@ -300,6 +323,9 @@ let event_bits (ev : Case.event) =
   | Sm_restart m | Clkdiv_restart m | Fifo_flush m | Irq_clear m | Irq_force m | Fdebug_clear m ->
     popcount m
   | Imem_write (a, d) -> a + popcount d
+  | Sm_ext (sm, p) -> sm + p
+  | Rxf_sel sm -> sm
+  | Fdebug_set m -> popcount m
   | Reset_low -> 0
 ;;
 
@@ -340,6 +366,9 @@ let shrink_event (ev : Case.event) : Case.event list =
   | Case.Irq_force m when m <> 0 -> [ Case.Irq_force 0 ]
   | Case.Irq_clear m when m <> 0 -> [ Case.Irq_clear 0 ]
   | Case.Fdebug_clear m when m <> 0 -> [ Case.Fdebug_clear 0 ]
+  | Case.Fdebug_set m when m <> 0 -> [ Case.Fdebug_set 0 ]
+  | Case.Sm_ext (sm, p) when p <> 0 -> [ Case.Sm_ext (sm, 0) ]
+  | Case.Rxf_sel s when s <> 0 -> [ Case.Rxf_sel 0 ]
   | Case.Sm_config (sm, c) ->
     let d = Case.default_cfg in
     (* whole config to default, then one register at a time *)
@@ -451,7 +480,7 @@ let shrink_case (c : Case.t) : Case.t Sequence.t =
   let fewer_sms = if c.Case.num_sms > 1 then [ { c with Case.num_sms = c.Case.num_sms - 1 } ] else [] in
   let imem_words =
     List.concat
-      (List.init 32 (fun i ->
+      (List.init Case.imem_words (fun i ->
          let w = c.Case.imem.(i) in
          if w = 0
          then []
@@ -549,9 +578,17 @@ let shrink_failing ~check ~limit (c : Case.t) (f : Lockstep.failure) =
 ;;
 
 (* One generated case, the i-th from [seed], for hand-off files. *)
-let generate_one ~seed i : Case.t =
+(* The unbiased case of index [i]. *)
+let generate_raw ~seed i : Case.t =
   let random = Splittable_random.create (Base.Random.State.make [| seed; i |]) in
   Case.normalise (G.generate generator ~size:(i mod 31) ~random)
+;;
+
+(* Half the cases are steered toward live states (engine.md F7, F8; RX fills), see Retarget. *)
+let generate_one ~seed i : Case.t =
+  let c = generate_raw ~seed i in
+  let rng = Random.State.make [| seed; i; 0x5EED |] in
+  if Random.State.bool rng then Retarget.retarget ~rng c else c
 ;;
 
 (* Generate [count] cases from [seed] and run [check] on each. On the first failure, shrink

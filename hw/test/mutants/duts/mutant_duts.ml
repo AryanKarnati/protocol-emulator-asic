@@ -15,6 +15,13 @@ let names =
   ; "x_status_le"
   ; "x_irq_rel_add7"
   ; "x_restart_keeps_latch_irq"
+  ; "b3_f7_pc_only"
+  ; "b3_imem_5bit"
+  ; "b3_instr_pc_only"
+  ; "b3_page_ignored"
+  ; "b3_set_ignores_illegal"
+  ; "b3_set_loses_to_clear"
+  ; "b3_set_loses_txover"
   ]
 ;;
 
@@ -42,5 +49,12 @@ let make name ~num_sms : Polyglot_lockstep.Dut.port_dut option =
   | "x_status_le" -> port (module Pgsim_mut_x_status_le.Pgsim)
   | "x_irq_rel_add7" -> port (module Pgsim_mut_x_irq_rel_add7.Pgsim)
   | "x_restart_keeps_latch_irq" -> port (module Pgsim_mut_x_restart_keeps_latch_irq.Pgsim)
+  | "b3_f7_pc_only" -> port (module Pgsim_mut_b3_f7_pc_only.Pgsim)
+  | "b3_imem_5bit" -> port (module Pgsim_mut_b3_imem_5bit.Pgsim)
+  | "b3_instr_pc_only" -> port (module Pgsim_mut_b3_instr_pc_only.Pgsim)
+  | "b3_page_ignored" -> port (module Pgsim_mut_b3_page_ignored.Pgsim)
+  | "b3_set_ignores_illegal" -> port (module Pgsim_mut_b3_set_ignores_illegal.Pgsim)
+  | "b3_set_loses_to_clear" -> port (module Pgsim_mut_b3_set_loses_to_clear.Pgsim)
+  | "b3_set_loses_txover" -> port (module Pgsim_mut_b3_set_loses_txover.Pgsim)
   | _ -> None
 ;;

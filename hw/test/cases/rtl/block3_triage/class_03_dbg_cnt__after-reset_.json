@@ -1,0 +1,45 @@
+{
+  "format": "polyglot-lockstep-case",
+  "version": 2,
+  "num_sms": 4,
+  "load_cycles": 64,
+  "cycles": 23,
+  "imem": [
+    50432, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 49975, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 484,
+    32730, 56339, 38848, 13636, 54099, 37408, 38304, 48840, 41232, 4485,
+    6746, 17161, 767, 37312, 5562, 20687, 12814, 8508, 62224, 32928
+  ],
+  "initial": [
+    {
+      "clkdiv": 65536,
+      "execctrl": 1845624834,
+      "shiftctrl": 317915136,
+      "pinctrl": 1149964906
+    },
+    {
+      "clkdiv": 118784,
+      "execctrl": 131089,
+      "shiftctrl": 1350959104,
+      "pinctrl": 2372219929
+    },
+    {
+      "clkdiv": 115456,
+      "execctrl": 587333634,
+      "shiftctrl": 237568000,
+      "pinctrl": 2845537126
+    },
+    {
+      "clkdiv": 0,
+      "execctrl": 788529168,
+      "shiftctrl": 2450456576,
+      "pinctrl": 1415905793
+    }
+  ],
+  "initial_sync_bypass": 0,
+  "events": [
+    { "cycle": 0, "op": "sm_ext", "sm": 2, "value": 1 },
+    { "cycle": 12, "op": "sm_enable", "mask": 4 },
+    { "cycle": 19, "op": "sm_ext", "sm": 2, "value": 0 }
+  ]
+}

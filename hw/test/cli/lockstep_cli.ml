@@ -111,6 +111,32 @@ let cmd_replay args file =
     1
 ;;
 
+(* shrink FILE --out PATH: shrink a failing case file to a smaller one that still fails. *)
+let cmd_shrink args file =
+  let dut = dut_name_of (flag args "--dut" "rtl") in
+  let out = flag args "--out" "shrunk.json" in
+  (* "-" as FILE with --seed, --index and --sms: the case the lockstep test generates. *)
+  let case =
+    if file = "-"
+    then (
+      let c = Gen.generate_one ~seed:(int_flag args "--seed" 1) (int_flag args "--index" 0) in
+      { c with Case.num_sms = int_flag args "--sms" c.Case.num_sms })
+    else Case.read_file file
+  in
+  let case = Case.normalise case in
+  match check ~dut case with
+  | Lockstep.Pass _ ->
+    Printf.printf "shrink %s: passes on %s, nothing to shrink\n" file dut;
+    0
+  | Lockstep.Fail f ->
+    let shrunk, sf, steps = Gen.shrink_failing ~check:(check ~dut) ~limit:400 case f in
+    Case.write_file out shrunk;
+    Printf.printf "shrunk %s: %s, port %s, ref=0x%x dut=0x%x, %d shrink steps -> %s\n" file
+      (Lockstep.describe_cycle sf.Lockstep.cycle) sf.Lockstep.port sf.Lockstep.reference
+      sf.Lockstep.dut steps out;
+    1
+;;
+
 let write_cases dir cases =
   List.iter
     (fun (name, c) ->
@@ -241,6 +267,25 @@ let cmd_triage args =
   if fails = [] then 0 else 1
 ;;
 
+(* coverage --count N --seed S [--raw]: the scenarios reached by N generated cases (Retarget). *)
+let cmd_coverage args =
+  let count = int_flag args "--count" 2000 in
+  let seed = int_flag args "--seed" 1 in
+  let raw = List.mem "--raw" args in
+  let hits = Hashtbl.create 16 in
+  for i = 0 to count - 1 do
+    let c = if raw then Gen.generate_raw ~seed i else Gen.generate_one ~seed i in
+    List.iter
+      (fun (name, hit) -> if hit then Hashtbl.replace hits name (1 + Option.value ~default:0 (Hashtbl.find_opt hits name)))
+      (Retarget.scenarios c)
+  done;
+  Printf.printf "pio coverage over %d %s cases (seed %d):\n" count (if raw then "raw" else "generated") seed;
+  List.iter
+    (fun name -> Printf.printf "  %-65s %5d\n" name (Option.value ~default:0 (Hashtbl.find_opt hits name)))
+    Retarget.scenario_names;
+  0
+;;
+
 let cmd_write_cases args dir =
   let count = int_flag args "--count" 20 in
   let seed = int_flag args "--seed" 1 in
@@ -286,6 +331,8 @@ let () =
     | _ :: "write-cases" :: dir :: args -> cmd_write_cases args dir
     | _ :: "rtl-probe" :: args -> cmd_rtl_probe args
     | _ :: "triage" :: args -> cmd_triage args
+    | _ :: "coverage" :: args -> cmd_coverage args
+    | _ :: "shrink" :: file :: args -> cmd_shrink args file
     | _ ->
       prerr_endline
         "usage: lockstep_cli (gen|replay FILE|corpus|mutants|write-cases DIR) [options]";

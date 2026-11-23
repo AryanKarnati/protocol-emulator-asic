@@ -1,0 +1,12 @@
+(rule
+ (targets pgsim.ml)
+ (deps ../../../../sw/pgsim/pgsim.ml)
+ (action
+  (run %{exe:../tool/mutate.exe} ../../../../sw/pgsim/pgsim.ml pgsim.ml "let write_imem t addr data = t.imem.(addr land 63)" "let write_imem t addr data = t.imem.(addr land 31)" "imem := (addr land 63, data land 0xFFFF)" "imem := (addr land 31, data land 0xFFFF)")))
+
+(rule (targets pgsim.mli) (deps ../../../../sw/pgsim/pgsim.mli) (action (copy ../../../../sw/pgsim/pgsim.mli pgsim.mli)))
+
+(library
+ (name pgsim_mut_b3_imem_5bit)
+ (modules pgsim)
+ (libraries polyglot_isa))

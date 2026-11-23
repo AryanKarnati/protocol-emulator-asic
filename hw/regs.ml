@@ -28,6 +28,7 @@ module I = struct
     ; flevel : 'a [@bits 32]
     ; fdebug : 'a [@bits 32]
     ; rxf_data : 'a [@bits 32]
+    ; sram_dout : 'a [@bits 32]
     ; dbg_pc0 : 'a [@bits 5]
     ; dbg_pc1 : 'a [@bits 5]
     ; dbg_pc2 : 'a [@bits 5]
@@ -109,6 +110,8 @@ module O = struct
     ; imem_write : 'a
     ; imem_addr : 'a [@bits 6]
     ; imem_data : 'a [@bits 16]
+    ; sram_wr : 'a
+    ; sram_addr : 'a [@bits 9]
     }
   [@@deriving hardcaml]
 end
@@ -125,8 +128,8 @@ let pinctrl_reset = 0x14000000
 
 (* HWCFG: [5:0] FIFO depth 4, [11:8] SMs, [22:16] IMEM depth, [24] LCU (0),
    [25] SRAM (0), [31:28] version 1. *)
-let hwcfg_value ~num_sms ~imem_depth =
-  4 lor (num_sms lsl 8) lor (imem_depth lsl 16) lor (1 lsl 28)
+let hwcfg_value ~num_sms ~imem_depth ~sram =
+  4 lor (num_sms lsl 8) lor (imem_depth lsl 16) lor (if sram then 1 lsl 25 else 0) lor (1 lsl 28)
 ;;
 
 let bitof x k = select x k k
@@ -135,7 +138,7 @@ let is v s = s ==: of_int ~width:(width s) v
 (* A bit vector from a list of 1-bit signals, least significant first. *)
 let vec_lsb bits = concat_msb (List.rev bits)
 
-let create ~num_sms ~imem_depth (i : _ I.t) =
+let create ~num_sms ~imem_depth ~sram (i : _ I.t) =
   if num_sms < 1 || num_sms > 4
   then invalid_arg (Printf.sprintf "regs: num_sms must be 1 to 4, got %d" num_sms);
   if imem_depth <> 32 && imem_depth <> 64
@@ -157,6 +160,11 @@ let create ~num_sms ~imem_depth (i : _ I.t) =
   let low = hi_zero &: ~:(bitof a 9) &: ~:(bitof a 8) in
   let imem_r = hi_zero &: ~:(bitof a 9) &: bitof a 8 in
   let sm_r = hi_zero &: bitof a 9 &: ~:(bitof a 8) in
+  (* SRAM window (chip.md 8.4): 0x400 + 4j for j < 512, so addr[11:10] is 01 or 10. The
+     word index is addr[10:2] with bit 8 flipped: j = addr[10:2] - 256, modulo 512. *)
+  let sram_r =
+    if sram then is 0 (select a 15 12) &: (bitof a 11 ^: bitof a 10) else gnd
+  in
   let w = select a 7 2 in
   let smn = select a 7 6 in
   let off = select a 5 2 in
@@ -270,7 +278,7 @@ let create ~num_sms ~imem_depth (i : _ I.t) =
   let low_entries = Array.make 64 zero32 in
   let set idx v = low_entries.(idx) <- v in
   set 0 (of_int ~width:32 id_value);
-  set 1 (of_int ~width:32 (hwcfg_value ~num_sms ~imem_depth));
+  set 1 (of_int ~width:32 (hwcfg_value ~num_sms ~imem_depth ~sram));
   set 2 (uresize en_q 32);
   set 3 i.fstat;
   set 4 i.fdebug;
@@ -316,7 +324,7 @@ let create ~num_sms ~imem_depth (i : _ I.t) =
   in
   let sm_val = mux smn (List.init 4 sm_block) in
   (* Regions are disjoint. IMEM reads 0. *)
-  let rdata = mux2 low low_val (mux2 sm_r sm_val zero32) in
+  let rdata = mux2 sram_r i.sram_dout (mux2 low low_val (mux2 sm_r sm_val zero32)) in
   { O.rdata
   ; sm_enable = en_q
   ; sync_bypass = sync_q
@@ -360,12 +368,14 @@ let create ~num_sms ~imem_depth (i : _ I.t) =
   ; imem_write = imem_w
   ; imem_addr = w
   ; imem_data = select wd 15 0
+  ; sram_wr = wr &: sram_r
+  ; sram_addr = select a 10 2 ^: of_int ~width:9 0x100
   }
 ;;
 
 module Circuit_io = Circuit.With_interface (I) (O)
 
 (* The register block alone, flat, for the tests. *)
-let circuit ~num_sms ~imem_depth =
-  Circuit_io.create_exn ~name:"regs" (create ~num_sms ~imem_depth)
+let circuit ~num_sms ~imem_depth ~sram =
+  Circuit_io.create_exn ~name:"regs" (create ~num_sms ~imem_depth ~sram)
 ;;

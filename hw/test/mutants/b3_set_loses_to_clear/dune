@@ -1,0 +1,12 @@
+(rule
+ (targets pgsim.ml)
+ (deps ../../../../sw/pgsim/pgsim.ml)
+ (action
+  (run %{exe:../tool/mutate.exe} ../../../../sw/pgsim/pgsim.ml pgsim.ml "set.f_rxunder || hs.f_rxunder" "(set.f_rxunder || hs.f_rxunder) && not (fdbg_clear_of_mask !fd_mask i).f_rxunder")))
+
+(rule (targets pgsim.mli) (deps ../../../../sw/pgsim/pgsim.mli) (action (copy ../../../../sw/pgsim/pgsim.mli pgsim.mli)))
+
+(library
+ (name pgsim_mut_b3_set_loses_to_clear)
+ (modules pgsim)
+ (libraries polyglot_isa))

@@ -67,13 +67,13 @@ let create (i : _ I.t) =
   let in_body = reg (synced gnd) in_body_d in
   in_body_w <== in_body;
   (* Command bits (6.3): R is bit 0 and F is bit 1. *)
-  let r_q = reg plain ~enable:(rise &: ~:in_body &: (cnt ==:. 0)) mosi2 in
-  let f_q = reg plain ~enable:(rise &: ~:in_body &: (cnt ==:. 1)) mosi2 in
+  let r_q = reg (synced gnd) ~enable:(rise &: ~:in_body &: (cnt ==:. 0)) mosi2 in
+  let f_q = reg (synced gnd) ~enable:(rise &: ~:in_body &: (cnt ==:. 1)) mosi2 in
   (* The last 31 MOSI bits before this cycle. At a write access the word is these 31 bits
      and this cycle's bit, which is [rx_next]. *)
   let rxsr_w = wire 31 in
   let rx_next = concat_msb [ rxsr_w; mosi2 ] in
-  let rxsr = reg plain ~enable:rise (select rx_next 30 0) in
+  let rxsr = reg (synced (zero 31)) ~enable:rise (select rx_next 30 0) in
   rxsr_w <== rxsr;
   (* Bus address (6.4). It holds ADDR when the header ends, then steps by 4 after each
      word unless F is set. The step lands at the end of the word's last event, so the
@@ -85,7 +85,7 @@ let create (i : _ I.t) =
   in
   let addr_load = concat_msb [ select rx_next 15 2; zero 2 ] in
   let addr_d = mux2 hdr_end addr_load (mux2 word_end (addr_w +:. 4) addr_w) in
-  let addr = reg plain ~enable:vdd addr_d in
+  let addr = reg (synced (zero 16)) addr_d in
   addr_w <== addr;
   (* Bus pulses (6.4), all in the cycle of the RISE that delivers the bit. *)
   let bus_write = rise &: in_body &: ~:r_q &: (cnt ==:. 31) in

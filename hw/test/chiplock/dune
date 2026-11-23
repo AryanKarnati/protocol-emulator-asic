@@ -1,0 +1,9 @@
+(library
+ (name polyglot_chiplock)
+ (modules chip_case chip_gen chip_lockstep)
+ (libraries polyglot_pgsim polyglot_hw polyglot_lockstep hardcaml yojson))
+
+(executable
+ (name chip_cli)
+ (modules chip_cli)
+ (libraries polyglot_chiplock polyglot_lockstep))

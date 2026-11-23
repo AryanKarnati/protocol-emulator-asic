@@ -18,4 +18,11 @@
   pgsim_mut_x_div_gt
   pgsim_mut_x_status_le
   pgsim_mut_x_irq_rel_add7
-  pgsim_mut_x_restart_keeps_latch_irq))
+  pgsim_mut_x_restart_keeps_latch_irq
+  pgsim_mut_b3_f7_pc_only
+  pgsim_mut_b3_imem_5bit
+  pgsim_mut_b3_instr_pc_only
+  pgsim_mut_b3_page_ignored
+  pgsim_mut_b3_set_ignores_illegal
+  pgsim_mut_b3_set_loses_to_clear
+  pgsim_mut_b3_set_loses_txover))

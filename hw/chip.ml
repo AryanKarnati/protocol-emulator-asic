@@ -81,12 +81,13 @@ let bitof x k = select x k k
 
 (* The chip, with pio_block instantiated in [scope]. The sub-blocks of the link, the
    register block and the pins are flat. *)
-let create ~num_sms ~imem_depth (scope : Scope.t) (i : _ I.t) =
+let create ~num_sms ~imem_depth ~sram (scope : Scope.t) (i : _ I.t) =
   (* Forward references. *)
   let pio_o = Pio_block.O.Of_signal.wires () in
   let pins_in_w = wire 32 in
   let status_w = wire 8 in
   let rdata_w = wire 32 in
+  let sram_dout_w = wire 32 in
   let link =
     Hostlink.create
       { Hostlink.I.clock = i.clock
@@ -102,6 +103,7 @@ let create ~num_sms ~imem_depth (scope : Scope.t) (i : _ I.t) =
     Regs.create
       ~num_sms
       ~imem_depth
+      ~sram
       { Regs.I.clock = i.clock
       ; rst_n = i.rst_n
       ; bus_write = link.bus_write
@@ -117,6 +119,7 @@ let create ~num_sms ~imem_depth (scope : Scope.t) (i : _ I.t) =
       ; flevel = pio_o.flevel
       ; fdebug = pio_o.fdebug
       ; rxf_data = pio_o.rxf_data
+      ; sram_dout = sram_dout_w
       ; dbg_pc0 = pio_o.dbg_pc0
       ; dbg_pc1 = pio_o.dbg_pc1
       ; dbg_pc2 = pio_o.dbg_pc2
@@ -166,6 +169,43 @@ let create ~num_sms ~imem_depth (scope : Scope.t) (i : _ I.t) =
       ; miso = link.miso
       }
   in
+  (* The SRAM trial (chip.md 8.4). It is instantiated only when [sram] is set, so the
+     default chip has no instance and Cyclesim never sees one. The macro's read is
+     registered, so it is addressed continuously from bus_addr: bus_addr changes only in
+     the cycle after a RISE, and two RISEs are at least 4 cycles apart, so the data in a
+     read cycle is the word at that address. A read cannot follow a write in the next
+     cycle on the bus, since a read frame needs at least 31 RISEs. *)
+  let sram_dout =
+    if sram
+    then
+      Base.Map.find_exn
+        (Instantiation.create
+           ~instance:"i_sram"
+           ~name:"RM_IHPSG13_1P_512x32_c2_bm_bist"
+           ~inputs:
+             [ "A_CLK", i.clock
+             ; "A_MEN", vdd
+             ; "A_WEN", regs.sram_wr
+             ; "A_REN", ~:(regs.sram_wr)
+             ; "A_ADDR", regs.sram_addr
+             ; "A_DIN", link.bus_wdata
+             ; "A_BM", ones 32
+             ; "A_DLY", vdd
+             ; "A_BIST_CLK", gnd
+             ; "A_BIST_EN", gnd
+             ; "A_BIST_MEN", gnd
+             ; "A_BIST_WEN", gnd
+             ; "A_BIST_REN", gnd
+             ; "A_BIST_ADDR", zero 9
+             ; "A_BIST_DIN", zero 32
+             ; "A_BIST_BM", zero 32
+             ]
+           ~outputs:[ "A_DOUT", 32 ]
+           ())
+        "A_DOUT"
+    else zero 32
+  in
+  sram_dout_w <== sram_dout;
   pins_in_w <== pins.pins_in;
   status_w <== pins.status;
   rdata_w <== regs.rdata;
@@ -278,14 +318,14 @@ let create ~num_sms ~imem_depth (scope : Scope.t) (i : _ I.t) =
 module Circuit_io = Circuit.With_interface (I) (O)
 
 (* The chip for the Verilog printer: pio_block stays a module of its own. *)
-let circuit_with_database ~num_sms ~imem_depth =
+let circuit_with_database ~num_sms ~imem_depth ~sram =
   let scope = Scope.create () in
-  let circuit = Circuit_io.create_exn ~name:"chip" (create ~num_sms ~imem_depth scope) in
+  let circuit = Circuit_io.create_exn ~name:"chip" (create ~num_sms ~imem_depth ~sram scope) in
   circuit, Scope.circuit_database scope
 ;;
 
 (* The chip for Cyclesim: every submodule is inlined. *)
-let circuit ~num_sms ~imem_depth =
+let circuit ~num_sms ~imem_depth ~sram =
   let scope = Scope.create ~flatten_design:true () in
-  Circuit_io.create_exn ~name:"chip" (create ~num_sms ~imem_depth scope)
+  Circuit_io.create_exn ~name:"chip" (create ~num_sms ~imem_depth ~sram scope)
 ;;

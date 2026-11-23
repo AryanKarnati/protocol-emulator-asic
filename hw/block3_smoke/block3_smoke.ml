@@ -236,7 +236,7 @@ let test_host_link () =
     "H4 MISO data word"
     (List.init 32 (fun k -> sample (32 + k)))
     (bits_of 0xCAFEF00D 32);
-  (* Section 6.5: MISO never changes in cycles c to c + 2 after a rise in cycle c. *)
+  (* Section 6.6 hold rule: MISO holds in cycles c to c + 2 after a rise in cycle c, for a host that obeys 6.6. *)
   let stable = ref true in
   for j = 0 to 63 do
     let c = 3 + rises.(j) in
@@ -339,7 +339,25 @@ let test_host_link () =
        if not (obs.(c).miso = obs.(c + 1).miso && obs.(c + 1).miso = obs.(c + 2).miso)
        then stable := false)
     rises;
-  expect_bool "H12 MISO stable in c to c+2" !stable true
+  expect_bool "H12 MISO stable in c to c+2" !stable true;
+  (* H13: a reset in mid-frame (chip.md 7: every hostlink flop holds its reset value while
+     rst_n is low). The cut is after the header (bit 23) and after 40 data bits, so the
+     address and the shift register are both loaded. Both are nonzero before the reset,
+     and 0 after it. *)
+  let t = link_make () in
+  let pins, _ = frame (write_frame ~addr:0x0038 [ 0x12345678 ]) in
+  let cut = List.filteri (fun k _ -> k < 260) pins in
+  let before = run_with_rdata t ~rdata_of:(fun _ -> 0) (gap 3 @ cut) in
+  let last = before.(Array.length before - 1) in
+  expect_bool "H13 address loaded before the reset" (last.baddr <> 0) true;
+  expect_bool "H13 MOSI data loaded before the reset" (last.wdata <> 0) true;
+  set_in t "rst_n" 0;
+  Cyclesim.reset t.sim;
+  set_in t "rst_n" 1;
+  let after = link_step t ~status:0 ~rdata_of:(fun _ -> 0) idle in
+  expect_int "H13 bus_addr after reset" after.baddr 0;
+  expect_int "H13 bus_wdata after reset" after.wdata 0;
+  expect_int "H13 MISO after reset" after.miso 0
 ;;
 
 (* ---------- Register block ---------- *)
@@ -352,7 +370,7 @@ type regs =
   }
 
 let regs_make ~num_sms ~imem_depth =
-  let rsim = Cyclesim.create (Polyglot_hw.Regs.circuit ~num_sms ~imem_depth) in
+  let rsim = Cyclesim.create (Polyglot_hw.Regs.circuit ~num_sms ~imem_depth ~sram:false) in
   List.iter (fun (_, r) -> r := Bits.zero (Bits.width !r)) (Cyclesim.in_ports rsim);
   let rg = { rsim; levels = Hashtbl.create 64 } in
   (Cyclesim.in_port rsim "rst_n") := Bits.of_int ~width:1 0;
@@ -697,7 +715,7 @@ type chip =
   }
 
 let chip_make ?(num_sms = 4) ?(imem_depth = 64) () =
-  let sim = Cyclesim.create (Polyglot_hw.Chip.circuit ~num_sms ~imem_depth) in
+  let sim = Cyclesim.create (Polyglot_hw.Chip.circuit ~num_sms ~imem_depth ~sram:false) in
   List.iter (fun (_, r) -> r := Bits.zero (Bits.width !r)) (Cyclesim.in_ports sim);
   (Cyclesim.in_port sim "rst_n") := Bits.of_int ~width:1 0;
   Cyclesim.reset sim;

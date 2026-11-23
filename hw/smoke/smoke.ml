@@ -1028,23 +1028,32 @@ let section3_outputs =
   @ List.init 4 (fun k -> Printf.sprintf "dbg_instr%d" k, 16)
 ;;
 
+(* engine.md section 3: every port exists in the Cyclesim simulation for every num_sms (1 to
+   4) and IMEM depth (32 and 64), including inputs the circuit ignores (Cyclesim drops
+   inputs that nothing reads). The flattened circuit is what the lockstep simulates. *)
 let port_check () =
-  for n = 1 to 4 do
-    let sim = Cyclesim.create (Polyglot_hw.Pio_block.circuit ~num_sms:n) in
-    let widths ports = List.map (fun (name, r) -> name, Bits.width !r) ports in
-    let ins = widths (Cyclesim.in_ports sim) in
-    let outs = widths (Cyclesim.out_ports sim) in
-    let check what want got =
-      let missing = List.filter (fun p -> not (List.mem p got)) want in
-      let extra = List.filter (fun p -> not (List.mem p want)) got in
-      List.iter (fun (name, w) -> Printf.printf "  num_sms=%d %s missing %s[%d]\n%!" n what name w) missing;
-      List.iter (fun (name, w) -> Printf.printf "  num_sms=%d %s extra %s[%d]\n%!" n what name w) extra;
-      expect (Printf.sprintf "num_sms=%d %s port list" n what) ~cyc:0
-        (List.length missing + List.length extra) 0
-    in
-    check "input" section3_inputs ins;
-    check "output" section3_outputs outs
-  done
+  List.iter
+    (fun imem_depth ->
+      for n = 1 to 4 do
+        let sim =
+          Cyclesim.create (Polyglot_hw.Pio_block.circuit_with ~num_sms:n ~imem_depth)
+        in
+        let widths ports = List.map (fun (name, r) -> name, Bits.width !r) ports in
+        let ins = widths (Cyclesim.in_ports sim) in
+        let outs = widths (Cyclesim.out_ports sim) in
+        let tag = Printf.sprintf "num_sms=%d depth=%d" n imem_depth in
+        let check what want got =
+          let missing = List.filter (fun p -> not (List.mem p got)) want in
+          let extra = List.filter (fun p -> not (List.mem p want)) got in
+          List.iter (fun (name, w) -> Printf.printf "  %s %s missing %s[%d]\n%!" tag what name w) missing;
+          List.iter (fun (name, w) -> Printf.printf "  %s %s extra %s[%d]\n%!" tag what name w) extra;
+          expect (Printf.sprintf "%s %s port list" tag what) ~cyc:0
+            (List.length missing + List.length extra) 0
+        in
+        check "input" section3_inputs ins;
+        check "output" section3_outputs outs
+      done)
+    [ 32; 64 ]
 ;;
 
 (* R11 (round 3): the IMEM WAIT and the latched instruction each keep their own side-set
@@ -1853,6 +1862,135 @@ let rxf_data_no_pop () =
     ()
 ;;
 
+(* ---------- 14. F8: a PAGE change abandons the IMEM instruction (engine.md F8) ---------- *)
+
+(* A stalled IRQ WAIT 2 (sets flag 2, then waits for it to clear; stall code 7) in page 0.
+   PAGE changes in cycle 5 to page 1, where the word is IRQ WAIT 3 (0xC023). The attempt in
+   cycle 5 is a fresh first attempt, so it sets flag 3 (visible from cycle 6) and stalls.
+   A stale wait state would skip that set and let the instruction complete. Flag 2 stays set,
+   and pc stays 0. *)
+let f8_irq_wait () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0xC022;
+  load_imem tb 32 0xC023;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  run tb 7
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      set tb "ext0" (if c >= 5 then 1 else 0))
+    ~check:(fun c () ->
+      check_arr "f8 irq stall" tb ~name:"dbg_cnt0" ~mask:0x0F00_0000
+        (Array.map (fun r -> r lsl 24) [| 0; 7; 7; 7; 7; 7; 7 |]) c;
+      check_arr "f8 irq flags" tb ~name:"irq" ~mask:0xFF [| 0; 4; 4; 4; 4; 4; 0x0C |] c;
+      check_arr "f8 irq pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 0; 0; 0; 0; 0; 0 |] c)
+    ()
+;;
+
+(* A stalled PULL BLOCK with side-set 1 on pin 5 (side-set applies on the first attempt, so
+   pin 5 goes high from cycle 1), in page 0. PAGE changes in cycle 5 to page 1, where the
+   word is SET X,0 with side 0. Its side-set must apply, since the stalled instruction's
+   flag is abandoned: pin 5 goes low from cycle 6, and the SET completes in cycle 5. *)
+let f8_pull_side () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0x90A0;
+  load_imem tb 32 0xE020;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ~sideset_count:1 ~sideset_base:5 ());
+  run tb 7
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      set tb "ext0" (if c >= 5 then 1 else 0))
+    ~check:(fun c () ->
+      check_arr "f8 pull stall" tb ~name:"dbg_cnt0" ~mask:0x0F00_0000
+        (Array.map (fun r -> r lsl 24) [| 0; 1; 1; 1; 1; 1; 0 |]) c;
+      check_arr "f8 pull pin5" tb ~name:"pins_out" ~mask:0x20
+        (Array.map (fun b -> b * 0x20) [| 0; 1; 1; 1; 1; 1; 0 |]) c;
+      check_arr "f8 pull pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 0; 0; 0; 0; 0; 1 |] c)
+    ()
+;;
+
+(* PAGE changes during a delay. Word 0 of page 0 is SET X,1 with delay 2. Its page-0 word 1 is
+   SET X,2 and page-1 word 1 is SET Y,7. The delay runs in cycles 1 and 2, and PAGE changes in
+   cycle 2 (a delay tick, with no IMEM attempt). The delay counter and pc are untouched.
+   The attempt in cycle 3 fetches page 1, so Y = 7 from cycle 4. *)
+let f8_delay () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0xE221;
+  load_imem tb 1 0xE022;
+  load_imem tb 33 0xE047;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  run tb 5
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      set tb "ext0" (if c >= 2 then 1 else 0))
+    ~check:(fun c () ->
+      check_arr "f8 delay pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 1; 1; 1; 2 |] c;
+      check_arr "f8 delay count" tb ~name:"dbg_cnt0" ~mask:0x1F_0000
+        (Array.map (fun d -> d lsl 16) [| 0; 2; 1; 0; 0 |]) c;
+      check_arr "f8 delay instr" tb ~name:"dbg_instr0" ~mask:0xFFFF
+        [| 0xE221; 0xE022; 0xE047; 0xE047; 0 |] c;
+      check_arr "f8 delay X" tb ~name:"dbg_x0" ~mask:0xFFFF_FFFF [| 0; 1; 1; 1; 1 |] c;
+      check_arr "f8 delay Y" tb ~name:"dbg_y0" ~mask:0xFFFF_FFFF [| 0; 0; 0; 0; 7 |] c)
+    ()
+;;
+
+(* PAGE changes while the SM is disabled. It is stalled on PULL BLOCK with side-set 1 in
+   page 0 (cycles 0 to 2), then disabled from cycle 3 (no attempt, the stall holds). PAGE
+   changes to 1 in cycle 5, which clears the stall and the side-set flag. The SM is enabled
+   in cycle 7, and the page-1 word SET X,0 with side 0 runs with its side-set applied, so pin
+   5 goes low from cycle 8. A stale side-set flag would leave pin 5 high. *)
+let f8_disabled () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0x90A0;
+  load_imem tb 32 0xE020;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ~sideset_count:1 ~sideset_base:5 ());
+  run tb 9
+    ~f:(fun c () ->
+      set tb "sm_enable" (if c <= 2 || c >= 7 then 1 else 0);
+      set tb "ext0" (if c >= 5 then 1 else 0))
+    ~check:(fun c () ->
+      check_arr "f8 dis stall" tb ~name:"dbg_cnt0" ~mask:0x0F00_0000
+        (Array.map (fun r -> r lsl 24) [| 0; 1; 1; 1; 1; 1; 0; 0; 0 |]) c;
+      check_arr "f8 dis pin5" tb ~name:"pins_out" ~mask:0x20
+        (Array.map (fun b -> b * 0x20) [| 0; 1; 1; 1; 1; 1; 1; 1; 0 |]) c;
+      check_arr "f8 dis pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 0; 0; 0; 0; 0; 0; 0; 1 |] c)
+    ()
+;;
+
+(* PAGE changes in the same cycle as an F7 write. Both pages have WAIT 1 GPIO 1 side 1 at
+   word 0 (pin 1 low, so it stalls). In cycle 4 PAGE changes to 1, and the host writes
+   SET X,0 side 0 to address 32. That is the fetch address in cycle 4 (PAGE is this cycle's
+   level). The page-1 word is WAIT 1 GPIO 1 with side 0, so the attempt in cycle 4 is fresh,
+   and its side-set (0) applies and takes pin 5 low from cycle 5. A stale side-set flag would
+   leave pin 5 high. F7 then clears the stall at the end of cycle 4. The new word runs in
+   cycle 5, so pc is 1 from cycle 6. *)
+let f8_f7_same_cycle () =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0x3081;
+  load_imem tb 32 0x2081;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ~sideset_count:1 ~sideset_base:5 ());
+  run tb 7
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      set tb "ext0" (if c >= 4 then 1 else 0);
+      if c = 4
+      then (
+        set tb "imem_write" 1;
+        set tb "imem_addr" 32;
+        set tb "imem_data" 0xE020))
+    ~check:(fun c () ->
+      check_arr "f8 f7 stall" tb ~name:"dbg_cnt0" ~mask:0x0F00_0000
+        (Array.map (fun r -> r lsl 24) [| 0; 4; 4; 4; 4; 0; 0 |]) c;
+      check_arr "f8 f7 pin5" tb ~name:"pins_out" ~mask:0x20
+        (Array.map (fun b -> b * 0x20) [| 0; 1; 1; 1; 1; 0; 0 |]) c;
+      check_arr "f8 f7 pc" tb ~name:"dbg_pc0" ~mask:31 [| 0; 0; 0; 0; 0; 0; 1 |] c)
+    ()
+;;
+
 let () =
   zero_count_set_pindirs ();
   zero_count_out_pins ();
@@ -1908,6 +2046,11 @@ let () =
   fdebug_set_clear ();
   depth32 ();
   rxf_data_no_pop ();
+  f8_irq_wait ();
+  f8_pull_side ();
+  f8_delay ();
+  f8_disabled ();
+  f8_f7_same_cycle ();
   Printf.printf "smoke: %d checks, %d failures\n%!" !checks !failures;
   if !failures > 0 then exit 1
 ;;

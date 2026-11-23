@@ -1,0 +1,12 @@
+; The chip mutants (one library each, see the directories beside this one).
+(library
+ (name polyglot_chip_mutants)
+ (modules chip_mutants)
+ (libraries
+  polyglot_chiplock
+  pgsim_mut_chip_miso_early
+  pgsim_mut_chip_commit_at_read
+  pgsim_mut_chip_pad_od_polarity
+  pgsim_mut_chip_status_swapped
+  pgsim_mut_chip_fixed_increments
+  pgsim_mut_chip_commit_last_bit))

@@ -42,6 +42,7 @@ module I = struct
     ; rx_level : 'a [@bits 4]
     ; irq_q : 'a [@bits 8]
     ; imem_abandon : 'a
+    ; page : 'a
     }
   [@@deriving hardcaml]
 end
@@ -176,6 +177,15 @@ let create (scope : Scope.t) (i : _ I.t) =
   let imem_irqw = wire 1 in
   let latch_irqw = wire 1 in
   let exec_stalled = wire 1 in
+  (* PAGE (engine.md F8). [page_prev] is PAGE in the previous cycle. A change of PAGE
+     abandons the IMEM instruction: its side-set-done flag, IRQ wait state and stall reason
+     are ignored for the attempt of this cycle, and at the end of the cycle they hold what
+     that attempt left (or 0 if there was no IMEM attempt). PAGE is 0 at depth 32. *)
+  let page_prev = wire 1 in
+  let page_chg = (i.page ^: page_prev) -- "page_chg" in
+  let imem_ss_base = (imem_ss &: ~:page_chg) -- "imem_ss_base" in
+  let imem_irqw_base = (imem_irqw &: ~:page_chg) -- "imem_irqw_base" in
+  let imem_stall_base = mux2 page_chg (zero 4) imem_stall -- "imem_stall_base" in
   (* OUT_STICKY record: the most recent OUT/SET/MOV pin write, level or direction. *)
   let sticky_mask = wire 32 in
   let sticky_val = wire 32 in
@@ -395,7 +405,7 @@ let create (scope : Scope.t) (i : _ I.t) =
   let irq_now = now is_irq in
   let irq_clr_now = (irq_now &: irq_clr_bit) -- "irq_clr_now" in
   let irq_set_form = (irq_now &: ~:irq_clr_bit) -- "irq_set_form" in
-  let irq_state = mux2 latch_valid latch_irqw imem_irqw -- "irq_state" in
+  let irq_state = mux2 latch_valid latch_irqw imem_irqw_base -- "irq_state" in
   let irqw_form = (irq_set_form &: irq_wait_bit) -- "irqw_form" in
   let irqw_next = irqw_form &: (~:irq_state |: flag_val) in
   let irq_stall = irqw_next -- "irq_stall" in
@@ -447,7 +457,7 @@ let create (scope : Scope.t) (i : _ I.t) =
   in
   (* Side-set (datasheet 3.5.1, engine.md R11). It applies on the first attempt only, and
      beats OUT, SET and MOV on the same pin. *)
-  let ss_flag = mux2 latch_valid latch_ss imem_ss -- "ss_flag" in
+  let ss_flag = mux2 latch_valid latch_ss imem_ss_base -- "ss_flag" in
   let ss_apply = (attempt &: ~:ss_flag &: side_valid) -- "ss_apply" in
   let ss_nbits = (uresize sideset_count 6 -: uresize side_en 6) -- "ss_nbits" in
   let ss_mask =
@@ -627,15 +637,15 @@ let create (scope : Scope.t) (i : _ I.t) =
   (* F7: an IMEM write to the PC (imem_abandon) abandons the IMEM instruction, and clears
      its flags after the attempt of that cycle. *)
   let imem_clr = (i.restart |: pc_write_latch |: i.imem_abandon) -- "imem_clr" in
-  let imem_ss_next = mux2 imem_clr gnd (mux2 attempt_imem stall imem_ss) -- "imem_ss_next" in
+  let imem_ss_next = mux2 imem_clr gnd (mux2 attempt_imem stall imem_ss_base) -- "imem_ss_next" in
   let imem_irqw_next =
-    mux2 imem_clr gnd (mux2 attempt_imem irqw_next imem_irqw) -- "imem_irqw_next"
+    mux2 imem_clr gnd (mux2 attempt_imem irqw_next imem_irqw_base) -- "imem_irqw_next"
   in
   let stall_reason_now = mux2 stall stall_code (zero 4) -- "stall_reason_now" in
   (* F6: a latched instruction that writes the PC abandons the IMEM instruction, and its
      stall reason goes with it. *)
   let imem_stall_next =
-    mux2 imem_clr (zero 4) (mux2 attempt_imem stall_reason_now imem_stall)
+    mux2 imem_clr (zero 4) (mux2 attempt_imem stall_reason_now imem_stall_base)
     -- "imem_stall_next"
   in
   let latch_stall_next =
@@ -709,6 +719,8 @@ let create (scope : Scope.t) (i : _ I.t) =
     reg (mkr ~width:1 ~reset_to:gnd) exec_stalled_next -- "exec_stalled_q"
   in
   exec_stalled <== reg_exec_stalled;
+  let reg_page_prev = reg (mkr ~width:1 ~reset_to:gnd) i.page -- "page_prev_q" in
+  page_prev <== reg_page_prev;
   (* The OUT_STICKY record: a new write replaces all of it, and restart clears it (H3).
      It is recorded whether or not the SM is enabled (a forced write counts). *)
   let new_mask = mux2 dir_write_now dir_new_mask lvl_new_mask in
