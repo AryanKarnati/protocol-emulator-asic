@@ -1,0 +1,32 @@
+[tasks]
+# Unbounded k-induction (see PROPERTIES.md for the depth reached, if any).
+prove
+# Bounded to 72 cycles: the header, the first read word and its commit.
+bmc
+# Bounded to 184 cycles: the first and second write words. Slow; used by the mutant runner
+# for write-side mutants only (HOSTLINK_DEEP=1).
+bmc_deep
+# Reachability of the covers in hostlink_harness.v.
+cover
+
+[options]
+prove: mode prove
+prove: depth 8
+bmc: mode bmc
+bmc: depth 72
+bmc_deep: mode bmc
+bmc_deep: depth 184
+cover: mode cover
+cover: depth 184
+
+[engines]
+smtbmc boolector
+
+[script]
+read_verilog -formal hostlink.v
+read_verilog -formal hostlink_harness.v
+prep -top hostlink_harness
+
+[files]
+build/hostlink.v
+hostlink_harness.v

@@ -23,7 +23,7 @@ export SBY
 
 DUNE = cd $(ROOT) && $(OPAM_EXEC) dune
 
-.PHONY: all gen prove decode mutants d5_slow clean
+.PHONY: all gen prove decode mutants d5_slow hostlink hostlink_deep clean
 
 # The bounded D5 checks: manual only, not in CI. D1 (tick every cycle for 1/0, proven
 # unbounded) already implies the 256-gap sum for 1/0, so this only adds evidence for the
@@ -37,6 +37,7 @@ all: gen prove decode mutants
 gen:
 	mkdir -p build
 	$(DUNE) build --root . --display=quiet ./formal/gen/gen_formal.exe ./hw/bin/gen_verilog.exe ./formal/decode/dump_expected.exe
+	$(DUNE) exec --root . --display=quiet ./hw/bin/gen_verilog.exe -- hostlink > $(CURDIR)/build/hostlink.v
 	$(DUNE) exec --root . --display=quiet ./formal/gen/gen_formal.exe -- fifo_4x32 > $(CURDIR)/build/fifo_4x32.v
 	$(DUNE) exec --root . --display=quiet ./formal/gen/gen_formal.exe -- clkdiv > $(CURDIR)/build/clkdiv.v
 	$(DUNE) exec --root . --display=quiet ./formal/gen/gen_formal.exe -- clkdiv_dbg > $(CURDIR)/build/clkdiv_dbg.v
@@ -78,6 +79,20 @@ decode: gen
 
 mutants: gen
 	./run_mutants.sh
+
+# Host link (block 3): bounded BMC to 72 cycles, the 184-cycle cover, the negative check
+# (the hold rule without the host obligations must fail), and the hostlink mutants.
+# The unbounded proof is not run here: k-induction returns UNKNOWN (PROPERTIES.md).
+hostlink: gen
+	$(SBY) -f hostlink.sby bmc -d build/hl_bmc
+	$(SBY) -f hostlink.sby cover -d build/hl_cover
+	-$(SBY) -f hostlink_miso_uncond.sby -d build/hl_uncond
+	grep -q "DONE (FAIL" build/hl_uncond/logfile.txt
+	ONLY=hostlink__ ./run_mutants.sh
+
+# Host link, write-side mutants with the 184-cycle BMC. Slow: run nightly, not per push.
+hostlink_deep: gen
+	ONLY=hostlink_deep__ ./run_mutants.sh
 
 clean:
 	rm -rf build
