@@ -87,6 +87,7 @@ def drive_idle(dut):
     dut.irq_clear.value = 0
     dut.irq_force.value = 0
     dut.fdebug_clear.value = 0
+    dut.fdebug_set.value = 0  # block 3 (engine.md 3)
     dut.txf_push.value = 0
     dut.rxf_pop.value = 0
     dut.instr_write.value = 0
@@ -96,6 +97,7 @@ def drive_idle(dut):
         getattr(dut, f"execctrl{i}").value = EXECCTRL_RESET
         getattr(dut, f"shiftctrl{i}").value = SHIFTCTRL_RESET
         getattr(dut, f"pinctrl{i}").value = PINCTRL_RESET
+        getattr(dut, f"ext{i}").value = 0  # block 3: SMn_EXT, PAGE is bit 0
 
 
 async def imem_write(dut, addr, data):
@@ -123,6 +125,11 @@ async def reset_mid_run(dut):
     await imem_write(dut, 0, 0xE001)
     await imem_write(dut, 1, 0xE000)
     await imem_write(dut, 2, 0x0000)
+    # dbg_instr is the word at the fetch address {PAGE, PC} = IMEM[0] (engine.md 3, 9).
+    await ReadOnly()
+    got = int(dut.dbg_instr0.value)
+    await Timer(1, unit="ns")
+    assert got == 0xE001, f"dbg_instr0 before the run = 0x{got:04x}, expected IMEM[0] = 0xe001"
 
     # Run SM0.
     dut.sm_enable.value = 0x1
@@ -148,6 +155,10 @@ async def reset_mid_run(dut):
     dut.rst_n.value = 1
     await Timer(1, unit="ns")
     await check_r0(dut, "cycle 0 after the release")
+    await ReadOnly()
+    got = int(dut.dbg_instr0.value)
+    await Timer(1, unit="ns")
+    assert got == 0xE001, f"dbg_instr0 after the release = 0x{got:04x}, expected IMEM[0] = 0xe001"
 
     # IMEM is not reset (engine.md R0): the program loaded before the reset must still run.
     # Re-enable SM0 (reset cleared SM_ENABLE) and watch pins_out bit 0 toggle, SET PINS 1 and 0.
@@ -160,6 +171,41 @@ async def reset_mid_run(dut):
         await Timer(1, unit="ns")
     assert seen == {0, 1}, f"program loaded before the reset did not run after it: pins_out bit 0 seen {seen}"
     dut._log.info("program loaded before the reset runs after it: pins_out bit 0 toggled")
+
+
+@cocotb.test()
+async def fetch_page_select(dut):
+    """The fetch address is {EXT.PAGE, PC} with IMEM depth 64 (engine.md 9). Only bit 0 of
+    ext_n selects the page, and dbg_instr follows it in the same cycle."""
+    cocotb.start_soon(Clock(dut.clock, 10, unit="ns").start())
+    drive_idle(dut)
+    dut.rst_n.value = 0
+    await RisingEdge(dut.clock)
+    await RisingEdge(dut.clock)
+    dut.rst_n.value = 1
+    await Timer(1, unit="ns")
+
+    await imem_write(dut, 0, 0xE001)  # page 0, word 0
+    await imem_write(dut, 32, 0xE11F)  # page 1, word 0 (IMEM index 32)
+    await Timer(1, unit="ns")
+
+    async def fetch(sel):
+        dut.ext0.value = sel
+        await Timer(1, unit="ns")
+        await ReadOnly()
+        got = int(dut.dbg_instr0.value)
+        await Timer(1, unit="ns")
+        return got
+
+    got = await fetch(0)
+    assert got == 0xE001, f"PAGE 0, PC 0: dbg_instr0 = 0x{got:04x}, expected 0xe001"
+    got = await fetch(1)
+    assert got == 0xE11F, f"PAGE 1, PC 0: dbg_instr0 = 0x{got:04x}, expected 0xe11f"
+    # Other ext bits are ignored: 2 has bit 0 clear, so page 0.
+    got = await fetch(2)
+    assert got == 0xE001, f"ext0 = 2 (PAGE bit 0 clear): dbg_instr0 = 0x{got:04x}, expected 0xe001"
+    got = await fetch(3)
+    assert got == 0xE11F, f"ext0 = 3 (PAGE bit 0 set): dbg_instr0 = 0x{got:04x}, expected 0xe11f"
 
 
 @cocotb.test()
