@@ -192,6 +192,7 @@ let create ~num_sms ~imem_depth (scope : Scope.t) (i : _ I.t) =
         ; rx_level = rx_level_w
         ; irq_q = irq_w
         ; imem_abandon = imem_hit_w
+        ; page = (if paged then bitof exts.(k) 0 else gnd)
         }
     in
     (* Fetch address: {PAGE, PC} with depth 64 (PAGE is ext bit 0, this cycle), PC alone
