@@ -1134,14 +1134,25 @@ def _put_item(sm, data, st):
     st[0] += 1
 
 
-def _finish_frame(sm, data, out, st):
-    """Complete the frame with zero bytes so CS_N goes high and RX ends empty."""
+FINISH_LIMIT_US = 10000  # how long an aborted frame may take to be completed with zero bytes
+
+
+def _finish_frame(sm, data, out, st, now, diff):
+    """Complete an aborted frame with zero bytes, for at most FINISH_LIMIT_US.
+
+    This is not a safe abort. The header has already fixed the frame's length, so the master runs
+    the whole frame: the zero bytes clock out and CS_N goes high at the end. Every byte already
+    pushed is clocked, so a write takes effect with the bytes that were sent (a partial write), and
+    any RX pops in the frame are made, so the words they returned are lost. The caller must
+    re-check the chip (check() or reload()) after an OSError.
+    """
     if st[0] == 0:
         return  # nothing was sent, so no frame is running
     st[2] = True
-    spins = 0
-    while len(out) < len(data) and spins < 1000000:
-        spins += 1
+    t0 = now()
+    while len(out) < len(data):
+        if diff(now(), t0) > FINISH_LIMIT_US:
+            return  # the master is not running; the caller sees OSError and checks the chip
         if sm.rx_fifo() > 0:
             out.append(sm.get() & 0xFF)
         elif st[0] <= len(data) and sm.tx_fifo() < FIFO_DEPTH:
@@ -1157,8 +1168,14 @@ def xfer_on_sm(sm, data, timeout_us=100000, clock=None):
     when it is full, so popping first keeps MISO correct at any host speed. TX is never more than
     4 words ahead of the master, so the frame cannot stall on an empty TX except briefly.
 
-    On timeout, or if the caller is interrupted, the frame is completed with zero bytes, so CS_N
-    goes high and RX is left empty. Then OSError is raised (or the interrupt is re-raised).
+    On a timeout, the frame is completed with zero bytes and OSError is raised. If the caller is
+    interrupted, the same completion runs and the interrupt is re-raised. This is NOT a safe abort:
+    the header fixes the frame's length, so the chip still runs the whole frame. Bytes already
+    pushed take effect, so a write can land partly (an interrupted write of 0xAABBCCDD after one byte
+    leaves 0xAA000000), a burst can write zeros into later registers or IMEM, and RX pops made in the
+    frame lose their words. After OSError or an interrupt, call chip.check() or chip.reload() before
+    relying on the chip, and treat the RX data of that frame as lost.
+
     clock is (now, diff) for tests; the default is the MicroPython tick functions.
     """
     n = len(data)
@@ -1169,16 +1186,18 @@ def xfer_on_sm(sm, data, timeout_us=100000, clock=None):
     st = [0, now(), False]  # items pushed (0 is the header), start time, aborted
     try:
         while len(out) < n:
-            if not st[2] and diff(now(), st[1]) > timeout_us:
-                _finish_frame(sm, data, out, st)
-                raise OSError("SPI frame timed out; CS_N released")
+            if diff(now(), st[1]) > timeout_us:
+                break  # finished below, outside the try, so it runs once
             if sm.rx_fifo() > 0:
                 out.append(sm.get() & 0xFF)
             elif st[0] <= n and sm.tx_fifo() < FIFO_DEPTH:
                 _put_item(sm, data, st)
     except BaseException:
-        _finish_frame(sm, data, out, st)
+        _finish_frame(sm, data, out, st, now, diff)
         raise
+    if len(out) < n:
+        _finish_frame(sm, data, out, st, now, diff)
+        raise OSError("SPI frame timed out; the chip may hold a partial frame (see xfer_on_sm)")
     return bytes(out)
 
 

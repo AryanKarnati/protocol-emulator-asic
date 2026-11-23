@@ -132,3 +132,65 @@ def test_header_is_n_minus_one():
     pg.xfer_on_sm(r, bytes([1, 2, 3]))
     assert seen[0] == 2
     assert [(w >> 24) for w in seen[1:]] == [1, 2, 3]
+
+
+class CountingStuck(FifoMaster):
+    """A master that never runs; counts every FIFO call so the test can bound the work."""
+
+    def __init__(self):
+        super().__init__(stall=True)
+        self.total = 0
+
+    def tx_fifo(self):
+        self.total += 1
+        return super().tx_fifo()
+
+    def rx_fifo(self):
+        self.total += 1
+        return super().rx_fifo()
+
+    def put(self, v):
+        self.total += 1
+        self.tx.append(v)
+
+
+def test_stuck_master_timeout_does_small_bounded_work():
+    # Each clock read advances 1 ms. timeout is 20 ms, so the loop runs about 20 times; the
+    # completion is bounded by FINISH_LIMIT_US (10 ms) and runs once. The old code ran a million
+    # spins on each of two calls (about 4 million API calls at this timeout).
+    m = CountingStuck()
+    now = [0]
+
+    def clock():
+        now[0] += 1000
+        return now[0]
+
+    with pytest.raises(OSError):
+        pg.xfer_on_sm(m, bytes([7, 8, 9]), timeout_us=20000, clock=(clock, lambda a, b: a - b))
+    assert m.total < 200, m.total
+
+
+def test_interrupt_with_a_stuck_master_is_bounded_too():
+    m = CountingStuck()
+    now = [0]
+
+    def clock():
+        now[0] += 1000
+        return now[0]
+
+    class Ctrl(CountingStuck):
+        def __init__(self):
+            super().__init__()
+            self.rxcalls = 0
+
+        def rx_fifo(self):
+            self.total += 1
+            self.rxcalls += 1
+            if self.rxcalls == 5:
+                raise KeyboardInterrupt()
+            return FifoMaster.rx_fifo(self)
+
+    m = Ctrl()
+    with pytest.raises(KeyboardInterrupt):
+        pg.xfer_on_sm(m, bytes([1, 2]), timeout_us=10**9, clock=(clock, lambda a, b: a - b))
+    assert m.total < 200, m.total
