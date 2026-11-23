@@ -152,7 +152,8 @@ Status on the real module, from the runs in this session:
 | `prove` (k-induction, k up to 8) | UNKNOWN. The step case fails on the bus-pulse equality (line 192). See the disclosure below. |
 | `hostlink_miso_uncond.sby` (L2 without the host obligations) | FAIL at step 4, as expected. |
 | Mutants (`formal/mutants/hostlink__*`, 7) | 7 of 7 killed by `bmc` (72 cycles). Kills: a missing commit, a commit one cycle late, a read one cycle early, MISO from bit 30, inverted MOSI, CS_N stuck high, and a wrong STATUS bit. |
-| Write-side mutants (`formal/mutants/hostlink_deep__*`, 2) | Not yet run. The first write word is at cycle 114, so `bmc` to 72 cannot kill them. They need `bmc_deep` (184 cycles): `make -C formal hostlink_deep`. |
+| Write-side mutants (`formal/mutants/hostlink_deep__*`, 2) | Not run to a result. `bmc` to 72 cannot reach the first write word (cycle 114). The deep runs were stopped (see the deep BMC row below). Manual target: `make -C formal hostlink_deep`. |
+| `bmc_deep` (184 cycles, real module) | Stopped at step 115 after about 3.5 hours. No assertion failed through step 115, which includes the first write word (cycle 114). Not completed to 184, so no result is claimed for cycles 116 to 184. Manual target only: `make -C formal bmc_deep` (or `sby -f formal/hostlink.sby bmc_deep`). Not in CI. |
 
 | ID | Sentence | How it is checked |
 | --- | --- | --- |
@@ -163,7 +164,11 @@ Status on the real module, from the runs in this session:
 | L5 | At most one bus pulse is raised per cycle, and a write pulse only occurs inside a frame with its word complete. | `bmc` to 72 for the one-pulse part. The write part needs `bmc_deep`. |
 | L6 | While `rst_n` is low, `miso` is 0 and no bus pulse is raised. | `bmc` to 72. chip.md 7 states this (C2). |
 
-**Disclosure on the unbounded proof.** The k-induction step starts from an arbitrary state. The
+****Helper-invariant attempt (not closed).** To close the unbounded proof I read `hw/hostlink.ml` after the properties were written (disclosed, as the coordinator allowed). The internal state that the invariants would tie to the monitor is: the pin flops `sck2`, `sck3`, `cs2`, `cs3`, `mosi2` (and their first stages); `cnt` (5 bit, the phase after bit 24); `in_body`; the command bits `r_q` and `f_q`; `rxsr` (31 bits); `addr` (16 bits, which loads ADDR at the header end and steps by 4 after each word unless F is set); and `sr` (32 bits). The monitor keeps `ADDR+4m` in a different form, so the address invariant needs a mapping from the stepping register to the monitor's word index. The invariants were not implemented: that needs a debug netlist to expose these nets. The bounded results above are the result.
+
+**cs_stuck_high (step 3).** The first run ended with `DONE (ERROR)`. The log had `Assert failed` at step 4, `Status: FAILED`, then "Engine terminated without status". A rerun with the same boolector engine gave `Status returned by engine: FAIL` and `DONE (FAIL)`, and a z3 run also gave a clean FAIL. So the ERROR did not reproduce; the cause looks like an intermittent sby/boolector status issue, and its root cause was not found. The runner now counts a kill only when the log has both `Assert failed` and `DONE (FAIL`. If boolector ends with "terminated without status", it retries with z3.
+
+Disclosure on the unbounded proof.** The k-induction step starts from an arbitrary state. The
 monitor and the DUT are then unrelated, so the bus-pulse equality fails in the step case. This is
 a limit of the method, not a counterexample from reset: the BMC from reset passes. To close the
 proof, the invariants would have to tie the monitor registers to the DUT registers, which needs a
