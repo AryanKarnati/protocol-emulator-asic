@@ -4,8 +4,20 @@
    same port mapping serves the reference and the faulty variants (which are pgsim with one
    source edit each, see hw/test/mutants). *)
 
+(* What the reference can see of each SM at the start of a cycle, for the generators (no port of
+   the RTL has these, so the RTL adapter returns empty values). *)
+type probe =
+  { stalled : bool array (** an IMEM or latched instruction is stalled (DBG_CNT stall reason) *)
+  ; fetch : int array (** the fetch address {PAGE, PC} of the cycle *)
+  ; rx_nonempty : bool array (** RX FIFO of the SM has a word *)
+  }
+
+let no_probe = { stalled = Array.make 4 false; fetch = Array.make 4 0; rx_nonempty = Array.make 4 false }
+
 type port_dut =
   { name : string
+  ; probe : Ports.inputs -> probe
+    (** for the cycle whose inputs are given, after the registers of the cycle are applied *)
   ; regs : Ports.inputs -> Ports.outputs
     (** the register outputs of the cycle whose inputs are given. FIFO capacity follows the
         FJOIN input of that cycle (engine.md 3), so the inputs are applied before reading. *)
@@ -127,5 +139,18 @@ let pgsim (module P : PGSIM) ~name ~pads_from_pins_in ~num_sms : port_dut =
       ignore (P.step_ex ~host:(host_ops i) t);
       rx)
   in
-  { name; regs; cycle }
+  let probe (i : Ports.inputs) =
+    if i.rst_n
+    then (
+      apply_config i;
+      apply_page i);
+    let t = !t_ref in
+    let dbg n = P.debug t n in
+    let per f = Array.init 4 (fun n -> n < num_sms && f n) in
+    { stalled = per (fun n -> P.dbg_cnt t n lsr 24 land 15 <> 0)
+    ; fetch = Array.init 4 (fun n -> ((i.sm_ext.(n) land 1) lsl 5) lor (dbg n).P.pc)
+    ; rx_nonempty = per (fun n -> (dbg n).P.rx_level > 0)
+    }
+  in
+  { name; probe; regs; cycle }
 ;;

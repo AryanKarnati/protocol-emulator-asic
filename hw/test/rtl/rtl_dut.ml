@@ -133,5 +133,5 @@ let create ~num_sms : Dut.port_dut =
       Sim.cycle_check sim;
       rx)
   in
-  { Dut.name = "rtl"; regs; cycle }
+  { Dut.name = "rtl"; probe = (fun _ -> Dut.no_probe); regs; cycle }
 ;;

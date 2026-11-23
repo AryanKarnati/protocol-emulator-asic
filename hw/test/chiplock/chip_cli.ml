@@ -124,6 +124,28 @@ let cmd_trace args file =
   0
 ;;
 
+(* coverage --count N --seed S --sms K [--cycles C]: the scenarios of N generated cases. *)
+let cmd_coverage args =
+  let count = int_flag args "--count" 2000 in
+  let seed = int_flag args "--seed" 1 in
+  let sms = int_flag args "--sms" 4 in
+  let cycles = int_flag args "--cycles" 3000 in
+  let hits = Hashtbl.create 16 in
+  let total = ref 0 in
+  for i = 0 to count - 1 do
+    let c = Chip_gen.generate ~target:cycles ~seed:((seed * 1_000_003) + i) ~num_sms:sms () in
+    total := !total + Array.length c.Chip_case.cycles;
+    List.iter
+      (fun (name, hit) -> if hit then Hashtbl.replace hits name (1 + Option.value ~default:0 (Hashtbl.find_opt hits name)))
+      (Chip_gen.chip_scenarios c)
+  done;
+  Printf.printf "chip coverage over %d cases at %d SMs (seed %d, %d cycles):\n" count sms seed !total;
+  List.iter
+    (fun name -> Printf.printf "  %-55s %5d\n" name (Option.value ~default:0 (Hashtbl.find_opt hits name)))
+    Chip_gen.chip_scenario_names;
+  0
+;;
+
 let cmd_gen args =
   let seed = int_flag args "--seed" 1 in
   let sms = int_flag args "--sms" 4 in
@@ -142,6 +164,7 @@ let () =
     | _ :: "shrink" :: file :: args -> cmd_shrink args file
     | _ :: "corpus" :: args -> cmd_corpus args
     | _ :: "gen" :: args -> cmd_gen args
+    | _ :: "coverage" :: args -> cmd_coverage args
     | _ :: "trace" :: file :: args -> cmd_trace args file
     | _ ->
       prerr_endline "usage: chip_cli (triage|replay FILE|shrink FILE|corpus|gen) [options]";
