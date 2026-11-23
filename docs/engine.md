@@ -45,7 +45,7 @@ Port names are the Verilog names. The lockstep harness drives Cyclesim by these 
 
 `hw/pio_block.mli` exposes `val circuit : num_sms:int -> Hardcaml.Circuit.t`. This is the circuit the lockstep harness simulates, and it must behave exactly like the Verilog that `gen_verilog` prints.
 
-Ports exist for 4 SMs whatever `num_sms` is. For an SM `i ≥ num_sms` there is no logic: its outputs are 0, and inputs aimed at it are ignored.
+Ports exist for 4 SMs whatever `num_sms` is. For an SM `i ≥ num_sms` there is no logic: its outputs are 0, and inputs aimed at it are ignored. Every port in this table must also exist in the Cyclesim simulation for every `num_sms` and IMEM depth, including inputs the circuit ignores, such as `ext` at depth 32. Cyclesim drops inputs nothing reads, so the RTL must keep them on purpose.
 
 **Inputs**
 
@@ -71,7 +71,7 @@ Ports exist for 4 SMs whatever `num_sms` is. For an SM `i ≥ num_sms` there is 
 | `instr_write`, `instr_sm` [2], `instr_data` [16] | | pulse | Host write to SMn_INSTR |
 | `imem_write`, `imem_addr` [6], `imem_data` [16] | | pulse | Instruction memory write. With IMEM depth 32, bit 5 is ignored. (Block 3: was 5 bits.) |
 | `ext0`…`3` | 32 | level | SMn_EXT. Bit 0 is PAGE. Other bits are ignored. With IMEM depth 32 the whole word is ignored. (Block 3.) |
-| `fdebug_set` | 32 | pulse | Sets FDEBUG flags, in the `fdebug` layout (H8). The register block uses it for RXUNDER (chip.md §8.3). (Block 3.) |
+| `fdebug_set` | 32 | pulse | Sets FDEBUG flags, in the `fdebug` layout (H8). Bits outside that layout ([7:4], [15:12], [23:20]) and bits of absent SMs are ignored. The register block uses it for RXUNDER (chip.md §8.3). (Block 3.) |
 
 **Outputs**
 
@@ -236,7 +236,7 @@ Each ruling cites the datasheet text it settles. Items marked V1 are to be check
   - The codes are in DESIGN §7. Codes 1 to 3 also cover the autopush and autopull stalls in R5 and R6.
 - **F4. `EXEC_STALLED`** is 1 while a forced (INSTR) instruction is latched and its latest attempt stalled. It is 0 for EXEC-latched instructions.
 - **F6. Abandoning the IMEM instruction.** Suppose a latched instruction (forced or EXEC) writes the PC: a taken JMP, OUT PC or MOV PC. Then the IMEM instruction that was in progress is abandoned. At the end of that cycle its side-set-done flag, its IRQ wait state and the IMEM stall reason are cleared, so the instruction at the new PC starts fresh. The delay counter is not touched (F1). This is how host code breaks an SM out of a stalled `wait` or `pull` with a forced `jmp`. **V1 item f.**
-- **F7. Rewriting the word at the PC.** An IMEM write (H9) to the address equal to an SM's fetch address (§9: `{PAGE, PC}` with IMEM depth 64) abandons that SM's IMEM instruction as in F6. At the end of the write cycle its side-set-done flag, its IRQ wait state and the IMEM stall reason are cleared. This overrides anything the SM's own attempt in that cycle did to those three items. The SM then attempts the new word fresh. The address is compared with the PC at the start of the cycle, the delay counter is untouched, and the written value does not matter. Programs never rewrite a running instruction. The rule only makes the behaviour defined.
+- **F7. Rewriting the word at the PC.** An IMEM write (H9) to the address equal to an SM's fetch address (§9: `{PAGE, PC}` with IMEM depth 64) abandons that SM's IMEM instruction as in F6. At the end of the write cycle its side-set-done flag, its IRQ wait state and the IMEM stall reason are cleared. This overrides anything the SM's own attempt in that cycle did to those three items. The SM then attempts the new word fresh. The address is compared with this cycle's fetch address: PAGE as presented by `ext` in this cycle (a level), and the PC at the start of the cycle. So if PAGE changes in the same cycle as the write, the new PAGE decides. The delay counter is untouched, and the written value does not matter. Programs never rewrite a running instruction. The rule only makes the behaviour defined.
 - **F5. IRQ wait states.** IMEM and latched instructions each have their own IRQ wait state, so a forced IRQ never takes over the wait of an IMEM IRQ instruction. Completing a latched instruction, or a new INSTR write, clears the latched one.
 
 **Delay counter.** When an instruction completes on a tick with delay d, `DBG_CNT.delay` becomes d. Each later enabled tick with delay > 0 decrements it and executes nothing else. The next instruction is attempted on the first enabled tick on which delay is 0.

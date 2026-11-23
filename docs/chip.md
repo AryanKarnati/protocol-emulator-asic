@@ -159,16 +159,21 @@ MISO is `uo_out[7]`. It is the MSB of a 32-bit shift register that changes only 
 
 So MISO carries STATUS during the command byte, 0 during the address and dummy bytes, the read words in a read frame, and 0 in a write frame from bit 8 on. It is 0 between frames.
 
-**Timing at the pin.** For a rise of SCK in pin cycle c (`sck(c) = 1`, `sck(c−1) = 0`), the `RISE` is in cycle c + 2, and MISO shows the next bit from cycle c + 3. MISO never changes in cycles c to c + 2. This replaces DESIGN §6's "MISO changes after the falling edge of SCK". With a 2-FF synchroniser, a falling-edge update arrives after the next rising edge once SCK is faster than about `clk`/8, so it cannot reach the 15 MHz DESIGN promises.
+**Timing at the pin.** MISO changes only in the cycle right after a `START`, `RISE` or `END`, and is cleared by reset. Each of those events comes two cycles after the pin edge that causes it. So for a counted rise of SCK in pin cycle c (`sck(c) = 1`, `sck(c−1) = 0`), the `RISE` is in cycle c + 2 and MISO shows the next bit from cycle c + 3.
+
+**Hold.** MISO can change in cycle c + 1 or c + 2 only if SCK rose, or CS_N changed, in pin cycle c − 2 or c − 1. A host that follows §6.6 never does that. So under §6.6, MISO holds its value for the two cycles after every sampling edge.
+
+This replaces DESIGN §6's "MISO changes after the falling edge of SCK". With a 2-FF synchroniser, a falling-edge update arrives after the next rising edge once SCK is faster than about `clk`/8, so it cannot reach the 15 MHz DESIGN promises.
 
 ### 6.6 What the host must do
 
 The cycle model above defines every pin sequence. For the host to read and write what it intends, it must also:
 
 - **H-SCK.** Keep each SCK high phase and low phase at least 2 cycles while CS_N is low, so the period is at least 4 cycles. That is SCK ≤ `clk`/4, 15 MHz at 60 MHz.
-- **H-CS.** Change CS_N only while SCK is low. Leave at least 3 cycles from CS_N falling to the first SCK rise (STATUS bit 7 is on MISO from the third cycle), and keep CS_N high for at least 2 cycles between frames.
+- **H-CS.** Change CS_N only while SCK is low. Leave at least 3 cycles from CS_N falling to the first SCK rise, and keep CS_N high for at least 2 cycles between frames. STATUS bit 7 reaches MISO in the third cycle after CS_N falls, so with exactly 3 cycles it arrives in the cycle the host samples it.
+- **H-RST.** Keep CS_N high while `rst_n` is low and for at least 4 cycles after it rises. A frame that is in progress when reset is released is still defined by §6.1 and §6.2, but its bits are not the host's.
 - **H-MOSI.** Change MOSI only while SCK is low, and not in the cycle SCK rises.
-- **Sampling.** Sample MISO in the cycle it raises SCK. By §6.5 the bit has been there since at least the previous cycle.
+- **Sampling.** Sample MISO in the cycle that raises SCK, or up to 2 cycles later. By §6.5, with H-SCK and H-CS kept, the bit is on MISO from at least the cycle before the rise until 2 cycles after it. A real host should sample about 1 cycle after its rise, which centres the sample in that window at 15 MHz. The §12 library does this.
 
 A real host adds margin for pad and board delay: at least 4 cycles of CS setup and of CS_N high time, and MOSI changed on the falling edge of SCK. The library in §12 does this.
 
@@ -191,6 +196,8 @@ A real host adds margin for pad and board delay: at least 4 cycles of CS setup a
 | `bus_wdata` | 32 | §6.4 |
 
 The `chip` debug ports `dbg_bus_*` are these outputs. `dbg_bus_rdata` is `rdata`.
+
+While `rst_n` is low, every `hostlink` flop holds its reset value. So `miso` is 0 and no bus pulse is raised, whatever the pins do.
 
 ## 8. Register map
 
@@ -282,7 +289,7 @@ An absent SM's `RXFn` reads 0 and sets nothing.
 
 ### 8.4 SRAM window (trial, `sram` = true only)
 
-0x400 + 4j (j = 0 to 511) is word j of the `RM_IHPSG13_1P_512x32` macro. A write in cycle t is seen by reads from cycle t + 1. A word that was never written reads an unspecified value. There is no other use of the macro in block 3. This window is not in the lockstep. cocotb checks it against the macro's own Verilog model.
+0x400 + 4j (j = 0 to 511) is word j of the IHP SRAM macro, whose Verilog module is `RM_IHPSG13_1P_512x32_c2_bm_bist` (see `flow/SRAM.md`). A write in cycle t is seen by reads from cycle t + 1. A word that was never written reads an unspecified value. There is no other use of the macro in block 3. This window is not in the lockstep. cocotb checks it against the macro's own Verilog model.
 
 ## 9. Pins
 
