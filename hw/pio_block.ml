@@ -1,7 +1,11 @@
-(* The block 2 PIO block: IMEM, IRQ flags, pin registers, input synchronisers, and
-   num_sms engines with their FIFOs (docs/engine.md sections 3, 5 and 6, rules R1, R2,
+(* The PIO block: instruction memory, IRQ flags, pin registers, input synchronisers, and
+   num_sms engines with their FIFOs (docs/engine.md sections 3, 5, 6 and 9; rules R1, R2,
    H5, H8, H9). Ports exist for 4 engines whatever num_sms is. Engine i >= num_sms has
-   no logic, and its outputs are 0. *)
+   no logic, and its outputs are 0.
+
+   Block 3: the instruction memory has depth 32 or 64. With depth 64, engine n fetches
+   IMEM[{PAGE_n, PC_n}], where PAGE_n is bit 0 of ext_n. With depth 32 it fetches IMEM[PC_n]
+   and ignores ext and imem_addr[5]. *)
 
 open Hardcaml
 open Signal
@@ -44,8 +48,13 @@ module I = struct
     ; instr_sm : 'a [@bits 2]
     ; instr_data : 'a [@bits 16]
     ; imem_write : 'a
-    ; imem_addr : 'a [@bits 5]
+    ; imem_addr : 'a [@bits 6]
     ; imem_data : 'a [@bits 16]
+    ; ext0 : 'a [@bits 32]
+    ; ext1 : 'a [@bits 32]
+    ; ext2 : 'a [@bits 32]
+    ; ext3 : 'a [@bits 32]
+    ; fdebug_set : 'a [@bits 32]
     }
   [@@deriving hardcaml]
 end
@@ -91,6 +100,10 @@ module O = struct
     ; dbg_phase1 : 'a [@bits 25]
     ; dbg_phase2 : 'a [@bits 25]
     ; dbg_phase3 : 'a [@bits 25]
+    ; dbg_instr0 : 'a [@bits 16]
+    ; dbg_instr1 : 'a [@bits 16]
+    ; dbg_instr2 : 'a [@bits 16]
+    ; dbg_instr3 : 'a [@bits 16]
     }
   [@@deriving hardcaml]
 end
@@ -103,15 +116,20 @@ type engine =
   ; fifo : Signal.t Fifo_join.O.t
   }
 
-let create ~num_sms (scope : Scope.t) (i : _ I.t) =
+let create ~num_sms ~imem_depth (scope : Scope.t) (i : _ I.t) =
   if num_sms < 1 || num_sms > 4
   then invalid_arg (Printf.sprintf "pio_block: num_sms must be 1 to 4, got %d" num_sms);
+  if imem_depth <> 32 && imem_depth <> 64
+  then invalid_arg (Printf.sprintf "pio_block: imem_depth must be 32 or 64, got %d" imem_depth);
   let n = num_sms in
+  let paged = imem_depth = 64 in
+  let addr_bits = if paged then 6 else 5 in
   let mkr w = Reg_spec.override (Reg_spec.create () ~clock:i.clock) ~reset:i.rst_n ~reset_edge:Edge.Falling ~reset_to:(zero w) in
   let clkdivs = [| i.clkdiv0; i.clkdiv1; i.clkdiv2; i.clkdiv3 |] in
   let execctrls = [| i.execctrl0; i.execctrl1; i.execctrl2; i.execctrl3 |] in
   let shiftctrls = [| i.shiftctrl0; i.shiftctrl1; i.shiftctrl2; i.shiftctrl3 |] in
   let pinctrls = [| i.pinctrl0; i.pinctrl1; i.pinctrl2; i.pinctrl3 |] in
+  let exts = [| i.ext0; i.ext1; i.ext2; i.ext3 |] in
   (* Input registers (engine.md R1): every pin passes through r1, and synchronised pins
      through r2 and r3. The engines see r1 for bypassed pins and r3 otherwise. *)
   let in_r1 = reg (mkr 32) i.pins_in -- "in_r1" in
@@ -124,20 +142,24 @@ let create ~num_sms (scope : Scope.t) (i : _ I.t) =
             mux2 (bitof i.sync_bypass p) (bitof in_r1 p) (bitof in_r3 p))))
     -- "in_sel"
   in
-  (* Instruction memory: one write port, read through each engine's PC. *)
+  (* Instruction memory (engine.md section 9): one write port, written at imem_addr. With
+     depth 32 only imem_addr[4:0] is used. The words are not reset (R0). *)
+  let write_idx = select i.imem_addr (addr_bits - 1) 0 -- "imem_write_idx" in
   let imem_words =
-    List.init 32 (fun k ->
+    List.init imem_depth (fun k ->
       reg
         (Reg_spec.create () ~clock:i.clock)
-        ~enable:(i.imem_write &: (i.imem_addr ==: of_int ~width:5 k))
+        ~enable:(i.imem_write &: (write_idx ==: of_int ~width:addr_bits k))
         i.imem_data
       -- Printf.sprintf "imem_%d" k)
   in
   let irq_w = wire 8 in
   let engines = Array.make 4 None in
+  (* The fetched word of each engine, for dbg_instr (engine.md section 3). *)
+  let fetch_words = Array.make 4 (zero 16) in
   for k = 0 to n - 1 do
     let imem_word_w = wire 16 in
-    (* F7: an IMEM write whose address is this engine's PC (registered, start of cycle). *)
+    (* F7: an IMEM write whose address is this engine's fetch address (start of cycle). *)
     let imem_hit_w = wire 1 in
     let tx_head_w = wire 32 in
     let tx_empty_w = wire 1 in
@@ -172,6 +194,9 @@ let create ~num_sms (scope : Scope.t) (i : _ I.t) =
         ; imem_abandon = imem_hit_w
         }
     in
+    (* Fetch address: {PAGE, PC} with depth 64 (PAGE is ext bit 0, this cycle), PC alone
+       with depth 32. *)
+    let fetch = if paged then concat_msb [ bitof exts.(k) 0; sm.pc ] else sm.pc in
     let fifo =
       Fifo_join.hierarchical
         scope
@@ -193,8 +218,9 @@ let create ~num_sms (scope : Scope.t) (i : _ I.t) =
     tx_level_w <== fifo.tx_level;
     rx_full_w <== fifo.rx_full;
     rx_level_w <== fifo.rx_level;
-    imem_word_w <== mux sm.pc imem_words;
-    imem_hit_w <== (i.imem_write &: (i.imem_addr ==: sm.pc));
+    imem_word_w <== mux fetch imem_words;
+    imem_hit_w <== (i.imem_write &: (write_idx ==: fetch));
+    fetch_words.(k) <- imem_word_w;
     engines.(k) <- Some { sm; fifo }
   done;
   let eng k = Option.get engines.(k) in
@@ -220,19 +246,23 @@ let create ~num_sms (scope : Scope.t) (i : _ I.t) =
   let irq_next = (irq_w &: ~:(sm_clrs |: i.irq_clear)) |: sm_sets |: i.irq_force in
   let irq_q = reg (mkr 8) irq_next -- "irq_q" in
   irq_w <== irq_q;
-  (* FDEBUG (engine.md H8): sticky flags, a set wins over a clear. *)
+  (* FDEBUG (engine.md H8): sticky flags, a set wins over a clear. The host set is ignored
+     for an absent engine, and for the bits that are not in the layout. *)
   let fdebug_w = wire 32 in
   let set_arr = Array.make 32 gnd in
+  let host_set_arr = Array.make 32 gnd in
   for k = 0 to n - 1 do
     let e = eng k in
     set_arr.(28 + k) <- e.sm.illegal;
     set_arr.(24 + k) <- e.sm.txstall;
     set_arr.(16 + k) <- e.fifo.tx_dropped;
     set_arr.(8 + k) <- e.fifo.rx_underflow;
-    set_arr.(k) <- e.sm.rxstall
+    set_arr.(k) <- e.sm.rxstall;
+    List.iter (fun b -> host_set_arr.(b) <- bitof i.fdebug_set b) [ 28 + k; 24 + k; 16 + k; 8 + k; k ]
   done;
   let set_vec = concat_msb (List.rev (Array.to_list set_arr)) in
-  let fdebug_next = (fdebug_w &: ~:(i.fdebug_clear)) |: set_vec in
+  let host_set_vec = concat_msb (List.rev (Array.to_list host_set_arr)) in
+  let fdebug_next = (fdebug_w &: ~:(i.fdebug_clear)) |: set_vec |: host_set_vec in
   let fdebug_q = reg (mkr 32) fdebug_next -- "fdebug_q" in
   fdebug_w <== fdebug_q;
   (* FSTAT and FLEVEL, RP2040 layout (datasheet 3.7). *)
@@ -251,6 +281,8 @@ let create ~num_sms (scope : Scope.t) (i : _ I.t) =
   done;
   let fstat = concat_msb (List.rev (Array.to_list fstat_arr)) in
   let flevel = concat_msb (List.rev (Array.to_list flevel_arr)) in
+  (* rxf_data (engine.md H2, section 3): the head of RX FIFO rxf_sm, or 0 if it is empty. It
+     does not depend on rxf_pop, so it holds in every cycle (chip.md 8.3). *)
   let rxf_data =
     mux
       i.rxf_sm
@@ -265,20 +297,23 @@ let create ~num_sms (scope : Scope.t) (i : _ I.t) =
   (* Engines i >= num_sms have no logic (engine.md section 3). Their config inputs are
      unconnected in the logic. They still appear in the circuit (so that the port list is
      the same for every num_sms): each is XORed into a term that is always 0, so that the
-     outputs of an absent engine stay 0. [x ^: x] is constant 0 for every input value. *)
+     outputs of an absent engine stay 0. [x ^: x] is constant 0 for every input value. The
+     ext inputs are also sunk here when they are not used (absent engines, or depth 32). *)
   let absent_sink =
     let absent =
       List.concat_map
         (fun k ->
-          if k < n
-          then []
-          else [ clkdivs.(k); execctrls.(k); shiftctrls.(k); pinctrls.(k) ])
+          (if k < n
+           then []
+           else [ clkdivs.(k); execctrls.(k); shiftctrls.(k); pinctrls.(k) ])
+          @ if k >= n || not paged then [ exts.(k) ] else [])
         [ 0; 1; 2; 3 ]
     in
     List.fold_left (fun acc s -> acc ^: s) (zero 32) absent
   in
   let absent_zero w = (uresize absent_sink w ^: uresize absent_sink w) in
   let pick k w f = if k < n then f (eng k).sm else absent_zero w in
+  let pick_instr k = if k < n then fetch_words.(k) else absent_zero 16 in
   { O.pins_out = pins_out_q
   ; pins_oe = pins_oe_q
   ; irq = irq_q
@@ -318,16 +353,29 @@ let create ~num_sms (scope : Scope.t) (i : _ I.t) =
   ; dbg_phase1 = pick 1 25 (fun s -> s.phase)
   ; dbg_phase2 = pick 2 25 (fun s -> s.phase)
   ; dbg_phase3 = pick 3 25 (fun s -> s.phase)
+  ; dbg_instr0 = pick_instr 0
+  ; dbg_instr1 = pick_instr 1
+  ; dbg_instr2 = pick_instr 2
+  ; dbg_instr3 = pick_instr 3
   }
 ;;
 
 module Circuit_io = Circuit.With_interface (I) (O)
+module Hier = Hierarchy.In_scope (I) (O)
+
+(* The block as a submodule of a larger design (chip.ml). Its own submodules appear as
+   separate modules, as in [circuit_with_database]. *)
+let hierarchical ~num_sms ~imem_depth scope i =
+  Hier.hierarchical ~scope ~name:"pio_block" (create ~num_sms ~imem_depth) i
+;;
 
 (* The block, and the database of its submodules (sm, decode, fifo_join, clkdiv_dbg).
    The database is what the Verilog printer needs to emit the whole hierarchy. *)
-let circuit_with_database ~num_sms =
+let circuit_with_database ~num_sms ~imem_depth =
   let scope = Scope.create () in
-  let circuit = Circuit_io.create_exn ~name:"pio_block" (create ~num_sms scope) in
+  let circuit =
+    Circuit_io.create_exn ~name:"pio_block" (create ~num_sms ~imem_depth scope)
+  in
   circuit, Scope.circuit_database scope
 ;;
 
@@ -335,7 +383,10 @@ let circuit_with_database ~num_sms =
    treats a hierarchical instance as combinational from every input to every output, which
    makes the engine's PC look like a loop through the IMEM read. The logic is the same
    code as [circuit_with_database]. *)
-let circuit ~num_sms =
+let circuit_with ~num_sms ~imem_depth =
   let scope = Scope.create ~flatten_design:true () in
-  Circuit_io.create_exn ~name:"pio_block" (create ~num_sms scope)
+  Circuit_io.create_exn ~name:"pio_block" (create ~num_sms ~imem_depth scope)
 ;;
+
+(* Block 3 default: 64 words, two pages (engine.md section 9). *)
+let circuit ~num_sms = circuit_with ~num_sms ~imem_depth:64
