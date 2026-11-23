@@ -179,8 +179,14 @@ def main():
     util_pct = fmt(util, 100.0, 2) + "%" if util is not None and as_float(util) is not None else "missing"
     lines.append(f"utilisation: {util_pct} (gate: at most 55%)")
     core = get("design__core__area")
-    stdcell = get("design__instance__area__stdcell", "design__instance__area")
-    lines.append(f"core area: {fmt(core)} um2; standard-cell area: {fmt(stdcell)} um2")
+    stdcell = get("design__instance__area__stdcell")
+    if stdcell is not None:
+        area_label = "standard-cell area"
+    else:
+        # Fallback: includes macros (the SRAM is about 0.08 mm2), so it is not the std-cell figure.
+        stdcell = get("design__instance__area")
+        area_label = "instance area (incl. macros)"
+    lines.append(f"core area: {fmt(core)} um2; {area_label}: {fmt(stdcell)} um2")
 
     # Timing per corner: timing__{setup,hold}__{ws,tns}__corner:<name>, plus the plain keys.
     corner_re = re.compile(r"^timing__(setup|hold)__(ws|tns)__corner:(.+)$")
@@ -204,7 +210,13 @@ def main():
             if value is None:
                 missing.append(f"{label} ({corner})")
 
-    lines.append(f"clock period used: {load_clock_period(run_dir) or 'missing (no resolved.json)'}")
+    # Overall worst slacks (all corners together), when the flow writes them.
+    overall_setup = get("timing__setup__ws")
+    overall_hold = get("timing__hold__ws")
+    if overall_setup is not None or overall_hold is not None:
+        lines.append(f"overall (all corners): setup worst slack {fmt(overall_setup)} ns; "
+                     f"hold worst slack {fmt(overall_hold)} ns")
+    lines.append(f"clock period used:{load_clock_period(run_dir) or 'missing (no resolved.json)'}")
 
     # Violation counts: the plain key and every corner-suffixed key.
     for base in ("design__max_slew_violation__count",

@@ -21,7 +21,8 @@ on:
 #   proofs:   SymbiYosys proofs and covers.
 #   decoder:  the exhaustive decoder check (Cyclesim test and Verilator).
 #   mutants:  every kill-check (mutants of the netlists).
-#   hostlink: host-link BMC to 72 cycles, the cover, the negative hold check and the hostlink mutants.
+#   hostlink: the unbounded host-link slices (abc pdr) and lemmas (about 4 minutes), BMC to 72 cycles,
+#             the cover, the negative hold check, the default hostlink mutants and the slice mutants.
 # The estimate for a 2-core runner is 17 to 26 minutes for the whole run, so a single job
 # with a 20-minute limit is not safe; the split keeps each job well inside 30 minutes.
 

@@ -5,6 +5,8 @@ project:
   discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
   description:  "Four RP2040-PIO-compatible protocol engines with line coding units"      # One line description of what your project does
   language:     "Hardcaml" # other examples include SystemVerilog, Amaranth, VHDL, etc
+  # 60 MHz is the target. The hardening constraint in src/config.json is CLOCK_PERIOD 15 ns: a
+  # deliberate development margin against this clock. The sign-off period is 16.67 ns (DESIGN 13).
   clock_hz:     60000000       # Clock frequency in Hz (or 0 if not applicable)
 
   # How many tiles your design occupies? A single tile is about 202x155 uM.

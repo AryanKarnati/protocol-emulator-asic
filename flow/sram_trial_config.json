@@ -19,6 +19,13 @@
   "//": "The value is in nanoseconds, so 20ns == 50MHz.",
   "CLOCK_PERIOD": 16.67,
 
+  "//": "Synthesis: LibreLane's default ABC script is DELAY 4, which buffers and upsizes every net",
+  "//": "and doubled this design's cell area (1.12 mm2 against 0.55 mm2). Map for area; placement and",
+  "//": "repair still add the buffering timing needs. The IO pad cells are in the synthesis library",
+  "//": "list and DELAY 4 used them as drivers, so exclude them.",
+  "SYNTH_STRATEGY": "AREA 0",
+  "EXTRA_EXCLUDED_CELLS": ["sg13cmos5l_IOPad*"],
+
   "//": "Hold slack margin - Increase them in case you are getting hold violations.",
   "PL_RESIZER_HOLD_SLACK_MARGIN": 0.1,
   "GRT_RESIZER_HOLD_SLACK_MARGIN": 0.05,
@@ -78,7 +85,7 @@
   "MAGIC_WRITE_LEF_PINONLY": 1,
 
   "//": "SRAM trial keys",
-  "//": "SRAM trial (flow/SRAM.md). Placement is a first guess inside the 8x4 die (1724.16 x 710.64 um); check it in CI.",
+  "//": "SRAM trial (flow/SRAM.md). Macro at x = 3.36 + 2 x 44.96 = 93.28, y = 27 rows x 3.78 = 102.06 (on the Metal4 PDN grid). Deliberate differences from src/config.json: CLOCK_PERIOD 16.67 (the gate period, DESIGN section 13) and RUN_KLAYOUT_DRC 1 (the SRAM DRC deck). Base keys, including SYNTH_STRATEGY AREA 0 and EXTRA_EXCLUDED_CELLS, come from src/config.json.",
   "MACROS": {
     "RM_IHPSG13_1P_512x32_c2_bm_bist": {
       "gds": [
@@ -106,8 +113,8 @@
       "instances": {
         "i_sram": {
           "location": [
-            100.0,
-            100.0
+            93.28,
+            102.06
           ],
           "orientation": "N"
         }
@@ -120,8 +127,26 @@
   ],
   "FP_MACRO_HORIZONTAL_HALO": 2,
   "ROUTING_OBSTRUCTIONS": [
-    "Metal2 100.0 100.0 516.64 291.34",
-    "Metal3 100.0 100.0 516.64 291.34",
-    "Metal4 100.0 100.0 516.64 291.34"
+    [
+      "Metal2",
+      93.28,
+      102.06,
+      509.92,
+      293.4
+    ],
+    [
+      "Metal3",
+      93.28,
+      102.06,
+      509.92,
+      293.4
+    ],
+    [
+      "Metal4",
+      93.28,
+      102.06,
+      509.92,
+      293.4
+    ]
   ]
 }

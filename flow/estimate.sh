@@ -2,6 +2,15 @@
 # Pre-layout area and timing estimate for pio_block1, pio_block and the Tiny Tapeout top.
 # See flow/README.md for what the numbers do and do not mean.
 #
+# What the liberty and the synthesis are (checked by the Sonnet checker, block 3):
+#   - The liberty is the IHP sg13g2 slow corner. The sg13cmos5l cell areas are identical to it
+#     (dfrbpq, mux2, nand2, inv, a21oi, mux4 and xor2 were compared), so the area figures carry over.
+#   - The ABC mapping here (`abc -D ...`, `synth -flatten`) is area-oriented. It is not LibreLane's
+#     default synthesis, which is SYNTH_STRATEGY "DELAY 4" and added about 42,700 buffers for the
+#     chip. The real flow uses the config's SYNTH_STRATEGY (AREA 0 on b3-integ).
+#   - The `chip` target writes flow/build/est_chip.v only. It does not regenerate the pio_block
+#     files, and it does not change the block 2 numbers.
+#
 # Usage: flow/estimate.sh            (from anywhere; uses the cached IHP liberty files)
 #
 # Environment:
