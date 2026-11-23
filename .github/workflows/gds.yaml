@@ -18,6 +18,13 @@ jobs:
         with:
           pdk: ihp-sg13cmos5l # or ihp-sg13g2
 
+      - name: Hardening metrics as annotations
+        # Reads runs/wokwi/final/metrics.csv and prints ::notice lines, which the check-run
+        # annotations API returns without auth. Never fails the job.
+        if: always()
+        continue-on-error: true
+        run: python3 flow/metrics_notice.py
+
   precheck:
     needs: gds
     runs-on: ubuntu-24.04

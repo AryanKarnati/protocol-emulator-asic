@@ -1,0 +1,21 @@
+# Question C1 (PROPERTIES.md): MISO stability without the CS_N precondition.
+# Expected to FAIL with a witness. The contract's MISO claim (chip.md 6.5) does not hold for CS_N
+# edges inside the three cycles before a SCK rise. The witness shows which pin sequence.
+[tasks]
+miso_uncond
+
+[options]
+mode bmc
+depth 24
+
+[engines]
+smtbmc z3
+
+[script]
+read_verilog -formal hostlink.v
+read_verilog -formal -DMISO_UNCOND hostlink_harness.v
+prep -top hostlink_harness
+
+[files]
+build/hostlink.v
+hostlink_harness.v

@@ -13,9 +13,20 @@
 #   OPAM_EXEC        command prefix for dune (default "opam exec --").
 #   SYNTH_ONLY=1     skip the timing run.
 #
+# Target (first argument):
+#   all (default)    pio_block1, pio_block and the block 1 TT top, as before.
+#   chip             the whole chip, `gen_verilog chip` (4 SMs, 64 words, LCU and SRAM absent).
+#                    Its module is `chip`, and it is run on its own.
+#
 # Needs yosys (with the abc pass) and dune with the polyglot switch on PATH.
 
 set -eu
+
+target=${1:-all}
+case "$target" in
+  all|chip) ;;
+  *) echo "usage: flow/estimate.sh [all|chip]" >&2; exit 2 ;;
+esac
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 build="$root/flow/build"
@@ -61,6 +72,11 @@ echo "liberty: $lib_name sha256 $got_sha256 (IHP-Open-PDK $IHP_PDK_COMMIT)"
 
 # Verilog for the two block 2 modules, from the generator (engine.md section 8).
 (cd "$root" && $OPAM_EXEC dune build --root . --display=quiet ./hw/bin/gen_verilog.exe)
+if [ "$target" = chip ]; then
+  # The whole chip. Present once the RTL merge adds the `chip` subcommand (chip.md section 3).
+  (cd "$root" && $OPAM_EXEC dune exec --root . --display=quiet ./hw/bin/gen_verilog.exe -- chip) \
+    > "$build/est_chip.v"
+fi
 (cd "$root" && $OPAM_EXEC dune exec --root . --display=quiet ./hw/bin/gen_verilog.exe -- pio_block1) \
   > "$build/est_pio_block1.v"
 (cd "$root" && $OPAM_EXEC dune exec --root . --display=quiet ./hw/bin/gen_verilog.exe -- pio_block) \
@@ -129,6 +145,10 @@ run_flow() {
 }
 
 echo "corner: $CORNER ($lib_name), no wire load, pre-layout"
-run_flow pio_block1 pio_block "$build/est_pio_block1.v"
-run_flow pio_block pio_block "$build/est_pio_block.v"
-run_flow tt_top tt_um_aryankarnati_polyglot "$root/src/project.v" "$root/src/polyglot.v"
+if [ "$target" = chip ]; then
+  run_flow chip chip "$build/est_chip.v"
+else
+  run_flow pio_block1 pio_block "$build/est_pio_block1.v"
+  run_flow pio_block pio_block "$build/est_pio_block.v"
+  run_flow tt_top tt_um_aryankarnati_polyglot "$root/src/project.v" "$root/src/polyglot.v"
+fi
