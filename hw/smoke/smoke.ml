@@ -1028,23 +1028,32 @@ let section3_outputs =
   @ List.init 4 (fun k -> Printf.sprintf "dbg_instr%d" k, 16)
 ;;
 
+(* engine.md section 3: every port exists in the Cyclesim simulation for every num_sms (1 to
+   4) and IMEM depth (32 and 64), including inputs the circuit ignores (Cyclesim drops
+   inputs that nothing reads). The flattened circuit is what the lockstep simulates. *)
 let port_check () =
-  for n = 1 to 4 do
-    let sim = Cyclesim.create (Polyglot_hw.Pio_block.circuit ~num_sms:n) in
-    let widths ports = List.map (fun (name, r) -> name, Bits.width !r) ports in
-    let ins = widths (Cyclesim.in_ports sim) in
-    let outs = widths (Cyclesim.out_ports sim) in
-    let check what want got =
-      let missing = List.filter (fun p -> not (List.mem p got)) want in
-      let extra = List.filter (fun p -> not (List.mem p want)) got in
-      List.iter (fun (name, w) -> Printf.printf "  num_sms=%d %s missing %s[%d]\n%!" n what name w) missing;
-      List.iter (fun (name, w) -> Printf.printf "  num_sms=%d %s extra %s[%d]\n%!" n what name w) extra;
-      expect (Printf.sprintf "num_sms=%d %s port list" n what) ~cyc:0
-        (List.length missing + List.length extra) 0
-    in
-    check "input" section3_inputs ins;
-    check "output" section3_outputs outs
-  done
+  List.iter
+    (fun imem_depth ->
+      for n = 1 to 4 do
+        let sim =
+          Cyclesim.create (Polyglot_hw.Pio_block.circuit_with ~num_sms:n ~imem_depth)
+        in
+        let widths ports = List.map (fun (name, r) -> name, Bits.width !r) ports in
+        let ins = widths (Cyclesim.in_ports sim) in
+        let outs = widths (Cyclesim.out_ports sim) in
+        let tag = Printf.sprintf "num_sms=%d depth=%d" n imem_depth in
+        let check what want got =
+          let missing = List.filter (fun p -> not (List.mem p got)) want in
+          let extra = List.filter (fun p -> not (List.mem p want)) got in
+          List.iter (fun (name, w) -> Printf.printf "  %s %s missing %s[%d]\n%!" tag what name w) missing;
+          List.iter (fun (name, w) -> Printf.printf "  %s %s extra %s[%d]\n%!" tag what name w) extra;
+          expect (Printf.sprintf "%s %s port list" tag what) ~cyc:0
+            (List.length missing + List.length extra) 0
+        in
+        check "input" section3_inputs ins;
+        check "output" section3_outputs outs
+      done)
+    [ 32; 64 ]
 ;;
 
 (* R11 (round 3): the IMEM WAIT and the latched instruction each keep their own side-set
