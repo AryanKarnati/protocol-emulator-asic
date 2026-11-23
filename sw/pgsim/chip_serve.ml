@@ -98,12 +98,17 @@ let command s (line : string) : string * bool =
   let words = String.split_on_char ' ' (String.trim line) |> List.filter (fun w -> w <> "") in
   match words with
   | [ "quit" ] -> "ok", false
+  | [ "reset" ] ->
+    Chip.reset s.chip;
+    "ok", true
+  | "run" :: [ _ ] | "run" :: _ when List.length words <> 2 -> "err run takes one count argument", true
+  | "ext" :: _ when List.length words <> 3 -> "err ext takes two hex arguments", true
   | [ "cycle" ] -> Printf.sprintf "ok %d" (Chip.cycle s.chip), true
-  | "xfer" :: rest ->
-    let hex = match rest with [ h ] -> h | _ -> "" in
+  | "xfer" :: [ hex ] ->
     (match bytes_of_hex hex with
      | None -> "err xfer needs an even number of hex digits", true
      | Some bytes -> "ok " ^ hex_of_bytes (frame s bytes), true)
+  | "xfer" :: _ -> "err xfer takes one hex argument", true
   | [ "run"; n ] ->
     (match int_of_string_opt n with
      | Some n when n >= 0 ->
@@ -137,28 +142,28 @@ let main ?(input = stdin) ?(output = stdout) (argv : string array) : int =
        | _ -> Error "--num-sms takes 1 to 4")
     | "--sck-half" :: v :: rest ->
       (match int_of_string_opt v with
-       | Some n when n >= 2 ->
+       | Some n when n >= 1 ->
          sck_half := n;
          opts rest
-       | _ -> Error "--sck-half takes 2 or more")
+       | _ -> Error "--sck-half takes 1 or more")
     | "--cs-setup" :: v :: rest ->
       (match int_of_string_opt v with
-       | Some n when n >= 0 ->
+       | Some n when n >= 1 ->
          cs_setup := n;
          opts rest
-       | _ -> Error "--cs-setup takes a count")
+       | _ -> Error "--cs-setup takes 1 or more")
     | "--cs-gap" :: v :: rest ->
       (match int_of_string_opt v with
-       | Some n when n >= 0 ->
+       | Some n when n >= 1 ->
          cs_gap := n;
          opts rest
-       | _ -> Error "--cs-gap takes a count")
+       | _ -> Error "--cs-gap takes 1 or more")
     | x :: _ -> Error ("unknown option " ^ x)
   in
   match opts (List.tl (Array.to_list argv)) with
   | Error reason ->
-    Printf.fprintf output "err %s\n%s\n" reason usage;
-    flush output;
+    Printf.eprintf "%s\n%s\n" reason usage;
+    flush stderr;
     2
   | Ok () ->
     let s = create ~num_sms:!num_sms ~sck_half:!sck_half ~cs_setup:!cs_setup ~cs_gap:!cs_gap in
