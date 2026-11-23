@@ -235,9 +235,7 @@ The test groups:
   `init` and `active`, `put` observed on the pads, `init` pin levels, `exec` (a forced `set pins`),
   TX and RX levels, and `restart` clearing the shift counters.
 
-Two cases are strict `xfail`s for a model bug, reported to the Model & tests lane: `get()` returns 0
-while RX holds the word. A read of RXFn through a read frame returns 0 (chip.md 8.3 says the head
-word). ID and CLKDIV reads through the same frame path are correct. Removing the marks makes them
-run again.
+The echo program used by the end-to-end tests is `pull block; out isr, 32; push block` (0x80A0,
+0x60C0, 0x8020). `push block` pushes the ISR, so the word has to be shifted in first.
 
 The `pgasm` and `pgsim` tests need `dune build --root .` first. They skip if the binaries are missing.

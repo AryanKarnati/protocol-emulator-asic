@@ -5,7 +5,7 @@ PIO words (RP2040 encodings, as in chip.md section 9.1). Expected values come fr
 the RP2040 datasheet, not from the model's output.
 
 Words used:
-  0x80A0 pull block          0x8020 push block
+  0x80A0 pull block          0x60C0 out isr, 32        0x8020 push block (pushes the ISR)
   0x6088 out pindirs, 8      0x6008 out pins, 8
   0x4001 in pins, 1          0x0000 jmp 0
   0xE005 set pins, 5
@@ -22,7 +22,9 @@ PGSIM = os.path.join(REPO, "_build", "default", "sw", "pgsim", "cli", "pgsim_cli
 
 pytestmark = pytest.mark.skipif(not os.path.exists(PGSIM), reason="build pgsim first (dune build --root .)")
 
-ECHO = [0x80A0, 0x8020]  # pull block; push block: every TX word comes back on RX
+# pull block; out isr, 32; push block: every TX word comes back on RX. Assembled with pioasm
+# (echo.pio: 80a0, 60c0, 8020). push pushes the ISR, so the word must be shifted in first.
+ECHO = [0x80A0, 0x60C0, 0x8020]
 PINS8 = [0x80A0, 0x6088, 0x80A0, 0x6008, 0x0000]  # pindirs from one word, pins from the next
 IDLE = [0x0000]  # jmp 0
 
@@ -139,14 +141,6 @@ def test_tx_and_rx_fifo_levels(chip):
     assert sm.tx_fifo() == 0 and sm.rx_fifo() == 2
 
 
-# Model bug, reported to the Model & tests lane (not patched here). A read of RXFn through a read
-# frame returns 0 while the RX FIFO holds the head word. chip.md 8.3 says the read returns the
-# head word. The same frame path returns the right values for ID (0x504C4754) and SM0 CLKDIV
-# (0x00010000), and FLEVEL and STATUS show the word is there, so only the RXF value is wrong.
-RXF_BUG = "model bug: RXFn reads return 0 while RX holds the word (chip.md 8.3)"
-
-
-@pytest.mark.xfail(strict=True, reason=RXF_BUG)
 def test_get_returns_the_word(chip):
     prog = pg.Program(ECHO, name="echo")
     h = chip.load(prog)
@@ -158,7 +152,6 @@ def test_get_returns_the_word(chip):
     assert sm.get() == 0x11223344
 
 
-@pytest.mark.xfail(strict=True, reason=RXF_BUG)
 def test_get_pops_in_order(chip):
     prog = pg.Program(ECHO, name="echo")
     h = chip.load(prog)
