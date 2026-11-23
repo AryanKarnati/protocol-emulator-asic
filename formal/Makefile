@@ -23,7 +23,7 @@ export SBY
 
 DUNE = cd $(ROOT) && $(OPAM_EXEC) dune
 
-.PHONY: all gen prove decode mutants d5_slow hostlink hostlink_deep clean
+.PHONY: all gen prove decode mutants d5_slow hostlink hostlink_slices hostlink_deep clean
 
 # The bounded D5 checks: manual only, not in CI. D1 (tick every cycle for 1/0, proven
 # unbounded) already implies the 256-gap sum for 1/0, so this only adds evidence for the
@@ -83,12 +83,26 @@ mutants: gen
 # Host link (block 3): bounded BMC to 72 cycles, the 184-cycle cover, the negative check
 # (the hold rule without the host obligations must fail), and the hostlink mutants.
 # The unbounded proof is not run here: k-induction returns UNKNOWN (PROPERTIES.md).
-hostlink: gen
+hostlink: gen hostlink_slices
 	$(SBY) -f hostlink.sby bmc -d build/hl_bmc
 	$(SBY) -f hostlink.sby cover -d build/hl_cover
 	-$(SBY) -f hostlink_miso_uncond.sby -d build/hl_uncond
 	grep -q "DONE (FAIL" build/hl_uncond/logfile.txt
 	ONLY=hostlink__ ./run_mutants.sh
+	sh run_slice_mutants.sh
+
+# Unbounded host-link slices (abc pdr) and the two lemmas (k-induction, depth 4). About 4 minutes.
+# Each slice must return PASS. The lemmas tie the closed-form address (adr + 4m) and the
+# position-form pulses to the monitor; see PROPERTIES.md.
+hostlink_slices: gen
+	for t in rst miso ctrl data l1 l2 addr_inc addr_f1; do \
+	  $(SBY) -f hostlink_slice_$$t.sby pdr -d build/sl_$$t || exit 1; \
+	  grep -q "DONE (PASS" build/sl_$$t/logfile.txt || exit 1; \
+	done
+	$(SBY) -f hostlink_lemma_pos.sby ind -d build/lem_pos
+	grep -q "DONE (PASS" build/lem_pos/logfile.txt
+	$(SBY) -f hostlink_lemma_addr.sby ind -d build/lem_addr
+	grep -q "DONE (PASS" build/lem_addr/logfile.txt
 
 # Host link, write-side mutants with the 184-cycle BMC. Slow: run nightly, not per push.
 hostlink_deep: gen

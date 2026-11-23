@@ -159,9 +159,11 @@ module hostlink_harness (input clk);
         rx <= rx_new;
         b <= b + 19'd1;
         if (b == 19'd55) big <= 1;
-        if (b == 19'd0) R <= mo2;
-        if (b == 19'd1) F <= mo2;
-        if (b == 19'd23) adr <= rx_new[15:0];
+        // Header latches only in the first lap: after a 2^19 wrap b returns to 0, 1 and 23
+        // with big set, and these must not be re-latched.
+        if (!big && b == 19'd0) R <= mo2;
+        if (!big && b == 19'd1) F <= mo2;
+        if (!big && b == 19'd23) adr <= rx_new[15:0];
         // 6.5: a read access loads the read value, any other RISE shifts left.
         if (e_r) sr <= rdata;
         else     sr <= {sr[30:0], 1'b0};

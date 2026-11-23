@@ -1,0 +1,13 @@
+[tasks]
+pdr
+[options]
+mode prove
+[engines]
+abc pdr
+[script]
+read_verilog -formal hostlink.v
+read_verilog -formal -DP_DATA hostlink_pos_slice.v
+prep -top hostlink_harness
+[files]
+build/hostlink.v
+hostlink_pos_slice.v

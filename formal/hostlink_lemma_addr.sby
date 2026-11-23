@@ -1,0 +1,14 @@
+[tasks]
+ind
+[options]
+mode prove
+depth 4
+[engines]
+smtbmc boolector
+[script]
+read_verilog -formal hostlink.v
+read_verilog -formal -DP_ADDR_LEMMA -DP_ADDR_LEMMA_IND hostlink_lemma_addr.v
+prep -top hostlink_harness
+[files]
+build/hostlink.v
+hostlink_lemma_addr.v

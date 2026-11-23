@@ -1,0 +1,12 @@
+[tasks]
+ind
+[options]
+mode prove
+depth 4
+[engines]
+smtbmc boolector
+[script]
+read_verilog -formal hostlink_lemma_pos.v
+prep -top hostlink_harness
+[files]
+hostlink_lemma_pos.v
