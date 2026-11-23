@@ -80,7 +80,7 @@ Ports exist for 4 SMs whatever `num_sms` is. For an SM `i ≥ num_sms` there is 
 | `pins_out` | 32 | Output level register of each pin |
 | `pins_oe` | 32 | Direction register of each pin (1 = output) |
 | `irq` | 8 | IRQ flags |
-| `rxf_data` | 32 | Combinational. The head of RX FIFO `rxf_sm`, or 0 if it is empty. From block 3 this holds in every cycle, whether or not a pop is presented, because the register block reads the head before it pops (chip.md §8.3). |
+| `rxf_data` | 32 | Combinational. The head of RX FIFO `rxf_sm`, or 0 if it is empty or `rxf_sm` selects an absent SM. From block 3 this holds in every cycle, whether or not a pop is presented, because the register block reads the head before it pops (chip.md §8.3). |
 | `fstat` | 32 | RP2040 FSTAT: TXEMPTY [27:24], TXFULL [19:16], RXEMPTY [11:8], RXFULL [3:0] |
 | `flevel` | 32 | RP2040 FLEVEL: for SM n, TX level in [8n+3:8n] and RX level in [8n+7:8n+4] |
 | `fdebug` | 32 | RP2040 FDEBUG: TXSTALL [27:24], TXOVER [19:16], RXUNDER [11:8], RXSTALL [3:0]. Polyglot adds ILLEGAL in [31:28]. All sticky. |
@@ -236,7 +236,14 @@ Each ruling cites the datasheet text it settles. Items marked V1 are to be check
   - The codes are in DESIGN §7. Codes 1 to 3 also cover the autopush and autopull stalls in R5 and R6.
 - **F4. `EXEC_STALLED`** is 1 while a forced (INSTR) instruction is latched and its latest attempt stalled. It is 0 for EXEC-latched instructions.
 - **F6. Abandoning the IMEM instruction.** Suppose a latched instruction (forced or EXEC) writes the PC: a taken JMP, OUT PC or MOV PC. Then the IMEM instruction that was in progress is abandoned. At the end of that cycle its side-set-done flag, its IRQ wait state and the IMEM stall reason are cleared, so the instruction at the new PC starts fresh. The delay counter is not touched (F1). This is how host code breaks an SM out of a stalled `wait` or `pull` with a forced `jmp`. **V1 item f.**
-- **F7. Rewriting the word at the PC.** An IMEM write (H9) to the address equal to an SM's fetch address (§9: `{PAGE, PC}` with IMEM depth 64) abandons that SM's IMEM instruction as in F6. At the end of the write cycle its side-set-done flag, its IRQ wait state and the IMEM stall reason are cleared. This overrides anything the SM's own attempt in that cycle did to those three items. The SM then attempts the new word fresh. The address is compared with the PC at the start of the cycle, the delay counter is untouched, and the written value does not matter. Programs never rewrite a running instruction. The rule only makes the behaviour defined.
+- **F7. Rewriting the word at the PC.** An IMEM write (H9) to the address equal to an SM's fetch address (§9: `{PAGE, PC}` with IMEM depth 64) abandons that SM's IMEM instruction as in F6. At the end of the write cycle its side-set-done flag, its IRQ wait state and the IMEM stall reason are cleared. This overrides anything the SM's own attempt in that cycle did to those three items. The SM then attempts the new word fresh. The address is compared with this cycle's fetch address: PAGE as presented by `ext` in this cycle (a level), and the PC at the start of the cycle. So if PAGE changes in the same cycle as the write, the new PAGE decides. The delay counter is untouched, and the written value does not matter. Programs never rewrite a running instruction. The rule only makes the behaviour defined.
+- **F8. Changing PAGE under an IMEM instruction.** Suppose SM n's PAGE (bit 0 of `ext`n, depth 64 only) in cycle k differs from its PAGE in cycle k − 1. Then the IMEM instruction in progress is abandoned, as in F6 and F7. The word at the new fetch address is treated as a new instruction from cycle k:
+  - An IMEM attempt in cycle k is a fresh first attempt. The old side-set-done flag and IRQ wait state are ignored, so the new word's side-set applies and an `irq wait` sets its flag.
+  - At the end of cycle k, the IMEM side-set-done flag, IRQ wait state and stall reason hold whatever that fresh attempt left. If there was no IMEM attempt in cycle k, they are cleared. That covers a disabled SM, no tick, a delay tick, and a forced or EXEC attempt.
+  - The delay counter, PC and latched instructions are untouched. `DBG_CNT` shows the stored stall reason as usual, so it changes at the end of cycle k.
+  - At reset the previous PAGE is 0.
+
+  F7 already gives a rewritten word a fresh first attempt in the cycle it becomes visible. F8 applies the same principle to PAGE. Here the new word becomes visible in cycle k itself, because PAGE is a level.
 - **F5. IRQ wait states.** IMEM and latched instructions each have their own IRQ wait state, so a forced IRQ never takes over the wait of an IMEM IRQ instruction. Completing a latched instruction, or a new INSTR write, clears the latched one.
 
 **Delay counter.** When an instruction completes on a tick with delay d, `DBG_CNT.delay` becomes d. Each later enabled tick with delay > 0 decrements it and executes nothing else. The next instruction is attempted on the first enabled tick on which delay is 0.
@@ -262,7 +269,7 @@ A run fails on the first difference. The report gives the cycle, the port, both 
 ## 9. Block 3: the 64-word instruction memory
 
 - `pio_block` takes an IMEM depth of 32 or 64. `hw/pio_block.mli` keeps `val circuit : num_sms:int -> Hardcaml.Circuit.t`, now with depth 64, and adds `val circuit_with : num_sms:int -> imem_depth:int -> Hardcaml.Circuit.t`.
-- With depth 64, SM n fetches `IMEM[{PAGE_n, PC_n}]`, where PAGE_n is bit 0 of `ext`n in the current cycle. PC, JMP targets, WRAP_TOP and WRAP_BOTTOM stay 5 bits and work inside the page (DESIGN §9.3). A change of PAGE takes effect on the next fetch, and changes nothing else.
+- With depth 64, SM n fetches `IMEM[{PAGE_n, PC_n}]`, where PAGE_n is bit 0 of `ext`n in the current cycle. PC, JMP targets, WRAP_TOP and WRAP_BOTTOM stay 5 bits and work inside the page (DESIGN §9.3). A change of PAGE takes effect in the cycle it is presented, and abandons the IMEM instruction in progress (F8).
 - With depth 32, SM n fetches `IMEM[PC_n]`, and `ext`n and `imem_addr`[5] are ignored.
 - The fetch address is what F7 compares with the write address, and what `dbg_instr` shows.
 - IMEM is not reset (R0). It is write-only from the host (chip.md §8.1), so it needs only the engines' four read ports.
