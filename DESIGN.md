@@ -7,7 +7,7 @@
 | **Process**      | IHP 130nm CMOS5L (Tiny Tapeout March 2027 shuttle)                    |
 | **Area**         | 8x4 tiles = 1724.16 × 710.64 µm (1.225 mm²)                           |
 | **Clock**        | 60 MHz target. 50 MHz fallback, which loses 10BASE-T (see §13).       |
-| **Status**       | Design baseline v0.3, 2026-11-21 (block 1 rulings folded in). This is the reference for the RTL, the model, the toolchain and the tests. |
+| **Status**       | Design baseline v0.4, 2026-11-22 (block 3 host-link and register rulings folded in). This is the reference for the RTL, the model, the toolchain and the tests. |
 | **Built with**   | Hardcaml (OCaml) for the RTL, OCaml for the tools and tests, MicroPython on the host. AI tools write all the code under human direction (§17.1). |
 
 The document has two parts:
@@ -225,7 +225,7 @@ That leaves 19 dedicated protocol pins, or 20 with `HOST_IRQ` released.
 
 ### 6. Host link
 
-The host link is an SPI target with CPOL=0, CPHA=0, MSB first. `SCK`, `MOSI` and `CS_N` pass through 2-FF synchronizers and are edge-detected in the `clk` domain, so **SCK must be ≤ `clk`/4**. Use 10 MHz nominally and 15 MHz at most. MISO changes after the falling edge of SCK. Raising `CS_N` aborts any frame cleanly.
+The host link is an SPI target with CPOL=0, CPHA=0, MSB first. `SCK`, `MOSI` and `CS_N` pass through 2-FF synchronizers and are edge-detected in the `clk` domain, so **SCK must be ≤ `clk`/4**. Use 10 MHz nominally and 15 MHz at most. MISO changes three `clk` cycles after a rising edge of SCK reaches the pin, and never in the two cycles before that, so it is settled before the next rising edge. A change on the falling edge would arrive too late once SCK is faster than about `clk`/8. Raising `CS_N` aborts any frame cleanly: a word that has not been fully clocked is not written. [docs/chip.md](docs/chip.md) §6 gives the cycle-exact rules.
 
 Frame formats:
 
@@ -237,7 +237,7 @@ READ:   CS↓  [CMD=0b1F00_0000] [ADDR15:8] [ADDR7:0] [dummy] → [D31:24]...[D7
 ```
 
 - Addresses are byte addresses and must be word-aligned. Bursts auto-increment by 4 unless F is set.
-- Reading `RXFn` pops that FIFO. Reading an empty FIFO returns 0 and sets `RXUNDER`.
+- Reading `RXFn` pops that FIFO. Reading an empty FIFO returns 0 and sets `RXUNDER`. The word's MSB has to be on MISO before the host asks for it, so the link reads the FIFO head early and pops only when the host clocks the word's first bit. A burst read that stops after its last word therefore never loses the next one.
 - Writing to a full `TXFn` drops the word and sets `TXOVER`. This matches PIO behaviour.
 - A one-byte transaction returns the STATUS byte, which is the cheapest way to poll.
 
@@ -250,7 +250,7 @@ All registers are 32 bits. Registers marked "PIO layout" use the same bitfields 
 | Address | Name | Access | Description |
 | --- | --- | --- | --- |
 | 0x000 | `ID` | R | Constant `0x504C4754` ("PLGT") |
-| 0x004 | `HWCFG` | R | Version, number of SMs, IMEM depth, LCU present, SRAM words |
+| 0x004 | `HWCFG` | R | `[5:0]` FIFO depth, `[11:8]` number of SMs, `[22:16]` IMEM depth, `[24]` LCU present, `[25]` SRAM present, `[31:28]` version |
 | 0x008 | `CTRL` | RW | `[3:0]` SM_ENABLE. `[7:4]` SM_RESTART (write 1, self-clearing). `[11:8]` CLKDIV_RESTART (write 1). |
 | 0x00C | `FSTAT` | R | FIFO full and empty flags (PIO layout) |
 | 0x010 | `FDEBUG` | RW1C | TXSTALL, TXOVER, RXUNDER, RXSTALL, ILLEGAL (sticky flags) |
@@ -260,13 +260,13 @@ All registers are 32 bits. Registers marked "PIO layout" use the same bitfields 
 | 0x020 | `HOSTIRQ_EN` | RW | Mask of {IRQ0–3, RXNEMPTY0–3, TXNFULL0–3}. Any set bit claims `uo_out[6]`. |
 | 0x024 | `PAD_OD` | RW | Open-drain enable for `uio[7:0]` |
 | 0x028 | `INPUT_SYNC_BYPASS` | RW | Per-pin synchronizer bypass for pins 0–23 |
-| 0x02C | `PAD_IN` / `PAD_OUT` / `PAD_OE` | R | Raw pad state, for debug. These are three consecutive registers. |
+| 0x02C | `PAD_IN` / `PAD_OUT` / `PAD_OE` | R | For debug, three consecutive registers. `PAD_IN` is the raw input vector `{0, ui_in, uo_out, uio_in}`. `PAD_OUT` and `PAD_OE` are the 32 pin level and direction registers. |
 | 0x038 | `SCRATCH` | RW | Host writes a nonce after loading. A changed value means the design was deselected or reset, so reload. |
 | 0x040–0x04C | `TXF0–3` | W | TX FIFO push |
 | 0x050–0x05C | `RXF0–3` | R | RX FIFO pop |
-| 0x060 | `DBG_CTRL` | RW | `[3:0]` HALT. `[7:4]` STEP (write 1: run one instruction on a halted SM). |
+| 0x060 | `DBG_CTRL` | RW | `[3:0]` HALT. `[7:4]` STEP (write 1: run one instruction on a halted SM). Block 4; reads 0 until then. |
 | 0x080–0x0FF | `EFIFO_*` | RW | Elastic FIFO base and size per FIFO (Tier 1, §12) |
-| 0x100–0x1FC | `IMEM[0..63]` | RW | One instruction in bits [15:0] of each word |
+| 0x100–0x1FC | `IMEM[0..63]` | W | One instruction in bits [15:0] of each word. Write-only, as RP2040 `INSTR_MEM` is: a host read port would cost a fifth 64-to-1 multiplexer for no PIO-compatible use. |
 | 0x200 + 0x40·n | SMn block | | Per-engine registers, listed below |
 | 0x400–0xBFC | `SRAM` | RW | Elastic FIFO SRAM window (Tier 1) |
 
@@ -617,7 +617,7 @@ The properties are:
 
 - **FIFO:** order is preserved and nothing is lost or duplicated (tracked-token proof). Flags are consistent with the level.
 - **Clock divider:** ticks are spaced at the integer part or the integer part + 1, and the long-run average equals INT.FRAC.
-- **Host link:** writing then reading an RW register returns the written value. Deasserting CS mid-frame leaves no side effect beyond completed words. MISO is stable while SCK is high.
+- **Host link:** writing then reading an RW register returns the written value. Deasserting CS mid-frame leaves no side effect beyond completed words. MISO never changes in the two cycles after a rising SCK edge reaches the pin, so the host's sample has two cycles of hold (docs/chip.md §6.5).
 - **SM:** per-instruction pre/post-condition assertions (for example, `jmp x--` branches if and only if X≠0 before it, and X then decrements). Without a stall, PC advances after exactly delay+1 ticks. Side-set applies on the first tick.
 - **LCU:**
   - With STUFF_EN, the coded line never carries more than N run bits.

@@ -21,7 +21,7 @@ If this document seems to contradict the datasheet, stop and report it to the or
 - The decoder.
 - One engine (SM). This covers all nine instructions, delay, side-set (including `SIDE_PINDIR`), every stall, autopush and autopull, `!OSRE`, `STATUS`, `OUT_STICKY`, `OUT/MOV EXEC`, and forced instructions.
 - The block, with `num_sms` engines (an elaboration parameter, 1 to 4). It contains:
-  - a 32 × 16 instruction memory;
+  - the instruction memory: 32 × 16 in block 2, and 64 × 16 in two pages from block 3 (§9);
   - the 8 IRQ flags;
   - the pin output registers, with a level and a direction for each of 32 pins;
   - the input registers and synchronisers;
@@ -30,14 +30,14 @@ If this document seems to contradict the datasheet, stop and report it to the or
 **Not in block 2:**
 
 - The host link and the register block. In block 2 the testbench drives the block's configuration and host ports directly.
-- The 64-word IMEM and `EXT.PAGE`.
+- The 64-word IMEM and `EXT.PAGE`. Block 3 adds them (§9).
 - Pad types, open-drain and `HOST_IRQ`.
 - The LCU.
 - `DBG_CTRL` HALT and STEP.
 - `INLINE_OUT_EN` and `OUT_EN_SEL` (EXECCTRL bits 23:18). Both lanes treat them as 0, and the generator never sets them. They are on the compatibility backlog for block 4.
 - The RP2350-only fields.
 
-The Tiny Tapeout top (`src/project.v`, `hw/top.ml`) stays as the block 1 gate design until block 3. `gen_verilog.exe` with no argument must keep printing exactly the current `src/polyglot.v`.
+The Tiny Tapeout top (`src/project.v`, `hw/top.ml`) stays as the block 1 gate design until block 3, when [chip.md](chip.md) §3 replaces it.
 
 ## 3. `pio_block` ports
 
@@ -69,7 +69,9 @@ Ports exist for 4 SMs whatever `num_sms` is. For an SM `i ≥ num_sms` there is 
 | `txf_push`, `txf_sm` [2], `txf_data` [32] | | pulse | Host push to TX FIFO `txf_sm` |
 | `rxf_pop`, `rxf_sm` [2] | | pulse | Host pop from RX FIFO `rxf_sm` |
 | `instr_write`, `instr_sm` [2], `instr_data` [16] | | pulse | Host write to SMn_INSTR |
-| `imem_write`, `imem_addr` [5], `imem_data` [16] | | pulse | Instruction memory write |
+| `imem_write`, `imem_addr` [6], `imem_data` [16] | | pulse | Instruction memory write. With IMEM depth 32, bit 5 is ignored. (Block 3: was 5 bits.) |
+| `ext0`…`3` | 32 | level | SMn_EXT. Bit 0 is PAGE. Other bits are ignored. With IMEM depth 32 the whole word is ignored. (Block 3.) |
+| `fdebug_set` | 32 | pulse | Sets FDEBUG flags, in the `fdebug` layout (H8). The register block uses it for RXUNDER (chip.md §8.3). (Block 3.) |
 
 **Outputs**
 
@@ -78,7 +80,7 @@ Ports exist for 4 SMs whatever `num_sms` is. For an SM `i ≥ num_sms` there is 
 | `pins_out` | 32 | Output level register of each pin |
 | `pins_oe` | 32 | Direction register of each pin (1 = output) |
 | `irq` | 8 | IRQ flags |
-| `rxf_data` | 32 | Combinational. The head of RX FIFO `rxf_sm`, or 0 if it is empty, valid in the cycle the pop is presented. |
+| `rxf_data` | 32 | Combinational. The head of RX FIFO `rxf_sm`, or 0 if it is empty. From block 3 this holds in every cycle, whether or not a pop is presented, because the register block reads the head before it pops (chip.md §8.3). |
 | `fstat` | 32 | RP2040 FSTAT: TXEMPTY [27:24], TXFULL [19:16], RXEMPTY [11:8], RXFULL [3:0] |
 | `flevel` | 32 | RP2040 FLEVEL: for SM n, TX level in [8n+3:8n] and RX level in [8n+7:8n+4] |
 | `fdebug` | 32 | RP2040 FDEBUG: TXSTALL [27:24], TXOVER [19:16], RXUNDER [11:8], RXSTALL [3:0]. Polyglot adds ILLEGAL in [31:28]. All sticky. |
@@ -87,6 +89,7 @@ Ports exist for 4 SMs whatever `num_sms` is. For an SM `i ≥ num_sms` there is 
 | `dbg_cnt0`…`3` | 32 | DBG_CNT (DESIGN §7): ISR count [5:0], OSR count [13:8], delay [20:16], stall reason [27:24], all other bits 0 |
 | `dbg_exec_stalled0`…`3` | 1 | EXECCTRL.EXEC_STALLED (§6, F4) |
 | `dbg_phase0`…`3` | 25 | Clock divider phase register, in units of 1/256 cycle (§6, R10) |
+| `dbg_instr0`…`3` | 16 | Combinational. The IMEM word at the SM's fetch address (§9) in this cycle, whatever the SM is doing. `SMn_INSTR` reads it. (Block 3.) |
 
 A FIFO that is disabled because the other one is joined (datasheet §3.7 FJOIN) has capacity 0. It reads as both full and empty, with level 0. Capacity is always a function of the FJOIN inputs in the current cycle. It is not state, and reset does not change it.
 
@@ -150,7 +153,7 @@ The equivalence holds for every 16-bit word and every valid side-set configurati
   A set always beats a clear in the same cycle (datasheet §3.2.7).
 - **H6. FIFO flush.** Both FIFOs are empty at the end of the cycle, overriding host and SM FIFO activity in that cycle. A word an SM popped in that cycle still reaches its OSR. The flush empties only the storage. TXOVER, RXUNDER, TXSTALL and RXSTALL still follow H1, H2, R5 and R7 in that cycle, and the SM's instruction completes or stalls exactly as it would without the flush.
 - **H7. INSTR write.** The instruction is latched at the end of the cycle and runs from cycle k+1 (F1). It overwrites any latched instruction, EXEC or forced (datasheet §3.5.7 caution). If a stalled forced instruction is being retried in cycle k, that retry still runs in cycle k, and the new write replaces the latch at the end of the cycle.
-- **H8. FDEBUG clear.** `flag_next = (flag & ~clear) | set in cycle k`, so a set wins.
+- **H8. FDEBUG clear.** `flag_next = (flag & ~fdebug_clear) | SM sets in cycle k | fdebug_set`, so a set wins.
 - **H9. IMEM write.** The new word can be fetched from cycle k+1.
 
 ## 6. Rulings
@@ -233,7 +236,7 @@ Each ruling cites the datasheet text it settles. Items marked V1 are to be check
   - The codes are in DESIGN §7. Codes 1 to 3 also cover the autopush and autopull stalls in R5 and R6.
 - **F4. `EXEC_STALLED`** is 1 while a forced (INSTR) instruction is latched and its latest attempt stalled. It is 0 for EXEC-latched instructions.
 - **F6. Abandoning the IMEM instruction.** Suppose a latched instruction (forced or EXEC) writes the PC: a taken JMP, OUT PC or MOV PC. Then the IMEM instruction that was in progress is abandoned. At the end of that cycle its side-set-done flag, its IRQ wait state and the IMEM stall reason are cleared, so the instruction at the new PC starts fresh. The delay counter is not touched (F1). This is how host code breaks an SM out of a stalled `wait` or `pull` with a forced `jmp`. **V1 item f.**
-- **F7. Rewriting the word at the PC.** An IMEM write (H9) to the address equal to an SM's PC abandons that SM's IMEM instruction as in F6. At the end of the write cycle its side-set-done flag, its IRQ wait state and the IMEM stall reason are cleared. This overrides anything the SM's own attempt in that cycle did to those three items. The SM then attempts the new word fresh. The address is compared with the PC at the start of the cycle, the delay counter is untouched, and the written value does not matter. Programs never rewrite a running instruction. The rule only makes the behaviour defined.
+- **F7. Rewriting the word at the PC.** An IMEM write (H9) to the address equal to an SM's fetch address (§9: `{PAGE, PC}` with IMEM depth 64) abandons that SM's IMEM instruction as in F6. At the end of the write cycle its side-set-done flag, its IRQ wait state and the IMEM stall reason are cleared. This overrides anything the SM's own attempt in that cycle did to those three items. The SM then attempts the new word fresh. The address is compared with the PC at the start of the cycle, the delay counter is untouched, and the written value does not matter. Programs never rewrite a running instruction. The rule only makes the behaviour defined.
 - **F5. IRQ wait states.** IMEM and latched instructions each have their own IRQ wait state, so a forced IRQ never takes over the wait of an IMEM IRQ instruction. Completing a latched instruction, or a new INSTR write, clears the latched one.
 
 **Delay counter.** When an instruction completes on a tick with delay d, `DBG_CNT.delay` becomes d. Each later enabled tick with delay > 0 decrements it and executes nothing else. The next instruction is attempted on the first enabled tick on which delay is 0.
@@ -247,10 +250,20 @@ These are compared for each SM `i < num_sms`:
 These are compared for the whole block:
 
 - `pins_out`, `pins_oe`, `irq`, `fstat`, `flevel`, `fdebug`.
-- `rxf_data` in every cycle that presents `rxf_pop`.
+- `rxf_data` in every cycle (block 3; block 2 compared it only in cycles that present `rxf_pop`).
+- `dbg_instr` for each SM `i < num_sms` (block 3).
 
 A run fails on the first difference. The report gives the cycle, the port, both values, and the shrunk program, configuration and stimulus that reproduce it. Failures go to the RTL lane as shrunk cases, never as model code.
 
 ## 8. Generated Verilog
 
-`hw/bin/gen_verilog.exe` with no argument prints the Tiny Tapeout top, as it does now. Called with `decode`, `pio_block` or `pio_block1`, it prints that module alone. `pio_block` has 4 SMs and `pio_block1` has 1. These outputs feed Verilator lint, synthesis estimates and the proofs. Do not commit them.
+`hw/bin/gen_verilog.exe` with no argument prints the Tiny Tapeout top, as it does now. Called with `decode`, `pio_block` or `pio_block1`, it prints that module alone. `pio_block` has 4 SMs and `pio_block1` has 1, both with IMEM depth 64. These outputs feed Verilator lint, synthesis estimates and the proofs. Do not commit them. Block 3 adds `chip` and `hostlink` (chip.md §3).
+
+## 9. Block 3: the 64-word instruction memory
+
+- `pio_block` takes an IMEM depth of 32 or 64. `hw/pio_block.mli` keeps `val circuit : num_sms:int -> Hardcaml.Circuit.t`, now with depth 64, and adds `val circuit_with : num_sms:int -> imem_depth:int -> Hardcaml.Circuit.t`.
+- With depth 64, SM n fetches `IMEM[{PAGE_n, PC_n}]`, where PAGE_n is bit 0 of `ext`n in the current cycle. PC, JMP targets, WRAP_TOP and WRAP_BOTTOM stay 5 bits and work inside the page (DESIGN §9.3). A change of PAGE takes effect on the next fetch, and changes nothing else.
+- With depth 32, SM n fetches `IMEM[PC_n]`, and `ext`n and `imem_addr`[5] are ignored.
+- The fetch address is what F7 compares with the write address, and what `dbg_instr` shows.
+- IMEM is not reset (R0). It is write-only from the host (chip.md §8.1), so it needs only the engines' four read ports.
+- With PAGE 0 and the program in words 0 to 31, a depth-64 block behaves exactly like the block 2 block. The block 2 corpus and generator still apply.

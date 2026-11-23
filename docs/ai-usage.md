@@ -98,3 +98,19 @@ The independent RTL checker found the one RTL behaviour bug (`MOV x, STATUS`) be
 | Random, 4 engines | `lockstep_cli triage --count 10000 --seed 7 --sms 4 --dut rtl` | 10,000/10,000 pass, 1,918,107 cycles compared |
 
 Before this, the model lane had run seeds 1–3 at 1 and 4 engines (60,000 cases) and seed 11 at 1 engine (10,000 cases), all passing. CI runs the corpus plus 1,000 random cases on every push (`hw/test/rtl/tests`). The reset path, which Cyclesim does not model, is checked on the generated Verilog by the cocotb test in `test/pio_block_reset`.
+
+## Block 3 rulings (delegated)
+
+The owner's 2026-11-21 delegation still applies: the orchestrator makes spec calls itself, aiming for the best chance of winning, and records them here. These are folded into DESIGN.md v0.4 and the block 3 contract ([chip.md](chip.md)).
+
+1. **MISO timing.** DESIGN §6 said MISO changes after the falling edge of SCK, and §17 listed "MISO is stable while SCK is high" as a property. With 2-FF synchronisers neither can hold at the promised 15 MHz: a falling-edge update lands after the next rising edge once SCK is faster than about `clk`/8. MISO now changes three cycles after a rising edge reaches the pin and never in the two cycles before. The property is reworded to match, and the owner should review that wording.
+2. **RX FIFO reads.** The word's MSB has to be on MISO before the host asks for it. If the read popped the FIFO, every burst read would lose one word when it stopped. The link reads the head early and pops only when the host clocks the word's first bit. RXUNDER is set at that same point if the FIFO was empty, through a new `fdebug_set` input on `pio_block`.
+3. **IMEM is write-only from the host**, as RP2040 `INSTR_MEM` is. A read port would be a fifth 64-to-1 multiplexer of 16 bits, and area is the block 3 gate's main risk. `SMn_INSTR` still reads the word at each engine's PC through the engine's own read port, as on RP2040.
+4. **`DBG_CTRL` HALT and STEP stay in block 4**, as the plan has them. The register reads 0 until then.
+5. **FJOIN changes at the chip level.** The register block flushes both FIFOs in the cycle of a `SHIFTCTRL` write that changes FJOIN, and the new capacity applies from the next cycle. That makes the change defined even while the SM runs, so it is tested rather than excluded.
+6. **Everything else** (address wrapping, ignored command bits, unmapped addresses, write masks and reset values from RP2040 §3.7, HWCFG layout, PAD_IN contents, absent SMs) is fixed in chip.md §6 to §9.
+
+## Block 3 log
+
+| Task | Worker | What checked it | What the check found |
+| --- | --- | --- | --- |
