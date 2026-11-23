@@ -173,7 +173,7 @@ The cycle model above defines every pin sequence. For the host to read and write
 - **H-CS.** Change CS_N only while SCK is low. Leave at least 3 cycles from CS_N falling to the first SCK rise, and keep CS_N high for at least 2 cycles between frames. STATUS bit 7 reaches MISO in the third cycle after CS_N falls, so with exactly 3 cycles it arrives in the cycle the host samples it.
 - **H-RST.** Keep CS_N high while `rst_n` is low and for at least 4 cycles after it rises. A frame that is in progress when reset is released is still defined by §6.1 and §6.2, but its bits are not the host's.
 - **H-MOSI.** Change MOSI only while SCK is low, and not in the cycle SCK rises.
-- **Sampling.** Sample MISO in the cycle it raises SCK. By §6.5 the bit has been there since at least the previous cycle.
+- **Sampling.** Sample MISO in the cycle that raises SCK, or up to 2 cycles later. By §6.5, with H-SCK and H-CS kept, the bit is on MISO from at least the cycle before the rise until 2 cycles after it. A real host should sample about 1 cycle after its rise, which centres the sample in that window at 15 MHz. The §12 library does this.
 
 A real host adds margin for pad and board delay: at least 4 cycles of CS setup and of CS_N high time, and MOSI changed on the falling edge of SCK. The library in §12 does this.
 
@@ -295,7 +295,7 @@ An absent SM's `RXFn` reads 0 and sets nothing.
 
 ### 9.1 Input vector
 
-`pio_block.pins_in` = `{8'b0, ui_in, uo_out, uio_in}`. Pins 0 to 7 are `uio_in`, 8 to 15 are this cycle's `uo_out` (DESIGN §5: reading an output-only pin returns what is driven), 16 to 23 are `ui_in`, and the virtual pins 24 to 31 are 0.
+`pio_block.pins_in` = `{8'b0, ui_in, uo_out, uio_in}`. This vector is the pad value the engines see. Nothing inside the chip replaces it with the engines' own output registers. A pin whose direction bit is set still reads this vector, so a released open-drain pin reads the external level, and pins 14 and 15 read HOST_IRQ and MISO while those claim the pad. Pins 0 to 7 are `uio_in`, 8 to 15 are this cycle's `uo_out` (DESIGN §5: reading an output-only pin returns what is driven), 16 to 23 are `ui_in`, and the virtual pins 24 to 31 are 0.
 
 `pio_block.sync_bypass` = `{8'b0, INPUT_SYNC_BYPASS[23:0]}`.
 
@@ -348,7 +348,9 @@ A run fails on the first difference. The report gives the cycle, the port, both 
 - frames cut off at random bits, 1-byte STATUS polls, back-to-back frames with the minimum gap, and pin sequences that break §6.6 (the result is still defined);
 - SCK periods from 4 cycles up, with uneven high and low phases;
 - the 36 corpus programs, loaded and started through the host link;
-- external levels on every input pad, open-drain on and off, and `HOSTIRQ_EN` on and off.
+- external levels on every input pad, open-drain on and off, and `HOSTIRQ_EN` on and off;
+- engines reading pins they also drive, including released open-drain pins, pins 14 and 15 (HOST_IRQ and MISO readback), input-only pins with their direction bit set, and virtual pins;
+- resets in the middle of a frame and in the middle of a running program. Use `Cyclesim.reset` on the RTL and the model's reset in the same cycle; both keep IMEM.
 
 ## 12. Simulation server (Model & tests lane to ISA & tools lane)
 
@@ -361,9 +363,10 @@ The Model & tests lane provides `pgsim chip-serve`, so the host library can be t
 | `ext UI UIO` | `ok` | External levels: `ui_in[4:0]` from UI, and the external level of each `uio` pad from UIO, both in hex |
 | `pads` | `ok UO UIOOUT UIOOE` | This cycle's `uo_out`, `uio_out` and `uio_oe`, in hex |
 | `cycle` | `ok N` | The current cycle number |
-| `quit` | | Exit |
+| `reset` | `ok` | Reset, as if `rst_n` had been low for one cycle. Every state element except IMEM returns to its §10 reset value, including the host-link synchronisers (idle) and the MISO shift register. IMEM keeps its contents. The cycle count keeps counting. |
+| `quit` | `ok` | Reply, then exit with status 0 |
 
-Options: `--num-sms N` (default 4), `--sck-half H` (SCK high and low phases in cycles, default 3), `--cs-setup S` (default 4), `--cs-gap G` (default 4). Anything else gets the reply `err` and a reason.
+Options: `--num-sms N` (default 4), `--sck-half H` (SCK high and low phases in cycles, default 3), `--cs-setup S` (default 4) and `--cs-gap G` (default 4). Each takes any integer ≥ 1. Values that break §6.6 are allowed, because the result is still defined. A bad option prints usage on stderr and exits with status 2. A malformed or unknown command, including a missing or extra argument or bad hex, gets the one-line reply `err <reason>`, and the server keeps running.
 
 ## 13. Exit checks for block 3
 
