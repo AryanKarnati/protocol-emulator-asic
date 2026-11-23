@@ -45,7 +45,7 @@ Port names are the Verilog names. The lockstep harness drives Cyclesim by these 
 
 `hw/pio_block.mli` exposes `val circuit : num_sms:int -> Hardcaml.Circuit.t`. This is the circuit the lockstep harness simulates, and it must behave exactly like the Verilog that `gen_verilog` prints.
 
-Ports exist for 4 SMs whatever `num_sms` is. For an SM `i ≥ num_sms` there is no logic: its outputs are 0, and inputs aimed at it are ignored.
+Ports exist for 4 SMs whatever `num_sms` is. For an SM `i ≥ num_sms` there is no logic: its outputs are 0, and inputs aimed at it are ignored. Every port in this table must also exist in the Cyclesim simulation for every `num_sms` and IMEM depth, including inputs the circuit ignores, such as `ext` at depth 32. Cyclesim drops inputs nothing reads, so the RTL must keep them on purpose.
 
 **Inputs**
 
@@ -71,7 +71,7 @@ Ports exist for 4 SMs whatever `num_sms` is. For an SM `i ≥ num_sms` there is 
 | `instr_write`, `instr_sm` [2], `instr_data` [16] | | pulse | Host write to SMn_INSTR |
 | `imem_write`, `imem_addr` [6], `imem_data` [16] | | pulse | Instruction memory write. With IMEM depth 32, bit 5 is ignored. (Block 3: was 5 bits.) |
 | `ext0`…`3` | 32 | level | SMn_EXT. Bit 0 is PAGE. Other bits are ignored. With IMEM depth 32 the whole word is ignored. (Block 3.) |
-| `fdebug_set` | 32 | pulse | Sets FDEBUG flags, in the `fdebug` layout (H8). The register block uses it for RXUNDER (chip.md §8.3). (Block 3.) |
+| `fdebug_set` | 32 | pulse | Sets FDEBUG flags, in the `fdebug` layout (H8). Bits outside that layout ([7:4], [15:12], [23:20]) and bits of absent SMs are ignored. The register block uses it for RXUNDER (chip.md §8.3). (Block 3.) |
 
 **Outputs**
 
