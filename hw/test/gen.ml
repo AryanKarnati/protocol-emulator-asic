@@ -237,6 +237,12 @@ let event_g ~len ~cycles (cycle : int) : (int * Case.event) list G.t =
     ; G.map (G.both (int_g 0 63) (word_g ~len:32)) ~f:(fun (a, d) -> [ cycle, Case.Imem_write (a, d) ])
     ; (* PAGE changes mid-run (engine.md 9) *)
       G.map (G.both sm_g (int_g 0 1)) ~f:(fun (sm, p) -> [ cycle, Case.Sm_ext (sm, p) ])
+    ; (* PAGE and an IMEM write in one cycle, at {page, PC} for a small PC (engine.md F7: the page
+         presented in this cycle decides which word is the fetch address) *)
+      G.map
+        (G.both (G.both sm_g (int_g 0 1)) (G.both (int_g 0 3) (word_g ~len:32)))
+        ~f:(fun ((sm, p), (k, d)) ->
+          [ cycle, Case.Sm_ext (sm, p); cycle, Case.Imem_write ((p * 32) + k, d) ])
     ; G.map sm_g ~f:(fun s -> [ cycle, Case.Rxf_sel s ])
     ; single Case.Reset_low
     ]
