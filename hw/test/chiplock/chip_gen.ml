@@ -1,0 +1,190 @@
+(* Random host operations as pin traces (docs/chip.md 6, 11). A case is a sequence of frames,
+   idle gaps, external-pad changes and resets. Every frame is clocked as a host would clock it,
+   with random SCK periods (4 cycles and up, and a few breaches of 6.6), random CS setup and gap,
+   random MOSI in the cycles where it may change, cut frames and resets inside frames. *)
+
+open Chip_case
+
+let st_of seed = Random.State.make [| seed; 0x9E37 |]
+
+(* Register addresses the host touches (chip.md 8.1). *)
+let reg_addrs =
+  [ 0x000; 0x004; 0x008; 0x00C; 0x010; 0x014; 0x018; 0x01C; 0x020; 0x024; 0x028; 0x02C; 0x030
+  ; 0x034; 0x038 ]
+;;
+
+let sm_offsets = [ 0x00; 0x04; 0x08; 0x0C; 0x10; 0x14; 0x18; 0x2C; 0x30; 0x34; 0x38; 0x3C ]
+
+let generate ?(target = 4000) ~seed ~num_sms () : Chip_case.t =
+  let st = st_of seed in
+  let rint n = Random.State.int st n in
+  (* A uniform 32-bit value (Random.State.int takes bounds below 2^30). *)
+  let r32 () = (rint 0x10000 lsl 16) lor rint 0x10000 in
+  let chance p = Random.State.float st 1.0 < p in
+  let buf = ref [] in
+  let len () = List.length !buf in
+  let ext_ui = ref 0 and ext_uio = ref 0 in
+  let emit ~csn ~mosi ~sck ~rst =
+    let ui = (csn lsl 7) lor (mosi lsl 6) lor (sck lsl 5) lor (!ext_ui land 0x1F) in
+    buf := { ui; uio = !ext_uio; rst } :: !buf
+  in
+  let rst_cycles n =
+    for _ = 1 to n do
+      emit ~csn:1 ~mosi:0 ~sck:0 ~rst:true
+    done
+  in
+  (* One frame: [bits] (MSB first), SCK high and low phases of [h] cycles. *)
+  let frame bits =
+    let h = if chance 0.85 then 2 + rint 3 else 1 in
+    let setup = 1 + rint 5 and gap = if chance 0.8 then 2 + rint 4 else 1 in
+    let n = Array.length bits in
+    let first = if n > 0 then bits.(0) else 0 in
+    for _ = 1 to setup do
+      emit ~csn:0 ~mosi:first ~sck:0 ~rst:false
+    done;
+    Array.iteri
+      (fun j b ->
+        (* A reset in the middle of a frame, now and then. *)
+        if chance 0.002 then rst_cycles (1 + rint 2);
+        for _ = 1 to h do
+          emit ~csn:0 ~mosi:b ~sck:1 ~rst:false
+        done;
+        let next = if j + 1 < n then bits.(j + 1) else rint 2 in
+        for _ = 1 to h do
+          emit ~csn:0 ~mosi:next ~sck:0 ~rst:false
+        done)
+      bits;
+    for _ = 1 to gap do
+      emit ~csn:1 ~mosi:(rint 2) ~sck:0 ~rst:false
+    done
+  in
+  let word_bits w = Array.init 32 (fun k -> (w lsr (31 - k)) land 1) in
+  let addr_bits a = Array.init 16 (fun k -> (a lsr (15 - k)) land 1) in
+  let cmd_bits ~read ~fixed =
+    [| (if read then 1 else 0); (if fixed then 1 else 0); 0; 0; 0; 0; 0; 0 |]
+  in
+  let write_op addr data =
+    frame (Array.concat [ cmd_bits ~read:false ~fixed:(chance 0.3); addr_bits addr; word_bits data ])
+  in
+  let read_op addr n =
+    let dummy = Array.make 8 0 in
+    let body = Array.init (32 * n) (fun _ -> rint 2) in
+    frame (Array.concat [ cmd_bits ~read:true ~fixed:(chance 0.5); addr_bits addr; dummy; body ])
+  in
+  let rx_addr () = 0x050 + (4 * rint 4) in
+  let any_addr () =
+    let r = rint 100 in
+    if r < 40 then List.nth reg_addrs (rint (List.length reg_addrs))
+    else if r < 55 then 0x040 + (4 * rint 4)
+    else if r < 70 then rx_addr ()
+    else if r < 80 then 0x100 + (4 * rint 64)
+    else if r < 97 then 0x200 + (0x40 * rint num_sms) + List.nth sm_offsets (rint (List.length sm_offsets))
+    else rint 0x10000 land lnot 3
+  in
+  let sm_config sm =
+    (* CLKDIV: INT >= 1 (INT 0 with FRAC 0 is the only other legal form, chip.md 8.2). *)
+    let int = 1 + rint 8 in
+    let frac = if chance 0.5 then 0 else rint 256 in
+    write_op (0x200 + (0x40 * sm)) ((int lsl 16) lor (frac lsl 8));
+    (* EXECCTRL, SHIFTCTRL (FJOIN is 00, 01 or 10), PINCTRL. *)
+    (* SIDE_EN off: a side-set enable needs a count of at least 1 (engine.md 4), kept simple here. *)
+    write_op (0x204 + (0x40 * sm)) (r32 () land 0x7FFF_FF9F land lnot (1 lsl 30));
+    let fj = rint 3 in
+    write_op (0x208 + (0x40 * sm)) ((fj lsl 30) lor (rint 0x4000 lsl 16));
+    (* SIDESET_COUNT 0 to 5 (engine.md 4): the model and the RTL take no other value. *)
+    write_op (0x214 + (0x40 * sm)) ((r32 () land 0x1FFF_FFFF) lor (rint 6 lsl 29))
+  in
+  (* Prefix: an IMEM image, configurations and enables, as a host sets up a run. *)
+  let image () =
+    for k = 0 to rint 8 do
+      write_op (0x100 + (4 * k)) (rint 0x10000)
+    done
+  in
+  image ();
+  for sm = 0 to num_sms - 1 do
+    if chance 0.7 then sm_config sm
+  done;
+  write_op 0x008 (if chance 0.7 then 1 + rint 15 else 0xF);
+  (* Random operations, until the target length. *)
+  while len () < target do
+    let r = rint 100 in
+    if r < 25
+    then write_op (any_addr ()) (r32 ())
+    else if r < 45
+    then read_op (if chance 0.4 then rx_addr () else any_addr ()) (1 + rint 3)
+    else if r < 50
+    then (
+      (* A pad test (chip.md 9.1): forced SET of a pin, then the pad controls and external levels. *)
+      let base = rint 32 in
+      write_op 0x214 ((1 lsl 26) lor (base lsl 5));
+      (* SET pins (dest 0) and SET pindirs (dest 4), data 0 or 1 *)
+      write_op 0x210 (0xE000 lor (0 lsl 5) lor rint 2);
+      write_op 0x210 (0xE000 lor (4 lsl 5) lor rint 2);
+      write_op 0x024 (rint 256);
+      write_op 0x020 (rint 0x1000);
+      ext_ui := rint 32;
+      ext_uio := rint 256)
+    else if r < 55
+    then frame (Array.init (1 + rint 120) (fun _ -> rint 2))
+    else if r < 65
+    then for _ = 1 to 1 + rint 20 do emit ~csn:1 ~mosi:(rint 2) ~sck:0 ~rst:false done
+    else if r < 72
+    then (
+      ext_ui := rint 32;
+      ext_uio := rint 256)
+    else if r < 74
+    then rst_cycles (1 + rint 2)
+    else (
+      (* A 1-byte STATUS poll: the command byte alone. *)
+      frame (Array.init 8 (fun _ -> rint 2)))
+  done;
+  let cycles = Array.of_list (List.rev !buf) in
+  { num_sms; cycles }
+;;
+
+(* The corpus through the host link (chip.md 11): each program is loaded as a host loads it,
+   with IMEM writes, the SM configuration and the enable, and then runs for [cycles] cycles with
+   CS_N high. Pad stimulus of the program is not driven: the chip has 16 external pads and the
+   corpus pin events address 32 pins. *)
+let corpus ?(cycles = 3000) ~num_sms (c : Polyglot_lockstep.Case.t) : Chip_case.t =
+  let buf = ref [] in
+  let emit ~csn ~mosi ~sck =
+    buf := { ui = (csn lsl 7) lor (mosi lsl 6) lor (sck lsl 5); uio = 0; rst = false } :: !buf
+  in
+  let frame bits =
+    let h = 3 and setup = 4 and gap = 4 in
+    let n = Array.length bits in
+    for _ = 1 to setup do emit ~csn:0 ~mosi:(if n > 0 then bits.(0) else 0) ~sck:0 done;
+    Array.iteri
+      (fun j b ->
+        for _ = 1 to h do emit ~csn:0 ~mosi:b ~sck:1 done;
+        let next = if j + 1 < n then bits.(j + 1) else 0 in
+        for _ = 1 to h do emit ~csn:0 ~mosi:next ~sck:0 done)
+      bits;
+    for _ = 1 to gap do emit ~csn:1 ~mosi:0 ~sck:0 done
+  in
+  let word_bits w = Array.init 32 (fun k -> (w lsr (31 - k)) land 1) in
+  let addr_bits a = Array.init 16 (fun k -> (a lsr (15 - k)) land 1) in
+  let write addr data =
+    frame (Array.concat [ Array.make 8 0; addr_bits addr; word_bits data ])
+  in
+  for k = 0 to Array.length c.Polyglot_lockstep.Case.imem - 1 do
+    write (0x100 + (4 * k)) c.Polyglot_lockstep.Case.imem.(k)
+  done;
+  for sm = 0 to num_sms - 1 do
+    let s = c.Polyglot_lockstep.Case.initial.(sm) in
+    let base = 0x200 + (0x40 * sm) in
+    write base s.Polyglot_lockstep.Case.clkdiv;
+    write (base + 4) s.execctrl;
+    write (base + 8) s.shiftctrl;
+    write (base + 0x14) s.pinctrl
+  done;
+  let enable =
+    List.fold_left
+      (fun acc (_, ev) -> match ev with Polyglot_lockstep.Case.Sm_enable v -> v | _ -> acc)
+      1 c.events
+  in
+  write 0x008 (enable land 0xF);
+  for _ = 1 to cycles do emit ~csn:1 ~mosi:0 ~sck:0 done;
+  { num_sms; cycles = Array.of_list (List.rev !buf) }
+;;
