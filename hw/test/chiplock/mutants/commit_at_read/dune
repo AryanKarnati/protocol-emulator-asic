@@ -1,0 +1,21 @@
+; Chip mutant: the RX commit pops at the read (bit 31 + 32m) instead of the commit bit (chip.md 6.4).
+(rule
+ (targets chip.ml)
+ (deps ../../../../../sw/pgsim/chip.ml)
+ (action
+  (run %{exe:../../../mutants/tool/mutate.exe} ../../../../../sw/pgsim/chip.ml chip.ml
+   "else if rd && j >= 32 && (j - 32) mod 32 = 0" "else if false"
+   "      rx_next := pend;"
+   "      (match pend with Some { rsm; rempty } -> if rempty then pulses := Pgsim.Host_op.Fdebug_set (1 lsl (8 + rsm)) :: !pulses else pulses := Pgsim.Host_op.Rx_pop { sm = rsm } :: !pulses | None -> ());\n      rx_next := pend;")))
+
+(rule
+ (targets chip.mli)
+ (deps ../../../../../sw/pgsim/chip.mli)
+ (action
+  (copy ../../../../../sw/pgsim/chip.mli chip.mli)))
+
+(library
+ (name pgsim_mut_chip_commit_at_read)
+ (modules chip)
+ (flags (:standard -w -69))
+ (libraries polyglot_pgsim))

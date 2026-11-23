@@ -1,0 +1,19 @@
+; Chip mutant: open-drain polarity inverted (chip.md 9.2): the pad drives its level when PAD_OD is set.
+(rule
+ (targets chip.ml)
+ (deps ../../../../../sw/pgsim/chip.ml)
+ (action
+  (run %{exe:../../../mutants/tool/mutate.exe} ../../../../../sw/pgsim/chip.ml chip.ml
+   "if od = 0 then uio_out := !uio_out lor (po lsl i);" "if od = 1 then uio_out := !uio_out lor (po lsl i);")))
+
+(rule
+ (targets chip.mli)
+ (deps ../../../../../sw/pgsim/chip.mli)
+ (action
+  (copy ../../../../../sw/pgsim/chip.mli chip.mli)))
+
+(library
+ (name pgsim_mut_chip_pad_od_polarity)
+ (modules chip)
+ (flags (:standard -w -69))
+ (libraries polyglot_pgsim))

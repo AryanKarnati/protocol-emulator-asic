@@ -1,0 +1,19 @@
+; Chip mutant: F = 1 still increments the address (chip.md 6.3: with F = 1 every word uses ADDR).
+(rule
+ (targets chip.ml)
+ (deps ../../../../../sw/pgsim/chip.ml)
+ (action
+  (run %{exe:../../../mutants/tool/mutate.exe} ../../../../../sw/pgsim/chip.ml chip.ml
+   "if t.cmd_f = 1 then t.addr_reg else t.addr_reg + (4 * m)" "t.addr_reg + (4 * m)")))
+
+(rule
+ (targets chip.mli)
+ (deps ../../../../../sw/pgsim/chip.mli)
+ (action
+  (copy ../../../../../sw/pgsim/chip.mli chip.mli)))
+
+(library
+ (name pgsim_mut_chip_fixed_increments)
+ (modules chip)
+ (flags (:standard -w -69))
+ (libraries polyglot_pgsim))

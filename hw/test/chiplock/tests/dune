@@ -1,0 +1,4 @@
+(test
+ (name test_chip_lockstep)
+ (modules test_chip_lockstep)
+ (libraries polyglot_chiplock polyglot_chip_mutants))

@@ -1,0 +1,20 @@
+; Chip mutant: STATUS bits swapped: RXNEMPTY and TXNFULL exchange places (chip.md 9.3).
+(rule
+ (targets chip.ml)
+ (deps ../../../../../sw/pgsim/chip.ml)
+ (action
+  (run %{exe:../../../mutants/tool/mutate.exe} ../../../../../sw/pgsim/chip.ml chip.ml
+   "let status t fst = (notfull_bits t fst lsl 4) lor nonempty_bits t fst"
+   "let status t fst = (nonempty_bits t fst lsl 4) lor notfull_bits t fst")))
+
+(rule
+ (targets chip.mli)
+ (deps ../../../../../sw/pgsim/chip.mli)
+ (action
+  (copy ../../../../../sw/pgsim/chip.mli chip.mli)))
+
+(library
+ (name pgsim_mut_chip_status_swapped)
+ (modules chip)
+ (flags (:standard -w -69))
+ (libraries polyglot_pgsim))

@@ -168,6 +168,17 @@ let generate ?(target = 4000) ~seed ~num_sms () : Chip_case.t =
       ext_uio := rint 256)
     else if r < 74 && chance 0.2
     then rst_cycles (1 + rint 2)
+    else if r < 80
+    then (
+      (* A FIFO change of FJOIN with data in the FIFOs: the chip flushes both (chip.md 8.2). *)
+      (* SMs disabled, so nothing pops the words; then FJOIN changes; then the enables return *)
+      let sm = rint num_sms in
+      write_op 0x008 0;
+      for _ = 1 to 1 + rint 3 do
+        write_op (0x040 + (4 * sm)) (r32 ())
+      done;
+      write_op (0x208 + (0x40 * sm)) ((rint 3 lsl 30) lor (r32 () land 0x3FFF_0000));
+      write_op 0x008 (rint 16))
     else (
       (* A 1-byte STATUS poll: the command byte alone. *)
       frame (Array.init 8 (fun _ -> rint 2)))

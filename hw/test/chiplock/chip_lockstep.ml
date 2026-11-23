@@ -72,16 +72,31 @@ type outcome =
   | Pass of { cycles : int }
   | Fail of failure
 
+(* The model side: the whole-chip model, or a faulty copy of it (chip mutants). *)
+module type MODEL = sig
+  type t
+  type outputs
+
+  val create : ?num_sms:int -> unit -> t
+  val reset : t -> unit
+  val observe : t -> (string * int) list
+  val step : t -> ui_in:int -> uio_ext:int -> outputs
+  val bus_ports : outputs -> (string * int) list
+end
+
+let chip_model : (module MODEL) = (module Chip)
+
 let describe (f : failure) =
   Printf.sprintf "MISMATCH at cycle %d, port %s: model (pgsim chip) = 0x%x, rtl = 0x%x" f.cycle f.port
     f.model f.rtl
 ;;
 
 (* Run one case; stop at the first difference. *)
-let run (c : Chip_case.t) : outcome =
+let run ?(model = chip_model) (c : Chip_case.t) : outcome =
+  let module M = (val model : MODEL) in
   let c = Chip_case.normalise c in
   let num_sms = c.Chip_case.num_sms in
-  let m = Chip.create ~num_sms () in
+  let m = M.create ~num_sms () in
   let sim = rtl_create ~num_sms in
   let n = Array.length c.Chip_case.cycles in
   let result = ref None in
@@ -90,10 +105,10 @@ let run (c : Chip_case.t) : outcome =
     let y = c.Chip_case.cycles.(!k) in
     if y.Chip_case.rst
     then (
-      Chip.reset m;
+      M.reset m;
       rtl_reset sim)
     else (
-      let mobs = Chip.observe m in
+      let mobs = M.observe m in
       rtl_drive sim ~ui:y.Chip_case.ui ~uio:y.Chip_case.uio;
       let robs =
         List.map (fun (name, _) -> name, out sim name) mobs
@@ -104,10 +119,8 @@ let run (c : Chip_case.t) : outcome =
        | Some (name, v) ->
          result := Some (Fail { cycle = !k; port = name; model = v; rtl = List.assoc name robs })
        | None ->
-         let out_m =
-           Chip.step m ~ui_in:y.Chip_case.ui ~uio_ext:y.Chip_case.uio
-         in
-         let mbus = Chip.bus_ports out_m in
+         let out_m = M.step m ~ui_in:y.Chip_case.ui ~uio_ext:y.Chip_case.uio in
+         let mbus = M.bus_ports out_m in
          (match List.find_opt (fun (name, v) -> List.assoc name rbus <> v) mbus with
           | Some (name, v) ->
             result := Some (Fail { cycle = !k; port = name; model = v; rtl = List.assoc name rbus })
@@ -122,7 +135,7 @@ let run (c : Chip_case.t) : outcome =
 (* Shrink a failing case: cut it after the failing cycle, then delete chunks of cycles while the
    case still fails. Deleting cycles changes the pin sequence, but every sequence has a defined
    result, so a smaller case is a valid case. *)
-let shrink ?(limit = 400) (c : Chip_case.t) (f : failure) : Chip_case.t * failure * int =
+let shrink ?model ?(limit = 400) (c : Chip_case.t) (f : failure) : Chip_case.t * failure * int =
   let c = { c with Chip_case.cycles = Array.sub c.Chip_case.cycles 0 (f.cycle + 1) } in
   let steps = ref 0 in
   let best = ref c and best_f = ref f in
@@ -141,7 +154,7 @@ let shrink ?(limit = 400) (c : Chip_case.t) (f : failure) : Chip_case.t * failur
             Chip_case.cycles = Array.append (Array.sub cur 0 !i) (Array.sub cur hi (len - hi))
           }
         in
-        match run cand with
+        match run ?model cand with
         | Fail g ->
           best := cand;
           best_f := g
