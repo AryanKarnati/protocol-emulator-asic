@@ -31,8 +31,8 @@ let run ~(reference : Dut.port_dut) ~(dut : Dut.port_dut) (case : Case.t) : outc
      compared too (engine.md 5). Inputs are only driven for cycles below [total]. *)
   while Option.is_none !result && !n <= total do
     (* Nothing is compared while rst_n is low (engine.md 5). The outputs of a cycle are read
-       with that cycle's inputs applied (FIFO capacity follows FJOIN), with pins_in not yet set:
-       pins_in does not affect the register outputs. *)
+       with that cycle's inputs applied (FIFO capacity follows FJOIN, and rxf_data follows
+       rxf_sm), with pins_in not yet set: pins_in does not affect the register outputs. *)
     (* The final compare (after the last cycle) uses the last cycle's configuration. *)
     let inp0 =
       if !n < total then inputs.(!n) else { inputs.(total - 1) with Ports.rst_n = true }
@@ -63,21 +63,9 @@ let run ~(reference : Dut.port_dut) ~(dut : Dut.port_dut) (case : Case.t) : outc
        let inp = { (inputs.(!n)) with Ports.pins_in } in
        if Queue.length hist = history_len then ignore (Queue.pop hist);
        Queue.push (!n, rf) hist;
-       let rx_ref = reference.cycle inp in
-       let rx_dut = dut.cycle inp in
-       (match inp.Ports.rxf_pop with
-        | Some _ when rx_ref <> rx_dut ->
-          result
-          := Some
-               (Fail
-                  { cycle = !n
-                  ; port = "rxf_data"
-                  ; reference = rx_ref
-                  ; dut = rx_dut
-                  ; history = List.of_seq (Queue.to_seq hist)
-                  ; dut_name = dut.name
-                  })
-        | Some _ | None -> ());
+       (* rxf_data was compared with the other ports above (every cycle, engine.md 7). *)
+       ignore (reference.cycle inp);
+       ignore (dut.cycle inp);
        incr n)
   done;
   match !result with

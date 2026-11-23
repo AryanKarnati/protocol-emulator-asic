@@ -36,18 +36,22 @@ type event =
   | Irq_force of int
   | Fdebug_clear of int
   | Imem_write of int * int
+  | Sm_ext of int * int (** SM, level: SMn_EXT, bit 0 is PAGE, from this cycle on *)
+  | Rxf_sel of int (** the RX FIFO whose head rxf_data shows, from this cycle on *)
+  | Fdebug_set of int (** FDEBUG flags to set, layout as [Fdebug_clear] *)
   | Reset_low (** rst_n low for this cycle and the next (engine.md 5: at least 2 cycles) *)
 
 type t =
   { num_sms : int
-  ; imem : int array (* 32 words; words past the program are 0, which is JMP 0 *)
+  ; imem : int array (* 64 words, pages 0 and 1; words past the program are 0, which is JMP 0 *)
   ; initial : sm_cfg array (* 4 entries; entries past num_sms are ignored *)
   ; initial_sync : int
   ; cycles : int (* run cycles, after the 32-cycle load phase *)
   ; events : (int * event) list (* (run cycle, event), in any order *)
   }
 
-let load_cycles = 32
+let imem_words = 64
+let load_cycles = imem_words
 let m32 = 0xFFFF_FFFF
 let fjoin_mask = 0xC000_0000
 let fdebug_layout = 0xFF00_FFFF (* bits 31:28, 27:24, 19:16, 11:8, 3:0; see engine.md 3 *)
@@ -88,7 +92,9 @@ let fjoin_of c = c.shiftctrl land fjoin_mask
 let normalise (c : t) : t =
   let num_sms = max 1 (min 4 c.num_sms) in
   let cycles = max 1 (min 20_000 c.cycles) in
-  let imem = Array.init 32 (fun i -> if i < Array.length c.imem then c.imem.(i) land 0xFFFF else 0) in
+  let imem =
+    Array.init imem_words (fun i -> if i < Array.length c.imem then c.imem.(i) land 0xFFFF else 0)
+  in
   let initial =
     Array.init 4 (fun i ->
       let s = if i < Array.length c.initial then c.initial.(i) else default_cfg in
@@ -135,7 +141,10 @@ let normalise (c : t) : t =
         | Irq_force m -> Some (cy, Irq_force (m land 0xFF))
         | Fdebug_clear m -> Some (cy, Fdebug_clear (m land fdebug_layout))
         | Imem_write (a, d) ->
-          if once cy `Imem then Some (cy, Imem_write (a land 31, d land 0xFFFF)) else None
+          if once cy `Imem then Some (cy, Imem_write (a land 63, d land 0xFFFF)) else None
+        | Sm_ext (sm, v) -> Some (cy, Sm_ext (sm land 3, v land 1))
+        | Rxf_sel sm -> Some (cy, Rxf_sel (sm land 3))
+        | Fdebug_set m -> Some (cy, Fdebug_set (m land fdebug_layout))
         | Reset_low -> Some (cy, Reset_low))
       events
   in
@@ -173,6 +182,8 @@ let dense (c : t) : Ports.inputs array =
   let pinctrl = Array.map (fun s -> s.pinctrl) c.initial in
   let sync = ref c.initial_sync in
   let ext = ref 0 in
+  let sm_ext = Array.make 4 0 in
+  let rxf_sel = ref 0 in
   Array.init n_total (fun n ->
     let idle = Ports.idle ~rst_n:true in
     let idle = if n >= load_cycles && rst.(n - load_cycles) then { idle with Ports.rst_n = false } else idle in
@@ -186,6 +197,8 @@ let dense (c : t) : Ports.inputs array =
       ; sync_bypass = !sync
       ; pins_ext = !ext
       ; imem_write = Some (n, c.imem.(n))
+      ; sm_ext = Array.copy sm_ext
+      ; rxf_sm = !rxf_sel
       }
     else (
       let cy = n - load_cycles in
@@ -203,7 +216,12 @@ let dense (c : t) : Ports.inputs array =
             pinctrl.(sm) <- cfg.pinctrl
           | Sync_bypass v -> sync := v
           | Tx_push (sm, d) -> pulses := { !pulses with Ports.txf_push = Some (sm, d) }
-          | Rx_pop sm -> pulses := { !pulses with Ports.rxf_pop = Some sm }
+          | Rx_pop sm ->
+            rxf_sel := sm;
+            pulses := { !pulses with Ports.rxf_pop = Some sm }
+          | Sm_ext (sm, v) -> sm_ext.(sm) <- v
+          | Rxf_sel sm -> rxf_sel := sm
+          | Fdebug_set m -> pulses := { !pulses with Ports.fdebug_set = m }
           | Instr_write (sm, d) -> pulses := { !pulses with Ports.instr_write = Some (sm, d) }
           | Sm_restart m -> pulses := { !pulses with Ports.sm_restart = m }
           | Clkdiv_restart m -> pulses := { !pulses with Ports.clkdiv_restart = m }
@@ -222,6 +240,8 @@ let dense (c : t) : Ports.inputs array =
       ; pinctrl = Array.copy pinctrl
       ; sync_bypass = !sync
       ; pins_ext = !ext
+      ; sm_ext = Array.copy sm_ext
+      ; rxf_sm = (match !pulses.Ports.rxf_pop with Some s -> s | None -> !rxf_sel)
       }))
 ;;
 
@@ -257,6 +277,9 @@ let event_to_json cy ev : Yojson.Safe.t =
   | Irq_force m -> base "irq_force" [ i "mask" m ]
   | Fdebug_clear m -> base "fdebug_clear" [ i "mask" m ]
   | Imem_write (a, d) -> base "imem_write" [ i "addr" a; i "data" d ]
+  | Sm_ext (sm, v) -> base "sm_ext" [ i "sm" sm; i "value" v ]
+  | Rxf_sel sm -> base "rxf_sel" [ i "sm" sm ]
+  | Fdebug_set m -> base "fdebug_set" [ i "mask" m ]
   | Reset_low -> base "reset_low" []
 ;;
 
@@ -272,7 +295,7 @@ let cfg_to_json c : Yojson.Safe.t =
 let to_json (c : t) : Yojson.Safe.t =
   `Assoc
     [ "format", `String format_name
-    ; "version", `Int 1
+    ; "version", `Int 2
     ; "num_sms", `Int c.num_sms
     ; "load_cycles", `Int load_cycles
     ; "cycles", `Int c.cycles
@@ -311,13 +334,19 @@ let of_json (j : Yojson.Safe.t) : t =
       | "irq_force" -> Irq_force (int "mask" o)
       | "fdebug_clear" -> Fdebug_clear (int "mask" o)
       | "imem_write" -> Imem_write (int "addr" o, int "data" o)
+      | "sm_ext" -> Sm_ext (int "sm" o, int "value" o)
+      | "rxf_sel" -> Rxf_sel (int "sm" o)
+      | "fdebug_set" -> Fdebug_set (int "mask" o)
       | "reset_low" -> Reset_low
       | op -> failwith ("unknown event op " ^ op)
     in
     cy, ev
   in
+  (* Version 1 files have 32 words; the rest of IMEM is zero. *)
   let imem = to_list (member "imem" j) |> List.map to_int |> Array.of_list in
-  if Array.length imem <> 32 then failwith "imem must have 32 words";
+  if Array.length imem <> 32 && Array.length imem <> imem_words
+  then failwith "imem must have 32 or 64 words";
+  let imem = Array.init imem_words (fun i -> if i < Array.length imem then imem.(i) else 0) in
   let initial = to_list (member "initial" j) |> List.map cfg |> Array.of_list in
   if Array.length initial <> 4 then failwith "initial must have 4 entries";
   { num_sms = int "num_sms" j
@@ -355,5 +384,8 @@ let kind_name = function
   | Irq_force _ -> "irq_force"
   | Fdebug_clear _ -> "fdebug_clear"
   | Imem_write _ -> "imem_write"
+  | Sm_ext _ -> "sm_ext"
+  | Rxf_sel _ -> "rxf_sel"
+  | Fdebug_set _ -> "fdebug_set"
   | Reset_low -> "reset_low"
 ;;

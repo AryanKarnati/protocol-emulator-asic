@@ -68,6 +68,11 @@ let create ~num_sms : Dut.port_dut =
     set "irq_clear" 8 i.Ports.irq_clear;
     set "irq_force" 8 i.Ports.irq_force;
     set "fdebug_clear" 32 i.Ports.fdebug_clear;
+    set "fdebug_set" 32 i.Ports.fdebug_set;
+    for k = 0 to 3 do
+      set (Printf.sprintf "ext%d" k) 32 i.Ports.sm_ext.(k)
+    done;
+    set "rxf_sm" 2 i.Ports.rxf_sm;
     (match i.Ports.txf_push with
      | Some (sm, d) ->
        set "txf_push" 1 1;
@@ -75,9 +80,7 @@ let create ~num_sms : Dut.port_dut =
        set "txf_data" 32 d
      | None -> set "txf_push" 1 0);
     (match i.Ports.rxf_pop with
-     | Some sm ->
-       set "rxf_pop" 1 1;
-       set "rxf_sm" 2 sm
+     | Some _ -> set "rxf_pop" 1 1
      | None -> set "rxf_pop" 1 0);
     (match i.Ports.instr_write with
      | Some (sm, d) ->
@@ -88,7 +91,7 @@ let create ~num_sms : Dut.port_dut =
     (match i.Ports.imem_write with
      | Some (a, d) ->
        set "imem_write" 1 1;
-       set "imem_addr" 5 a;
+       set "imem_addr" 6 a;
        set "imem_data" 16 d
      | None -> set "imem_write" 1 0);
     Sim.cycle_check sim
@@ -112,7 +115,8 @@ let create ~num_sms : Dut.port_dut =
     ; cnt = per "dbg_cnt"
     ; exec_stalled = per "dbg_exec_stalled"
     ; phase = per "dbg_phase"
-    ; rxf_data = 0
+    ; instr = per "dbg_instr"
+    ; rxf_data = get "rxf_data"
     }
   in
   let cycle (i : Ports.inputs) : int =
@@ -123,7 +127,7 @@ let create ~num_sms : Dut.port_dut =
     else (
       drive i;
       Sim.cycle_before_clock_edge sim;
-      let rx = match i.Ports.rxf_pop with Some _ -> get "rxf_data" | None -> 0 in
+      let rx = get "rxf_data" in
       Sim.cycle_at_clock_edge sim;
       Sim.cycle_after_clock_edge sim;
       Sim.cycle_check sim;
