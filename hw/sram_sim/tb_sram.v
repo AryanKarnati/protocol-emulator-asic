@@ -1,5 +1,6 @@
-// SPI testbench for polyglot with sram = true (chip.md 6 and 8.4). The macro is the stand-in
-// in sram_standin.v. Pin cycles are one clock period each; SCK phases are 3 cycles.
+// SPI testbench for polyglot with sram = true (chip.md 6 and 8.4), run against the IHP
+// SRAM macro model. Run it with hw/sram_sim/run.sh, which takes the PDK files from
+// SRAM_MODEL_DIR (see that script for the URL and the pinned commit).
 `timescale 1ns/1ps
 module tb_sram;
   reg clk = 0;
