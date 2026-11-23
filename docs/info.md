@@ -1,40 +1,49 @@
 ## How it works
 
-This is the block 1 bring-up design. It is not the Polyglot protocol engine. It exists to check the flow end to end: Hardcaml to Verilog, then Tiny Tapeout GDS, precheck and gate-level simulation. The four protocol engines replace it in a later block.
+Polyglot is four RP2040-PIO-compatible protocol engines on one chip. Each engine runs a
+program from a shared 64 x 16 instruction memory, and drives and samples the protocol pins
+directly. A host sets everything up over a 4-wire SPI mode 0 link (SCK, MOSI, MISO, CS_N).
 
-The design has three parts:
+The chip has three parts:
 
-- a clock divider with an integer and 8-bit fractional divisor, `INT` and `FRAC`;
-- a 4-entry FIFO of 32-bit words;
-- a command decoder. Each rising edge, `CMD` on `ui_in[2:0]` is executed.
+- **Host link.** An SPI target. A frame is a command byte, a 16-bit address and then 32-bit
+  data words. Reads and writes go to the register block. Each access is one bus transfer.
+- **Registers.** Chip ID and status, the control register that enables the engines, the
+  interrupt flags, the pad registers, the 4-entry TX and RX FIFOs of each engine, and the
+  instruction memory. The register map is in `docs/chip.md` §8.
+- **Engines.** Four state machines with PIO-compatible instructions, clock dividers, FIFOs,
+  and IRQ flags. Each engine can drive any protocol pin.
 
-`DATA` on `uio_in` supplies the value for `PUSH`, `INT_LO`, `INT_HI` and `FRAC`. `uo_out` shows either one byte of the FIFO head word, chosen by `BYTE_SEL`, or a status byte, chosen by `VIEW`. All `uio` pins are inputs.
+`HOST_IRQ` on `uo_out[6]` goes high when an enabled interrupt source is active. Its sources
+are the TX-not-full and RX-not-empty flags of each engine and the four engine IRQ flags.
 
-Commands:
+## Pinout
 
-| `CMD` | Name | Effect |
+| Pad | Name | Meaning |
 | --- | --- | --- |
-| 0 | NOP | None |
-| 1 | PUSH | Push `{DATA x4} ^ 0x01234567`. Sets OVERFLOW if the FIFO is full. |
-| 2 | POP | Remove the head word. Sets UNDERFLOW if the FIFO is empty. |
-| 3 | INT_LO | `INT[7:0]` := `DATA` |
-| 4 | INT_HI | `INT[15:8]` := `DATA` |
-| 5 | FRAC | `FRAC` := `DATA` |
-| 6 | DIV_RESTART | Restart the divider phase |
-| 7 | CLEAR_FLAGS | Clear OVERFLOW and UNDERFLOW |
+| `uio[0..7]` | P0 to P7 | Protocol I/O. Open-drain can be set per pin. |
+| `uo_out[0..5]` | P8 to P13 | Protocol outputs |
+| `uo_out[6]` | HOST_IRQ / P14 | `HOST_IRQ` while the host enables it, otherwise a protocol output |
+| `uo_out[7]` | MISO | Host link data to the host |
+| `ui_in[0..4]` | P16 to P20 | Protocol inputs |
+| `ui_in[5]` | SCK | Host link clock |
+| `ui_in[6]` | MOSI | Host link data from the host |
+| `ui_in[7]` | CS_N | Host link chip select, active low |
 
-The status byte (`VIEW` = 1) has `TICK` in bit 7, the FIFO level in bits 6:4, FULL in bit 3, EMPTY in bit 2, and the sticky OVERFLOW and UNDERFLOW flags in bits 1 and 0.
-
-Reset is asynchronous. After reset the FIFO is empty, both flags are 0, and the divider is `INT` = 1, `FRAC` = 0, so `TICK` is high every cycle.
-
-The full pin contract is in `docs/gate.md`.
+Programs see the pins by their program numbers: P0 to P7 on `uio`, P8 to P15 on `uo_out`,
+and P16 to P23 on `ui_in`. Program pins 21 to 23 are the host link pins, and programs can read them.
 
 ## How to test
 
-The cocotb tests in `test/` drive these pins and check the outputs. Run them with `make -B` in `test/`. See `test/README.md`.
+The cocotb tests in `test/` drive the Verilog top. The host link tests use a `cocotbext-spi`
+master. Run them with `make -B` in `test/`. See `test/README.md`.
 
-To check the physical flow, the Tiny Tapeout GitHub actions build the GDS, run precheck and run gate-level tests on every push.
+The Tiny Tapeout GitHub actions build the GDS, run precheck and run gate-level tests on every push.
+Hardening metrics (utilisation, area, slack and violation counts) are printed as annotations on the
+`gds` job.
 
 ## External hardware
 
-None. The block 1 design needs no external parts. The later Polyglot design uses the Tiny Tapeout demo board and Pico 2 for silicon checks.
+The design needs no external parts for the host link. The Tiny Tapeout demo board with a
+Raspberry Pi Pico 2 (RP2350) drives the host link at up to 15 MHz. Protocol devices go on the
+Pmod headers.

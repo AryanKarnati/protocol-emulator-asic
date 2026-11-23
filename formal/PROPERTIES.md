@@ -135,6 +135,71 @@ are block 3 items.
 
 See the final report for the wall times of the clean run, per task, from `formal/build/times.log`.
 
+## Host link (block 3, `hostlink`, chip.md sections 6 and 7)
+
+**For owner review.** These are the English sentences the proofs check. The sentences come from
+`docs/chip.md` 6.1 to 6.6 and 7. The harness (`hostlink_harness.v`) holds a reference monitor
+that follows those sections cycle by cycle. The monitor is written from the contract only, and
+`hw/hostlink.ml` was not read to write it. The DUT is `gen_verilog hostlink` (the RTL lane's
+module, branch 7e30824).
+
+Status on the real module, from the runs in this session:
+
+| Check | Depth / result |
+| --- | --- |
+| `bmc` (`hostlink.sby`) | 72 cycles, PASS. Covers the header, the first read word and its commit. |
+| `cover` (`hostlink.sby`) | 184 cycles, PASS. Reaches the first and second write words and the read commit. |
+| `prove` (k-induction, k up to 8) | UNKNOWN. The step case fails on the bus-pulse equality (line 192). See the disclosure below. |
+| `hostlink_miso_uncond.sby` (L2 without the host obligations) | FAIL at step 4, as expected. |
+| Mutants (`formal/mutants/hostlink__*`, 7) | 7 of 7 killed by `bmc` (72 cycles). Kills: a missing commit, a commit one cycle late, a read one cycle early, MISO from bit 30, inverted MOSI, CS_N stuck high, and a wrong STATUS bit. |
+| Write-side mutants (`formal/mutants/hostlink_deep__*`, 2) | Not run to a result. `bmc` to 72 cannot reach the first write word (cycle 114). The deep runs were stopped (see the deep BMC row below). Manual target: `make -C formal hostlink_deep`. |
+| `bmc_deep` (184 cycles, real module) | Stopped at step 115 after about 3.5 hours. No assertion failed through step 115, which includes the first write word (cycle 114). Not completed to 184, so no result is claimed for cycles 116 to 184. Manual only: `cd formal && sby -f hostlink.sby bmc_deep`. Not in CI. |
+
+### Block 3 status (accepted by the orchestrator)
+
+Plain statement of what is established for the host link at the end of block 3.
+
+- **Proven, unbounded:** none of L1 to L6. The k-induction proof and the IC3/PDR run (`abc pdr`) did not close.
+- **Bounded, no failure, real `gen_verilog hostlink`:**
+  - L1 (exact MISO rule), L2 (hold rule under the §6.6 assumptions), L4 (MISO equals the model), L6 (reset): BMC to 72 cycles.
+  - L3 (bus pulses, address, data) and L5 (one pulse per cycle, no partial write), read side: BMC to 72 cycles.
+  - L3 and L5, write side: BMC to 115 cycles, no assertion failure. This covers the first write word (bit 55, cycle 114). Cycles 116 and later are not checked.
+  - Cover (reachability only): 184 cycles, reaches the first and second write words and the first read commit.
+- **Negative check, expected to fail:** L2 without the §6.6 assumptions fails at step 4.
+- **Mutants:** 7 of 7 default host-link mutants killed by BMC to 72. 2 deep write-side mutants: no result (the runs were stopped).
+- **Not done in block 3:** the unbounded write-side proof, and the debug-netlist invariants that would close it.
+- **Planned for block 4:** "Formal on the host link, with all proofs running in CI" (PLAN block 4). That work covers the unbounded proofs for L3 and L5 through debug-netlist invariants with the address mapping, the deep mutant runs, and making the proofs run in CI.
+
+| ID | Sentence | How it is checked |
+| --- | --- | --- |
+| L1 | MISO changes only in the cycle right after a START, RISE or END, and reset clears it. | Unconditional. `bmc` to 72 on the real module. Unbounded: not closed. |
+| L2 | For a counted rise of SCK in pin cycle c, MISO is unchanged in cycles c, c+1 and c+2, provided the host follows chip.md 6.6 around the rise: SCK low in cycle c-2 (H-SCK), CS_N does not change in cycles c-2 or c-1 (H-CS), and rst_n is high in cycles c to c+2 (H-RST). | `bmc` to 72 with the three host conditions as explicit antecedents. The same property without them (`hostlink_miso_uncond.sby`) fails, which shows the obligations are needed. |
+| L3 | Every cycle, the bus pulses `bus_write`, `bus_read` and `bus_commit` equal the monitor's, which follows chip.md 6.4 bit by bit. The addresses `bus_addr` (with bits [1:0] = 0) and the data `bus_wdata` equal the monitor's values in the cycles that have a pulse. | `bmc` to 72 covers the read pulse and commit. Write pulses start at cycle 114, so the write-side part is checked only by `bmc_deep` (184 cycles, nightly and mutant runs). |
+| L4 | Every cycle, `miso` equals the monitor's shift register (chip.md 6.5), and it is 0 between frames. | `bmc` to 72. |
+| L5 | At most one bus pulse is raised per cycle, and a write pulse only occurs inside a frame with its word complete. | `bmc` to 72 for the one-pulse part. The write part needs `bmc_deep`. |
+| L6 | While `rst_n` is low, `miso` is 0 and no bus pulse is raised. | `bmc` to 72. chip.md 7 states this (C2). |
+
+****Engine attempts on the unbounded proof and the deep BMC (this pass).** `hostlink_pdr.sby` runs `abc pdr` on the `prove` task with no helper invariants. It did not converge: after about 3 minutes it had reached 400 frames and was still adding frames, so I stopped it. `hostlink_yices.sby` runs the 184-cycle BMC with `smtbmc yices`: it reached step 45 with no failure, and then the steps slowed sharply, so I stopped it. The boolector deep run reached step 115 with no failure before it was stopped. Deepest write-side result so far: no assertion failed through step 115, which covers the first write word. Neither engine closed the L3 or L5 write-side properties.
+
+The cherry-pick of `eaa73fd` (the early-failure diagnostics in `flow/metrics_notice.py`) is on this branch as `a101a23`.
+
+**Helper-invariant attempt (not closed).** To close the unbounded proof I read `hw/hostlink.ml` after the properties were written (disclosed, as the coordinator allowed). The internal state that the invariants would tie to the monitor is: the pin flops `sck2`, `sck3`, `cs2`, `cs3`, `mosi2` (and their first stages); `cnt` (5 bit, the phase after bit 24); `in_body`; the command bits `r_q` and `f_q`; `rxsr` (31 bits); `addr` (16 bits, which loads ADDR at the header end and steps by 4 after each word unless F is set); and `sr` (32 bits). The monitor keeps `ADDR+4m` in a different form, so the address invariant needs a mapping from the stepping register to the monitor's word index. The invariants were not implemented: that needs a debug netlist to expose these nets. The bounded results above are the result.
+
+**cs_stuck_high (step 3).** The first run ended with `DONE (ERROR)`. The log had `Assert failed` at step 4, `Status: FAILED`, then "Engine terminated without status". A rerun with the same boolector engine gave `Status returned by engine: FAIL` and `DONE (FAIL)`, and a z3 run also gave a clean FAIL. So the ERROR did not reproduce; the cause looks like an intermittent sby/boolector status issue, and its root cause was not found. The runner now counts a kill only when the log has both `Assert failed` and `DONE (FAIL`. If boolector ends with "terminated without status", it retries with z3.
+
+Disclosure on the unbounded proof.** The k-induction step starts from an arbitrary state. The
+monitor and the DUT are then unrelated, so the bus-pulse equality fails in the step case. This is
+a limit of the method, not a counterexample from reset: the BMC from reset passes. To close the
+proof, the invariants would have to tie the monitor registers to the DUT registers, which needs a
+debug netlist (as blocks 1 and 2 did). Not done.
+
+**Modelling choices.** The bit counter is 19 bits and wraps. The wrap cannot change any property:
+the word index enters only as m mod 2^14, and the phase only as b mod 32 (see the header of
+`hostlink_harness.v`). Pins before cycle 0, and pins during reset, are treated as idle (chip.md
+6.1). The reset is modelled as asynchronous (L6), following chip.md 10 and 7. If the RTL used a
+synchronous reset, L6 would fail, and the owner would have to decide which reading of chip.md 7
+holds.
+
 ## Reproduce
 
 ```

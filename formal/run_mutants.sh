@@ -49,6 +49,19 @@ run_task() {
   return 1
 }
 
+# run_task_clean SBY_FILE TASK DIR NAME: a kill only if the log has a failed assertion and a
+# clean engine FAIL ("DONE (FAIL"). Used by the host-link families.
+run_task_clean() {
+  log_dir="$3/$2"
+  rm -rf "$log_dir"
+  "$SBY" -f "$1" "$2" -d "$log_dir" >/dev/null 2>&1 || true
+  if [ -f "$log_dir/logfile.txt" ] && grep -q "Assert failed" "$log_dir/logfile.txt" \
+     && grep -q "DONE (FAIL" "$log_dir/logfile.txt"; then
+    return 0
+  fi
+  return 1
+}
+
 for sedf in mutants/*.sed; do
   name=$(basename "$sedf" .sed)
   case "$name" in
@@ -72,6 +85,9 @@ for sedf in mutants/*.sed; do
       ;;
     fifo_join)
       src=build/fifo_join.v
+      ;;
+    hostlink|hostlink_deep)
+      src=build/hostlink.v
       ;;
     *)
       echo "unknown mutant family in $name" >&2
@@ -114,6 +130,18 @@ for sedf in mutants/*.sed; do
       if run_task "$dir/join.sby" flags_prove "$dir" "$name"; then killed=flags_prove; fi
       # The token kill-check uses a witness-writing engine (boolector) at a small depth.
       if [ -z "$killed" ] && run_task "$dir/join.sby" token_kill "$dir" "$name"; then killed=token_kill; fi
+      ;;
+    hostlink|hostlink_deep)
+      # A host-link kill needs a clean FAIL: the task log has "DONE (FAIL" and "Assert failed".
+      # boolector sometimes ends with "Engine terminated without status" after a real failure
+      # (seen on cs_stuck_high), so a boolector ERROR is retried with z3. Only a FAIL counts.
+      if [ "$family" = hostlink ]; then task=bmc; else task=bmc_deep; fi
+      mk_sby hostlink.sby 'build/hostlink.v' hostlink.v "$dir/mutant.v" "$dir/hostlink.sby"
+      if run_task_clean "$dir/hostlink.sby" "$task" "$dir" "$name"; then killed=$task; fi
+      if [ -z "$killed" ] && grep -q "terminated without status" "$dir/$task/logfile.txt" 2>/dev/null; then
+        sed 's/smtbmc boolector/smtbmc z3/' "$dir/hostlink.sby" > "$dir/hostlink_z3.sby"
+        if run_task_clean "$dir/hostlink_z3.sby" "$task" "$dir" "$name"; then killed="$task-z3"; fi
+      fi
       ;;
   esac
 

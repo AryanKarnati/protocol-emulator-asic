@@ -1,0 +1,18 @@
+[tasks]
+# Unbounded proof by IC3/PDR (abc pdr), no helper invariants.
+prove
+
+[options]
+mode prove
+
+[engines]
+abc pdr
+
+[script]
+read_verilog -formal hostlink.v
+read_verilog -formal hostlink_harness.v
+prep -top hostlink_harness
+
+[files]
+build/hostlink.v
+hostlink_harness.v
