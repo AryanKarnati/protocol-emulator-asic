@@ -80,7 +80,7 @@ Ports exist for 4 SMs whatever `num_sms` is. For an SM `i ≥ num_sms` there is 
 | `pins_out` | 32 | Output level register of each pin |
 | `pins_oe` | 32 | Direction register of each pin (1 = output) |
 | `irq` | 8 | IRQ flags |
-| `rxf_data` | 32 | Combinational. The head of RX FIFO `rxf_sm`, or 0 if it is empty. From block 3 this holds in every cycle, whether or not a pop is presented, because the register block reads the head before it pops (chip.md §8.3). |
+| `rxf_data` | 32 | Combinational. The head of RX FIFO `rxf_sm`, or 0 if it is empty or `rxf_sm` selects an absent SM. From block 3 this holds in every cycle, whether or not a pop is presented, because the register block reads the head before it pops (chip.md §8.3). |
 | `fstat` | 32 | RP2040 FSTAT: TXEMPTY [27:24], TXFULL [19:16], RXEMPTY [11:8], RXFULL [3:0] |
 | `flevel` | 32 | RP2040 FLEVEL: for SM n, TX level in [8n+3:8n] and RX level in [8n+7:8n+4] |
 | `fdebug` | 32 | RP2040 FDEBUG: TXSTALL [27:24], TXOVER [19:16], RXUNDER [11:8], RXSTALL [3:0]. Polyglot adds ILLEGAL in [31:28]. All sticky. |
