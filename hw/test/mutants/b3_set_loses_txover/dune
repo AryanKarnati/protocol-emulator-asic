@@ -1,0 +1,12 @@
+(rule
+ (targets pgsim.ml)
+ (deps ../../../../sw/pgsim/pgsim.ml)
+ (action
+  (run %{exe:../tool/mutate.exe} ../../../../sw/pgsim/pgsim.ml pgsim.ml "set.f_txover || hs.f_txover" "(set.f_txover || hs.f_txover) && not (fdbg_clear_of_mask !fd_mask i).f_txover")))
+
+(rule (targets pgsim.mli) (deps ../../../../sw/pgsim/pgsim.mli) (action (copy ../../../../sw/pgsim/pgsim.mli pgsim.mli)))
+
+(library
+ (name pgsim_mut_b3_set_loses_txover)
+ (modules pgsim)
+ (libraries polyglot_isa))

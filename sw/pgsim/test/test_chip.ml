@@ -165,8 +165,120 @@ let rx_burst_stop () =
   check "the next burst pops the word the stop left, and one more" (rx_level s = before - 3)
 ;;
 
+(* chip.md 9.1: the engines see the pad vector, not their own output registers. Each case drives one
+   pin from SM0 with a forced SET (SET_COUNT 1 at SET_BASE [pin]), then reads the pad value the
+   engines saw in the cycle (Pgsim.pads after a step). *)
+let set_insn d dest = enc (Polyglot_isa.Isa.Set { delay_side = 0; dest; data = d })
+
+let force_set s ~base ~level ~dir =
+  write_frame s 0x214 ((1 lsl 26) lor (base lsl 5));
+  write_frame s 0x210 (set_insn level Polyglot_isa.Isa.Set_pins);
+  write_frame s 0x210 (set_insn dir Polyglot_isa.Isa.Set_pindirs)
+;;
+
+let pad_level_after_step s =
+  ignore (Chip_serve.drive s ~sck:0 ~mosi:0 ~csn:1);
+  fst (Pgsim.pads (Chip.pio s.Chip_serve.chip))
+;;
+
+(* (a) a released open-drain pin (PAD_OD set, output 0) reads the external level *)
+let pad_released_od () =
+  let s = server () in
+  (* Level 1 with PAD_OD set releases the pad (9.2): the output enable drops. *)
+  force_set s ~base:3 ~level:1 ~dir:1;
+  write_frame s 0x024 0x08;
+  ignore (Chip_serve.command s "ext 00 08");
+  let v = pad_level_after_step s in
+  check "released open-drain pin 3 reads the external level" ((v lsr 3) land 1 = 1);
+  let o = Chip.peek s.Chip_serve.chip ~ui_in:0 ~uio_ext:0x08 in
+  check "released pad drives nothing" (o.Chip.uio_oe land 0x08 = 0)
+;;
+
+(* (b) pin 14 reads uo_out[6] = HOST_IRQ while HOSTIRQ_EN is set, not the pin's own level *)
+let pad_pin14_hostirq () =
+  let s = server () in
+  write_frame s 0x01C 0x01;
+  write_frame s 0x020 0x001;
+  let v = pad_level_after_step s in
+  check "pin 14 reads HOST_IRQ, which is 1 here" ((v lsr 14) land 1 = 1);
+  check "pin 14 level from pins_out is 0" ((Pgsim.pins_out (Chip.pio s.Chip_serve.chip) lsr 14) land 1 = 0)
+;;
+
+(* (c) pin 15 reads uo_out[7] = MISO, cycle by cycle through a frame (pins 8..15 = uo_out). *)
+let pad_pin15_miso () =
+  let s = server () in
+  let seen_one = ref false in
+  for c = 0 to 40 do
+    let sck = if c >= 4 && (c - 4) mod 6 < 3 then 1 else 0 in
+    let o = Chip_serve.drive s ~sck ~mosi:0 ~csn:(if c >= 2 then 0 else 1) in
+    let lv, _ = Pgsim.pads (Chip.pio s.Chip_serve.chip) in
+    let uo = o.Chip.uo_out in
+    if (uo lsr 7) land 1 = 1 then seen_one := true;
+    check (Printf.sprintf "pin 15 = MISO at cycle %d" c) ((lv lsr 15) land 1 = (uo lsr 7) land 1);
+    check (Printf.sprintf "pins 8..13 = uo_out[5:0] at cycle %d" c) ((lv lsr 8) land 0x3F = uo land 0x3F);
+    check (Printf.sprintf "pin 14 = uo_out[6] at cycle %d" c) ((lv lsr 14) land 1 = (uo lsr 6) land 1)
+  done;
+  check "MISO was 1 at some cycle of the frame" !seen_one
+;;
+
+(* (d) input-only pin 16 with its direction bit set reads ui_in[0], not the output level *)
+let pad_input_only_dir () =
+  let s = server () in
+  force_set s ~base:16 ~level:0 ~dir:1;
+  ignore (Chip_serve.command s "ext 01 00");
+  let v = pad_level_after_step s in
+  check "pin 16 with direction set reads ui_in[0]" ((v lsr 16) land 1 = 1);
+  check "pin 16 output level is 0" ((Pgsim.pins_out (Chip.pio s.Chip_serve.chip) lsr 16) land 1 = 0)
+;;
+
+(* (e) virtual pin 24 with its direction bit set reads 0, whatever its output level *)
+let pad_virtual_dir () =
+  let s = server () in
+  force_set s ~base:24 ~level:1 ~dir:1;
+  let v = pad_level_after_step s in
+  check "virtual pin 24 reads 0 with direction set" ((v lsr 24) land 1 = 0);
+  check "virtual pin 24 output level is 1" ((Pgsim.pins_out (Chip.pio s.Chip_serve.chip) lsr 24) land 1 = 1)
+;;
+
+(* A read frame of [n] words from [addr] (8.3, 6.3): the words MISO sends, in order. *)
+let read_words s ~fixed addr n =
+  let bytes = [ cmd ~read:true ~fixed ] @ addr_bytes addr @ [ 0 ] @ List.init (4 * n) (fun _ -> 0) in
+  let out = Chip_serve.frame s bytes in
+  List.init n (fun m ->
+    List.fold_left (fun acc b -> (acc lsl 8) lor b) 0 (List.filteri (fun i _ -> i >= 4 + (4 * m) && i < 8 + (4 * m)) out))
+;;
+
+(* RXF word values (8.3): an echo, pull; in osr,32; push; jmp 0, moves TXF0 words to RX FIFO 0. A
+   fixed-address (F = 1) burst returns the words in order, then 0 when the FIFO is empty, and each
+   word is popped by its commit. *)
+let rxf_values () =
+  let s = server () in
+  let pull_block = enc (Polyglot_isa.Isa.Pull { delay_side = 0; if_empty = false; block = true }) in
+  let push_block = enc (Polyglot_isa.Isa.Push { delay_side = 0; if_full = false; block = true }) in
+  let in_osr = enc (Polyglot_isa.Isa.In { delay_side = 0; source = Polyglot_isa.Isa.In_osr; bit_count = 32 }) in
+  write_frame s 0x100 pull_block;
+  write_frame s 0x104 in_osr;
+  write_frame s 0x108 push_block;
+  write_frame s 0x10C 0;
+  write_frame s 0x008 1;
+  let words = [ 0x1111_1111; 0x2222_2222; 0xDEAD_BEEF ] in
+  List.iter (fun w -> write_frame s 0x040 w) words;
+  ignore (Chip_serve.command s "run 120");
+  check "RX FIFO 0 holds the three echoed words" ((read_word s 0x014 lsr 4) land 0xF = 3);
+  check "F = 1 burst returns the words in order, then 0"
+    (read_words s ~fixed:true 0x050 4 = words @ [ 0 ]);
+  check "the burst popped all three and the fourth read set RXUNDER"
+    ((read_word s 0x014 lsr 4) land 0xF = 0 && (read_word s 0x010 lsr 8) land 0xF = 1)
+;;
+
 let () =
   registers ();
+  rxf_values ();
+  pad_released_od ();
+  pad_pin14_hostirq ();
+  pad_pin15_miso ();
+  pad_input_only_dir ();
+  pad_virtual_dir ();
   absent ();
   miso_cycles ();
   frame_cut ();

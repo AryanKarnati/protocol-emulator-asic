@@ -1,0 +1,12 @@
+(rule
+ (targets pgsim.ml)
+ (deps ../../../../sw/pgsim/pgsim.ml)
+ (action
+  (run %{exe:../tool/mutate.exe} ../../../../sw/pgsim/pgsim.ml pgsim.ml "if fetch0.(i) = addr" "if (fetch0.(i) land 31) = (addr land 31)")))
+
+(rule (targets pgsim.mli) (deps ../../../../sw/pgsim/pgsim.mli) (action (copy ../../../../sw/pgsim/pgsim.mli pgsim.mli)))
+
+(library
+ (name pgsim_mut_b3_f7_pc_only)
+ (modules pgsim)
+ (libraries polyglot_isa))

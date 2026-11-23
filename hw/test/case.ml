@@ -139,12 +139,12 @@ let normalise (c : t) : t =
         | Fifo_flush m -> Some (cy, Fifo_flush (m land 0xF))
         | Irq_clear m -> Some (cy, Irq_clear (m land 0xFF))
         | Irq_force m -> Some (cy, Irq_force (m land 0xFF))
-        | Fdebug_clear m -> Some (cy, Fdebug_clear (m land fdebug_layout))
+        | Fdebug_clear m -> Some (cy, Fdebug_clear (m land m32))
         | Imem_write (a, d) ->
           if once cy `Imem then Some (cy, Imem_write (a land 63, d land 0xFFFF)) else None
         | Sm_ext (sm, v) -> Some (cy, Sm_ext (sm land 3, v land 1))
         | Rxf_sel sm -> Some (cy, Rxf_sel (sm land 3))
-        | Fdebug_set m -> Some (cy, Fdebug_set (m land fdebug_layout))
+        | Fdebug_set m -> Some (cy, Fdebug_set (m land m32))
         | Reset_low -> Some (cy, Reset_low))
       events
   in
