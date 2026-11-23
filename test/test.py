@@ -128,6 +128,15 @@ OUT_X_5 = 0x6025  # out x, 5
 PULL_BLOCK = 0x80A0
 WAIT_PIN0_HIGH = 0x20A0  # wait 1 pin 0
 
+# Pin-walk programs (pioasm 2.3.1; the words were checked against the assembler output)
+#   UI_IN_PINS5: in pins, 5; jmp 1 (spin)          reads pins 16..20 = ui_in[4:0] (IN_BASE 16)
+#   UIO_IN_PINS8: in pins, 8; jmp 1 (spin)         reads pins 0..7 = uio_in (IN_BASE 0)
+#   UIO_OUT_PROG: pull; out pindirs, 8; pull; out pins, 8; jmp 0
+MOV_ISR_NULL = 0xA0C3  # mov isr, null
+UI_IN_PINS5 = [0x4005, 0x0001]
+UIO_IN_PINS8 = [0x4008, 0x0001]
+UIO_OUT_PROG = [0x80A0, 0x6088, 0x80A0, 0x6008, 0x0000]
+
 # PINCTRL values (RP2040 layout, datasheet table 395)
 PINCTRL_SET_BASE8 = PINCTRL_RESET | (8 << 5)  # SET pins 8..12 = uo_out[4:0]
 PINCTRL_OUT8_6 = PINCTRL_RESET | (6 << 20) | 8  # OUT pins 8..13 = uo_out[5:0]
@@ -1116,6 +1125,93 @@ async def test_clkdiv_restart(dut):
 # ---------------------------------------------------------------------------
 # 7. Multi-SM: the lanes in SMs 1 to 3 are checked above; SM0 pins are in the tests above.
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# 7. Pin walks: each pin on its own, one at a time (walking one and walking zero)
+# ---------------------------------------------------------------------------
+@chip_test
+async def test_ui_in_walk(dut):
+    """Each ui_in[4:0] bit on its own, seen by a program through in pins, 5 (IN_BASE 16).
+    The program runs in once per forced jmp 0; the ISR is cleared first, so DBG_ISR
+    shows exactly the 5 bits read: ISR = ui_in[4:0] << 27."""
+    link = await start(dut)
+    await link.write(imem(0), *UI_IN_PINS5)
+    await link.write(sm(0, O_PINCTRL), PINCTRL_IN16_SET8)
+    await link.write(A_CTRL, 0x1)
+    walk = [1 << i for i in range(5)] + [0x1F ^ (1 << i) for i in range(5)]
+    for v in walk:
+        dut.ext_ui.value = v
+        await link.write(sm(0, O_INSTR), MOV_ISR_NULL)  # ISR = 0
+        await link.write(sm(0, O_INSTR), 0x0000)  # forced jmp 0: the in runs next
+        await ClockCycles(dut.clk, 10)
+        check(link, f"DBG_ISR after in pins,5 with ui_in[4:0] = {v:#04x}",
+              await link.reg(sm(0, O_DBG_ISR)), v << 27)
+    await link.write(A_CTRL, 0x0)
+    dut.ext_ui.value = 0
+
+
+@chip_test
+async def test_uio_in_walk(dut):
+    """Each uio_in[7:0] bit on its own (pads that the chip does not drive), seen through
+    in pins, 8 (IN_BASE 0). ISR = uio_in << 24."""
+    link = await start(dut)
+    await link.write(imem(0), *UIO_IN_PINS8)
+    await link.write(A_CTRL, 0x1)
+    walk = [1 << i for i in range(8)] + [0xFF ^ (1 << i) for i in range(8)]
+    for v in walk:
+        dut.ext_uio.value = v
+        await link.write(sm(0, O_INSTR), MOV_ISR_NULL)
+        await link.write(sm(0, O_INSTR), 0x0000)
+        await ClockCycles(dut.clk, 10)
+        check(link, f"DBG_ISR after in pins,8 with uio_in = {v:#04x}",
+              await link.reg(sm(0, O_DBG_ISR)), v << 24)
+    await link.write(A_CTRL, 0x0)
+    dut.ext_uio.value = 0xFF
+
+
+@chip_test
+async def test_uio_out_walk(dut):
+    """Each uio_out[7:0] bit on its own, driven by a program: out pindirs, 8 (all pads
+    outputs) and out pins, 8 with OUT_COUNT 8. The pad levels are checked on the pins."""
+    link = await start(dut)
+    await link.write(imem(0), *UIO_OUT_PROG)
+    await link.write(sm(0, O_PINCTRL), PINCTRL_RESET | (8 << 20))  # OUT_COUNT 8, OUT_BASE 0
+    await link.write(A_CTRL, 0x1)
+
+    async def pads_uio():
+        await FallingEdge(dut.clk)
+        return int(dut.uio_out.value), int(dut.uio_oe.value)
+
+    walk = [1 << i for i in range(8)] + [0xFF ^ (1 << i) for i in range(8)]
+    for v in walk:
+        await link.write(txf(0), 0xFF, v, fixed=True)  # pindirs = all output, then pins = v
+        await ClockCycles(dut.clk, 20)
+        out, oe = await pads_uio()
+        if out != v or oe != 0xFF:
+            raise AssertionError(f"uio pads with pins {v:#04x}: uio_out {out:#04x}, "
+                                 f"uio_oe {oe:#04x}, expected {v:#04x} and 0xff")
+    await link.write(A_CTRL, 0x0)
+
+
+@chip_test
+async def test_uo_out_walk(dut):
+    """Each uo_out[5:0] bit on its own, driven by out pins, 6 (OUT_BASE 8, OUT_COUNT 6)."""
+    link = await start(dut)
+    await link.write(imem(0), *PULLDRIVE)
+    await link.write(sm(0, O_CLKDIV), 0x0001_0000)
+    await link.write(sm(0, O_EXECCTRL), wrap(1))
+    await link.write(sm(0, O_PINCTRL), PINCTRL_OUT8_6)
+    await link.write(A_CTRL, 0x1)
+    walk = [1 << i for i in range(6)] + [0x3F ^ (1 << i) for i in range(6)]
+    for v in walk:
+        await link.write(txf(0), v, fixed=True)
+        await ClockCycles(dut.clk, 10)
+        await FallingEdge(dut.clk)
+        got = int(dut.uo_out.value) & 0x3F
+        if got != v:
+            raise AssertionError(f"uo_out[5:0] with the word {v:#04x}: got {got:#04x}")
+    await link.write(A_CTRL, 0x0)
 
 
 # ---------------------------------------------------------------------------
