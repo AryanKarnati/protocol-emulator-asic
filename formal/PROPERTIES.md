@@ -151,7 +151,8 @@ Status on the real module, from the runs in this session:
 | `cover` (`hostlink.sby`) | 184 cycles, PASS. Reaches the first and second write words and the read commit. |
 | `prove` (k-induction, k up to 8) | UNKNOWN. The step case fails on the bus-pulse equality (line 192). See the disclosure below. |
 | `hostlink_miso_uncond.sby` (L2 without the host obligations) | FAIL at step 4, as expected. |
-| Mutants (`formal/mutants/hostlink__*`) | see the run summary in the report. |
+| Mutants (`formal/mutants/hostlink__*`, 7) | 7 of 7 killed by `bmc` (72 cycles). Kills: a missing commit, a commit one cycle late, a read one cycle early, MISO from bit 30, inverted MOSI, CS_N stuck high, and a wrong STATUS bit. |
+| Write-side mutants (`formal/mutants/hostlink_deep__*`, 2) | Not yet run. The first write word is at cycle 114, so `bmc` to 72 cannot kill them. They need `bmc_deep` (184 cycles): `make -C formal hostlink_deep`. |
 
 | ID | Sentence | How it is checked |
 | --- | --- | --- |
