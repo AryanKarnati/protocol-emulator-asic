@@ -475,7 +475,7 @@ Each SM sees its own LCU's status on pins 24–31:
 
 ### 12. Elastic FIFOs with SRAM (Tier 1, behind a decision gate)
 
-One `RM_IHPSG13_1P_512x32` macro (2 KB, 416.64 × 191.34 µm, 3.85 ns typical and 6.45 ns worst-case access) backs the 8 FIFOs as ring buffers. Each ring's base and size are set in `EFIFO_*`.
+One `RM_IHPSG13_1P_512x32` macro (Verilog module `RM_IHPSG13_1P_512x32_c2_bm_bist`; 2 KB, 416.64 × 191.34 µm, 3.85 ns typical and 6.45 ns worst-case access) backs the 8 FIFOs as ring buffers. `ihp-sg13cmos5l` uses the same macro files as `ihp-sg13g2` (see `flow/SRAM.md`). Each ring's base and size are set in `EFIFO_*`.
 
 - A streamer refills each SM's 4-word register TX FIFO from its ring, and drains RX FIFOs into their rings, using round-robin access to the single port.
 - The host's `TXF`/`RXF` accesses go to the rings.
@@ -617,7 +617,7 @@ The properties are:
 
 - **FIFO:** order is preserved and nothing is lost or duplicated (tracked-token proof). Flags are consistent with the level.
 - **Clock divider:** ticks are spaced at the integer part or the integer part + 1, and the long-run average equals INT.FRAC.
-- **Host link:** writing then reading an RW register returns the written value. Deasserting CS mid-frame leaves no side effect beyond completed words. MISO never changes in the two cycles after a rising SCK edge reaches the pin, so the host's sample has two cycles of hold (docs/chip.md §6.5).
+- **Host link:** writing then reading an RW register returns the written value. Deasserting CS mid-frame leaves no side effect beyond completed words. MISO changes only in the cycle after a synchronised CS_N edge or a counted SCK rise. So when the host follows the timing rules of docs/chip.md §6.6, MISO never changes in the two cycles after a rising SCK edge reaches the pin, and the host's sample has two cycles of hold (§6.5).
 - **SM:** per-instruction pre/post-condition assertions (for example, `jmp x--` branches if and only if X≠0 before it, and X then decrements). Without a stall, PC advances after exactly delay+1 ticks. Side-set applies on the first tick.
 - **LCU:**
   - With STUFF_EN, the coded line never carries more than N run bits.
