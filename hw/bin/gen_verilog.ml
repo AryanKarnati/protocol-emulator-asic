@@ -5,12 +5,15 @@
    - decode: the decoder alone;
    - pio_block: the block with 4 engines;
    - pio_block1: the block with 1 engine.
-   Each prints the module with all of its submodules. *)
+   Each prints the module with all of its submodules.
+   Block 3 (chip.md section 3):
+   - hostlink: the SPI host link alone;
+   - chip: the chip with 4 engines, 64 words and the debug ports. *)
 
 open Hardcaml
 
 let usage () =
-  prerr_endline "usage: gen_verilog [decode | pio_block | pio_block1]";
+  prerr_endline "usage: gen_verilog [decode | pio_block | pio_block1 | hostlink | chip]";
   exit 2
 ;;
 
@@ -22,10 +25,16 @@ let () =
   | [| _; "decode" |] ->
     Rtl.print Rtl.Language.Verilog (Polyglot_hw.Decode.circuit ())
   | [| _; "pio_block" |] ->
-    let circuit, database = Polyglot_hw.Pio_block.circuit_with_database ~num_sms:4 in
+    let circuit, database = Polyglot_hw.Pio_block.circuit_with_database ~num_sms:4 ~imem_depth:64 in
     Rtl.print ~database Rtl.Language.Verilog circuit
   | [| _; "pio_block1" |] ->
-    let circuit, database = Polyglot_hw.Pio_block.circuit_with_database ~num_sms:1 in
+    let circuit, database = Polyglot_hw.Pio_block.circuit_with_database ~num_sms:1 ~imem_depth:64 in
+    Rtl.print ~database Rtl.Language.Verilog circuit
+  | [| _; "hostlink" |] -> Rtl.print Rtl.Language.Verilog (Polyglot_hw.Hostlink.circuit ())
+  | [| _; "chip" |] ->
+    let circuit, database =
+      Polyglot_hw.Chip.circuit_with_database ~num_sms:4 ~imem_depth:64
+    in
     Rtl.print ~database Rtl.Language.Verilog circuit
   | _ -> usage ()
 ;;
