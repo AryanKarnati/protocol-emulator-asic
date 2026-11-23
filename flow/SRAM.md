@@ -34,7 +34,7 @@ Source: `ihp-sg13g2/libs.ref/sg13g2_sram/verilog/RM_IHPSG13_1P_512x32_c2_bm_bist
 
 **The module name is `RM_IHPSG13_1P_512x32_c2_bm_bist`.** DESIGN §12, chip.md §8.4 and the block 3
 PLAN text say `RM_IHPSG13_1P_512x32`. That name does not exist in the PDK (no file or module has it).
-Correct it to the full name in chip.md §8.4 and DESIGN §12, or treat the short form as the family name.
+chip.md §8.4 and DESIGN §12 now use the full name (main 6c4d48b).
 
 ```verilog
 module RM_IHPSG13_1P_512x32_c2_bm_bist (
@@ -94,6 +94,8 @@ https://kdp1965.github.io/ihp-um-janestreet-prism/ihp_sram_macro.html
 - Checks: `RUN_KLAYOUT_DRC: 1` with `pdk_dir::libs.tech/klayout/tech/drc/ihp-sg13cmos5l.drc`. The template
   sets `RUN_KLAYOUT_DRC: 0` and `RUN_KLAYOUT_XOR: 0`, so these change. Magic DRC off and illegal-overlap
   error off (the walkthrough accepts 22 overlaps on VDD columns).
+
+**Unverified:** every walkthrough config value in this section came through a summarising fetch, not the page text, and none was checked against a primary source. The file list, the module name and the liberty corners were checked against the IHP-Open-PDK commits.
 
 **Open items on this section:** the walkthrough says the PDK's SRAM is "as the Tiny Tapeout precheck
 expects". I did not confirm that. Its exact `config.json` text needs a direct check before the RTL or
