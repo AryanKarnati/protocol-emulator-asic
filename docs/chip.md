@@ -173,7 +173,7 @@ The cycle model above defines every pin sequence. For the host to read and write
 - **H-CS.** Change CS_N only while SCK is low. Leave at least 3 cycles from CS_N falling to the first SCK rise, and keep CS_N high for at least 2 cycles between frames. STATUS bit 7 reaches MISO in the third cycle after CS_N falls, so with exactly 3 cycles it arrives in the cycle the host samples it.
 - **H-RST.** Keep CS_N high while `rst_n` is low and for at least 4 cycles after it rises. A frame that is in progress when reset is released is still defined by §6.1 and §6.2, but its bits are not the host's.
 - **H-MOSI.** Change MOSI only while SCK is low, and not in the cycle SCK rises.
-- **Sampling.** Sample MISO in the cycle it raises SCK. By §6.5 the bit has been there since at least the previous cycle.
+- **Sampling.** Sample MISO in the cycle that raises SCK, or up to 2 cycles later. By §6.5, with H-SCK and H-CS kept, the bit is on MISO from at least the cycle before the rise until 2 cycles after it. A real host should sample about 1 cycle after its rise, which centres the sample in that window at 15 MHz. The §12 library does this.
 
 A real host adds margin for pad and board delay: at least 4 cycles of CS setup and of CS_N high time, and MOSI changed on the falling edge of SCK. The library in §12 does this.
 
