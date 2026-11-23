@@ -578,9 +578,17 @@ let shrink_failing ~check ~limit (c : Case.t) (f : Lockstep.failure) =
 ;;
 
 (* One generated case, the i-th from [seed], for hand-off files. *)
-let generate_one ~seed i : Case.t =
+(* The unbiased case of index [i]. *)
+let generate_raw ~seed i : Case.t =
   let random = Splittable_random.create (Base.Random.State.make [| seed; i |]) in
   Case.normalise (G.generate generator ~size:(i mod 31) ~random)
+;;
+
+(* Half the cases are steered toward live states (engine.md F7, F8; RX fills), see Retarget. *)
+let generate_one ~seed i : Case.t =
+  let c = generate_raw ~seed i in
+  let rng = Random.State.make [| seed; i; 0x5EED |] in
+  if Random.State.bool rng then Retarget.retarget ~rng c else c
 ;;
 
 (* Generate [count] cases from [seed] and run [check] on each. On the first failure, shrink

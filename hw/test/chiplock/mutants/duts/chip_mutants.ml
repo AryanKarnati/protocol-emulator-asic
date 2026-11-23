@@ -9,5 +9,6 @@ let models : (string * (module Chip_lockstep.MODEL)) list =
   ; "pad_od_polarity", (module Pgsim_mut_chip_pad_od_polarity.Chip)
   ; "status_swapped", (module Pgsim_mut_chip_status_swapped.Chip)
   ; "fixed_increments", (module Pgsim_mut_chip_fixed_increments.Chip)
+  ; "commit_last_bit", (module Pgsim_mut_chip_commit_last_bit.Chip)
   ]
 ;;

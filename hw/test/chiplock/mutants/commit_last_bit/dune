@@ -1,0 +1,24 @@
+; Chip mutant: the RX commit happens at the last bit of the word, 63 + 32m, not the first, 32 + 32m
+; (chip.md 6.4). The read keeps its bit 31 + 32m, except that the cycle where a commit falls is
+; taken by the commit, so the next word's read is lost in the burst.
+(rule
+ (targets chip.ml)
+ (deps ../../../../../sw/pgsim/chip.ml)
+ (action
+  (run %{exe:../../../mutants/tool/mutate.exe} ../../../../../sw/pgsim/chip.ml chip.ml
+   "else if rd && j >= 31 && (j - 31) mod 32 = 0"
+   "else if rd && j >= 31 && (j - 31) mod 32 = 0 && (j < 63 || (j - 63) mod 32 <> 0)"
+   "else if rd && j >= 32 && (j - 32) mod 32 = 0"
+   "else if rd && j >= 63 && (j - 63) mod 32 = 0")))
+
+(rule
+ (targets chip.mli)
+ (deps ../../../../../sw/pgsim/chip.mli)
+ (action
+  (copy ../../../../../sw/pgsim/chip.mli chip.mli)))
+
+(library
+ (name pgsim_mut_chip_commit_last_bit)
+ (modules chip)
+ (flags (:standard -w -69))
+ (libraries polyglot_pgsim))

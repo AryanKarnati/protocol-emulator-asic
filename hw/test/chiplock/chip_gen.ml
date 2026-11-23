@@ -146,6 +146,13 @@ let generate ?(target = 4000) ~seed ~num_sms () : Chip_case.t =
     if chance 0.7 then sm_config sm
   done;
   write_op 0x008 (if chance 0.7 then 1 + rint 15 else 0xF);
+  (* Half the cases load a push loop, so RX FIFO 0 fills with pin levels (RX reads and commits). *)
+  if chance 0.5
+  then (
+    write_op 0x100 0x4000;
+    write_op 0x104 0x8020;
+    write_op 0x108 0x0000;
+    write_op 0x008 (1 + rint 15));
   if chance 0.8 then pad_test ();
   (* Random operations, until the target length. *)
   (* The random operations run for [target] cycles after the prefix. *)
@@ -232,4 +239,109 @@ let corpus ?(cycles = 3000) ~num_sms (c : Polyglot_lockstep.Case.t) : Chip_case.
   write 0x008 (enable land 0xF);
   for _ = 1 to cycles do emit ~csn:1 ~mosi:0 ~sck:0 done;
   { num_sms; cycles = Array.of_list (List.rev !buf) }
+;;
+
+(* Coverage of a chip case (chip.md 11): the scenarios it reaches, from a replay on the model
+   (bus pulses, pads, FIFO levels) and from the pin trace (frame gaps, SCK periods). Each is a
+   boolean per case. *)
+let chip_scenario_names =
+  [ "bus write to IMEM"
+  ; "bus write to an SM register"
+  ; "bus write to TXFn"
+  ; "bus read of RXFn with a word present"
+  ; "bus read of RXFn while empty (RXUNDER)"
+  ; "RXFn commit that pops"
+  ; "burst read: two read pulses in one frame"
+  ; "PAD_IN read while a pad is driven"
+  ; "pad driven (uio_oe nonzero)"
+  ; "HOST_IRQ asserted with HOSTIRQ_EN set"
+  ; "reset cycle"
+  ; "back-to-back frames at the minimum gap (2 cycles)"
+  ; "frame gap of 3 or more cycles"
+  ; "SCK period of exactly 4 cycles"
+  ; "SCK breach: a high or low phase of 1 cycle"
+  ; "external ui_in[4:0] nonzero"
+  ]
+;;
+
+let chip_scenarios (c : Chip_case.t) : (string * bool) list =
+  let flag = Array.make (List.length chip_scenario_names) false in
+  let set i = flag.(i) <- true in
+  let m = Chip.create ~num_sms:c.Chip_case.num_sms () in
+  let cyc = c.Chip_case.cycles in
+  let reads_in_frame = ref 0 in
+  Array.iteri
+    (fun k (y : Chip_case.cyc) ->
+      if y.Chip_case.rst
+      then (
+        set 10;
+        Chip.reset m)
+      else (
+        let obs = Chip.observe m in
+        let o = Chip.step m ~ui_in:y.Chip_case.ui ~uio_ext:y.Chip_case.uio in
+        let b = o.Chip.bus in
+        let rx_level n = (List.assoc "dbg_flevel" obs lsr ((8 * n) + 4)) land 0xF in
+        if y.Chip_case.ui land 0x1F <> 0 then set 15;
+        if o.Chip.uio_oe <> 0 then set 8;
+        if b.Chip.write
+        then (
+          let a = b.Chip.addr in
+          if a >= 0x100 && a < 0x200 then set 0;
+          if a >= 0x200 && a < 0x300 then set 1;
+          if a >= 0x040 && a < 0x050 then set 2);
+        if b.Chip.read
+        then (
+          incr reads_in_frame;
+          if !reads_in_frame >= 2 then set 6;
+          if b.Chip.addr >= 0x050 && b.Chip.addr < 0x060
+          then (
+            let n = (b.Chip.addr - 0x50) / 4 in
+            if n < c.Chip_case.num_sms && rx_level n > 0 then set 3 else set 4);
+          if b.Chip.addr = 0x02C && o.Chip.uio_oe <> 0 then set 7);
+        if b.Chip.commit
+        then (
+          let n = (b.Chip.addr - 0x50) / 4 in
+          if n >= 0 && n < c.Chip_case.num_sms && rx_level n > 0 then set 5);
+        (* HOST_IRQ: uo_out[6] high while pins_out[14] is low, so the pad is the flag (9.2). *)
+        if (List.assoc "uo_out" obs lsr 6) land 1 = 1 && (List.assoc "dbg_pins_out" obs lsr 14) land 1 = 0
+        then set 9;
+        ignore k))
+    cyc;
+  (* Frames and SCK phases from the pin trace. *)
+  let n = Array.length cyc in
+  let csn k = if k < n then cyc.(k).Chip_case.ui lsr 7 land 1 else 1 in
+  let sck k = if k < n then cyc.(k).Chip_case.ui lsr 5 land 1 else 0 in
+  (* Runs of equal CS_N and SCK. *)
+  let runs f =
+    let acc = ref [] and i = ref 0 in
+    while !i < n do
+      let v = f !i in
+      let j = ref !i in
+      while !j < n && f !j = v do
+        incr j
+      done;
+      acc := (v, !j - !i, !i) :: !acc;
+      i := !j
+    done;
+    List.rev !acc
+  in
+  let cs_runs = runs csn in
+  let rec gaps = function
+    | (1, len, _) :: rest when len >= 1 -> (
+        (match rest with
+         | (0, _, _) :: _ -> if len = 2 then set 11 else if len >= 3 then set 12
+         | _ -> ());
+        gaps rest)
+    | _ :: rest -> gaps rest
+    | [] -> ()
+  in
+  gaps cs_runs;
+  let sck_runs = runs (fun k -> if csn k = 0 then sck k else 2) in
+  List.iter
+    (fun (v, len, _) ->
+      if v = 1 && len = 2 then set 13;
+      if v = 1 && len = 1 then set 14;
+      if v = 0 && len = 1 then set 14)
+    sck_runs;
+  List.mapi (fun k name -> name, flag.(k)) chip_scenario_names
 ;;
