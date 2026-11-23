@@ -19,6 +19,13 @@
   "//": "The value is in nanoseconds, so 20ns == 50MHz.",
   "CLOCK_PERIOD": 16.67,
 
+  "//": "Synthesis: LibreLane's default ABC script is DELAY 4, which buffers and upsizes every net",
+  "//": "and doubled this design's cell area (1.12 mm2 against 0.55 mm2). Map for area; placement and",
+  "//": "repair still add the buffering timing needs. The IO pad cells are in the synthesis library",
+  "//": "list and DELAY 4 used them as drivers, so exclude them.",
+  "SYNTH_STRATEGY": "AREA 0",
+  "EXTRA_EXCLUDED_CELLS": ["sg13cmos5l_IOPad*"],
+
   "//": "Hold slack margin - Increase them in case you are getting hold violations.",
   "PL_RESIZER_HOLD_SLACK_MARGIN": 0.1,
   "GRT_RESIZER_HOLD_SLACK_MARGIN": 0.05,
