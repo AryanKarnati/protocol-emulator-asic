@@ -14,9 +14,15 @@
 module tb ();
 
   // Dump the signals to a FST file. You can view it with gtkwave or surfer.
+  // At gate level (GATES=yes defines GL_TEST) only the testbench's own pins are dumped:
+  // a full dump of every gate net over a whole run is too large.
   initial begin
     $dumpfile("tb.fst");
+`ifdef GL_TEST
+    $dumpvars(1, tb);
+`else
     $dumpvars(0, tb);
+`endif
     #1;
   end
 

@@ -4,19 +4,21 @@
 #
 # The host is a cocotbext-spi SpiMaster in mode 0, MSB first. Nothing in this file
 # comes from the Python model (pgsim) or the RTL. Expected values come from chip.md,
-# engine.md, DESIGN.md and the RP2040 datasheet (section 3.7 layouts), and the PIO
-# programs are assembled with the official pioasm (2.3.1). The same file runs on the
-# RTL and on the gate-level netlist (GATES=yes).
+# engine.md, DESIGN.md and the RP2040 datasheet (section 3.7 layouts). PIO programs are
+# assembled with the official pioasm (2.3.1); the words are listed next to each program.
+# The same file runs on the RTL and on the gate-level netlist (GATES=yes).
 #
-# Timing. clk is 60 MHz (16666 ps, as in the template). SCK is 1/8 of clk, so each SCK
-# half period is 4 clk cycles (chip.md 6.6 asks for at least 2). Every pin change is
-# made at a falling edge of clk, and so is every SCK edge, so no pin changes in the same
-# step as a rising edge. CS_N falls, then the first SCK rise follows 1.5 SCK periods
-# later, which is 12 cycles (chip.md 6.6 asks for at least 3). Between frames CS_N is
-# high for at least 4 cycles, and each master's frame spacing is 0.
+# Timing. clk is 60 MHz (16666 ps, as in the template). Two SCK rates are used:
+#   clk/8 (SCK half period 4 cycles): the default for most tests;
+#   clk/4 (half period 2 cycles, the H-SCK minimum): with CS_N high for 2 cycles between
+#     frames (the H-CS minimum). These tests check MISO timing at the limit.
+# Every pin change is made at a falling edge of clk, and so is every SCK edge, so no pin
+# changes in the same step as a rising edge. CS_N falls, then the first SCK rise follows
+# 1.5 SCK periods later (library behaviour; this is the only CS setup control).
 #
-# Expected values that depend on timing (for example the spacing of pin steps) are
-# computed from the contract, not measured and then copied.
+# GATES=yes runs a short subset (GL_SUBSET below). The full suite runs in RTL CI.
+
+import os
 
 import cocotb
 from cocotb.clock import Clock
@@ -24,9 +26,15 @@ from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge, Timer
 from cocotbext.spi import SpiBus, SpiConfig, SpiMaster
 
 CLK_PERIOD_PS = 16666
-SCK_PERIOD_PS = 8 * CLK_PERIOD_PS  # SCK half period = 4 clk cycles
-SCK_FREQ_HZ = 1e12 / SCK_PERIOD_PS
-CS_HIGH_CYCLES = 4  # CS_N high between frames, at least the 4 cycles of chip.md 6.6
+GATES = os.environ.get("GATES") == "yes"
+GL_SUBSET = {
+    "test_id_hwcfg",
+    "test_scratch_write_read",
+    "test_program_runs",
+    "test_rx_burst_clk4",
+    "test_reset_mid_frame",
+    "test_reset_mid_program",
+}
 
 # ---------------------------------------------------------------------------
 # Register map (chip.md 8.1)
@@ -80,7 +88,7 @@ def sm(n, off):
     return 0x200 + 0x40 * n + off
 
 
-# chip.md 8.1 and 8.2 reset values (SM registers and the others)
+# Reset values (chip.md 8.1, engine.md R0)
 ID_VALUE = 0x504C4754
 HWCFG_VALUE = 0x1040_0404  # FIFO depth 4, 4 SMs, IMEM depth 64, no LCU, no SRAM, version 1
 STATUS_RESET = 0xF0  # TXNFULL[3:0] = 1 (TX empty), RXNEMPTY[3:0] = 0
@@ -96,35 +104,46 @@ def wrap(top, bottom=0):
     return (top << 12) | (bottom << 7)
 
 
-# PIO programs. Assembled with pioasm 2.3.1 (the official tool).
-#   pinsdemo:  set pins, 1 [1]; set pins, 30 [1]; set pins, 21 [1]     (wrap 0..2)
-#   pulldrive: pull block; out pins, 6                                  (wrap 0..1)
-#   loopback:  pull block; mov isr, osr; push block                     (wrap 0..2)
+# PIO programs (pioasm 2.3.1). Words are the assembled instructions.
+#   PINSDEMO: set pins, 1 [1]; set pins, 30 [1]; set pins, 21 [1]        wrap 0..2
+#   PULLDRIVE: pull block; out pins, 6                                    wrap 0..1
+#   LOOPBACK: pull block; mov isr, osr; push block                        wrap 0..2
+#   IN_PINS5: in pins, 5; push block; jmp 2                              (jmp 2 spins)
+#   WAIT_PIN: wait 1 pin 0; set pins, 21; jmp 2
 PINSDEMO = [0xE101, 0xE11E, 0xE115]
 PULLDRIVE = [0x80A0, 0x6006]
 LOOPBACK = [0x80A0, 0xA0C7, 0x8020]
-# Forced instructions (pioasm 2.3.1): set pindirs,1 / set pins,1 / set pins,0 /
-# set pindirs,0 / set x,21 / set y,9
+IN_PINS5 = [0x4005, 0x8020, 0x0002]
+WAIT_PIN = [0x20A0, 0xE015, 0x0002]  # wait 1 pin 0 is 0x20A0 (source PIN)
+# Forced instructions (pioasm 2.3.1)
 SET_PINDIRS_1 = 0xE081
 SET_PINS_1 = 0xE001
 SET_PINS_0 = 0xE000
 SET_PINDIRS_0 = 0xE080
 SET_X_21 = 0xE035
 SET_Y_9 = 0xE049
+SET_PINS_21 = 0xE015
+IN_X_5 = 0x4025  # in x, 5
+OUT_X_5 = 0x6025  # out x, 5
+PULL_BLOCK = 0x80A0
+WAIT_PIN0_HIGH = 0x20A0  # wait 1 pin 0
 
 # PINCTRL values (RP2040 layout, datasheet table 395)
 PINCTRL_SET_BASE8 = PINCTRL_RESET | (8 << 5)  # SET pins 8..12 = uo_out[4:0]
 PINCTRL_OUT8_6 = PINCTRL_RESET | (6 << 20) | 8  # OUT pins 8..13 = uo_out[5:0]
 PINCTRL_SET14 = (1 << 26) | (14 << 5)  # SET pin 14 = uo_out[6] (HOST_IRQ off)
 PINCTRL_SET0_1 = 1 << 26  # SET pin 0 = uio[0]
+PINCTRL_IN16_SET8 = PINCTRL_SET_BASE8 | (16 << 15)  # IN_BASE 16 = ext_ui[0]
+
 
 # ---------------------------------------------------------------------------
 # Host: a cocotbext-spi master on the pins that tb.v exposes
 # ---------------------------------------------------------------------------
-def spi_config(word_width):
+def spi_config(word_width, sck_half):
+    period_ps = 2 * sck_half * CLK_PERIOD_PS
     return SpiConfig(
         word_width=word_width,
-        sclk_freq=SCK_FREQ_HZ,
+        sclk_freq=1e12 / period_ps,
         cpol=False,
         cpha=False,
         msb_first=True,
@@ -143,11 +162,18 @@ def be_words(words):
 
 
 class Link:
-    """SPI frames to the chip. Keeps the last frame for failure messages."""
+    """SPI frames to the chip. Keeps the last frame for failure messages.
 
-    def __init__(self, dut):
+    sck_half: SCK half period in clk cycles (4 = clk/8, 2 = clk/4, the minimum).
+    cs_high: clk cycles of CS_N high after each frame (2 is the H-CS minimum).
+    edge_fn: optional. Called at the start of each frame to record start_edge.
+    """
+
+    def __init__(self, dut, sck_half=4, cs_high=4):
         self.dut = dut
         self.clk = dut.clk
+        self.sck_half = sck_half
+        self.cs_high = cs_high
         self.bus = SpiBus(
             entity=dut,
             sclk_name="spi_sck",
@@ -155,34 +181,50 @@ class Link:
             miso_name="spi_miso",
             cs_name="spi_cs_n",
         )
-        self.bytes_master = SpiMaster(self.bus, spi_config(8))
+        self.bytes_master = SpiMaster(self.bus, spi_config(8, sck_half))
         self._bit_masters = {}
         self.last = (b"", b"")
+        self.edge_fn = None
+        self.start_edge = None
+        self.rises = []  # edge numbers of SCK rises, if watch_sck was called
+
+    def watch_sck(self, pads):
+        """Record the edge number of every SCK rise (bit k of a frame is rise k)."""
+        async def run():
+            while True:
+                await RisingEdge(self.dut.spi_sck)
+                self.rises.append(pads.edge)
+
+        cocotb.start_soon(run())
 
     def _bit_master(self, nbits):
         if nbits not in self._bit_masters:
-            self._bit_masters[nbits] = SpiMaster(self.bus, spi_config(nbits))
+            self._bit_masters[nbits] = SpiMaster(self.bus, spi_config(nbits, self.sck_half))
         return self._bit_masters[nbits]
 
     async def frame(self, tx):
-        """One byte frame: CS_N low for all of tx, MISO bytes returned."""
+        """One frame: CS_N low for all of tx, MISO bytes returned."""
         await FallingEdge(self.clk)
-        self.bytes_master.write_nowait(tx, burst=True)
+        if self.edge_fn is not None:
+            self.start_edge = self.edge_fn()
+        self.bytes_master.write_nowait(bytes(tx), burst=True)
         await self.bytes_master.wait()
         rx = bytes(self.bytes_master.read_nowait())
         self.last = (bytes(tx), rx)
-        await ClockCycles(self.clk, CS_HIGH_CYCLES)
+        await ClockCycles(self.clk, self.cs_high)
         return rx
 
     async def bit_frame(self, nbits, value):
         """A frame of nbits bits (not a multiple of 8 in general), MSB first."""
         m = self._bit_master(nbits)
         await FallingEdge(self.clk)
+        if self.edge_fn is not None:
+            self.start_edge = self.edge_fn()
         m.write_nowait([value], burst=False)
         await m.wait()
         m.read_nowait()
         self.last = (value.to_bytes((nbits + 7) // 8, "big"), b"")
-        await ClockCycles(self.clk, CS_HIGH_CYCLES)
+        await ClockCycles(self.clk, self.cs_high)
 
     async def write(self, addr, *words, fixed=False):
         await self.frame(hdr(0x40 if fixed else 0x00, addr) + be_words(words))
@@ -220,14 +262,20 @@ def check_list(link, what, got, want):
         )
 
 
+def chip_test(fn):
+    """A cocotb test that the GATES=yes subset (GL_SUBSET) keeps."""
+    return cocotb.test(skip=GATES and fn.__name__ not in GL_SUBSET)(fn)
+
+
 async def set_reset(dut, value):
     await FallingEdge(dut.clk)
     dut.rst_n.value = value
 
 
-async def start(dut):
-    """Start the clock, reset, release, and return a Link."""
-    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_PS, unit="ps").start())
+async def start(dut, sck_half=4, cs_high=4, clock=True):
+    """Reset, release, and return a Link. clock=False when a clock already runs."""
+    if clock:
+        cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_PS, unit="ps").start())
     dut.ena.value = 1
     dut.spi_sck.value = 0
     dut.spi_mosi.value = 0
@@ -236,26 +284,30 @@ async def start(dut):
     dut.ext_uio.value = 0xFF  # pads pulled up
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 5)
-    link = Link(dut)
+    link = Link(dut, sck_half, cs_high)
     await set_reset(dut, 1)
     await ClockCycles(dut.clk, 8)  # rst_n release goes through two flops
     return link
 
 
 class Pads:
-    """Samples uo_out at every falling edge. Sample k is the state after rising edge k."""
+    """Samples uo_out at every falling edge. edge = rising edges so far, so sample k
+    is the state after rising edge k (relative to this Pads' start)."""
 
     def __init__(self, dut):
         self.dut = dut
         self.samples = []  # (edge index, uo_out)
         self.edge = 0
+        self.stopped = False
         cocotb.start_soon(self._run())
 
+    def stop(self):
+        self.stopped = True
+
     async def _run(self):
-        while True:
+        while not self.stopped:
             await FallingEdge(self.dut.clk)
             self.samples.append((self.edge, int(self.dut.uo_out.value)))
-            await RisingEdge(self.dut.clk)
             self.edge += 1
 
 
@@ -274,22 +326,26 @@ def steps(pads, first_edge, shift, mask):
     return out
 
 
-def check_cycle(link, what, vals, cycle):
+def check_cycle(what, vals, cycle):
     """vals must be cycle repeated (starting at its first element)."""
     want = [cycle[i % len(cycle)] for i in range(len(vals))]
     if list(vals) != want:
         raise AssertionError(f"{what}: pin steps {vals}, expected the cycle {cycle} repeated")
 
 
+def check_gaps(what, edges, gap):
+    gaps = [b - a for a, b in zip(edges, edges[1:])]
+    if any(g != gap for g in gaps):
+        raise AssertionError(f"{what}: gaps between pin steps {gaps}, expected all {gap}")
+
+
 async def settle(dut, cycles=3):
     await ClockCycles(dut.clk, cycles)
 
 
-async def assert_reset(dut, cycles):
-    """rst_n low for the given cycles, asserted and released at falling edges."""
-    await set_reset(dut, 0)
-    await ClockCycles(dut.clk, cycles)
-    await set_reset(dut, 1)
+async def uo_bit(dut, bit):
+    await FallingEdge(dut.clk)
+    return (int(dut.uo_out.value) >> bit) & 1
 
 
 async def check_reset_values(link, full):
@@ -336,10 +392,16 @@ async def check_reset_values(link, full):
         check(link, f"reset value of {addr:#05x}", await link.reg(addr), want)
 
 
+async def assert_reset(dut, cycles):
+    await set_reset(dut, 0)
+    await ClockCycles(dut.clk, cycles)
+    await set_reset(dut, 1)
+
+
 # ---------------------------------------------------------------------------
 # 1. Identity, status, scratch
 # ---------------------------------------------------------------------------
-@cocotb.test()
+@chip_test
 async def test_id_hwcfg(dut):
     link = await start(dut)
     st, (idv,) = await link.read(A_ID)
@@ -348,7 +410,19 @@ async def test_id_hwcfg(dut):
     check(link, "HWCFG", await link.reg(A_HWCFG), HWCFG_VALUE)
 
 
-@cocotb.test()
+@chip_test
+async def test_id_clk4(dut):
+    """clk/4 SCK (half period 2 cycles) with CS_N high for 2 cycles between frames."""
+    link = await start(dut, sck_half=2, cs_high=2)
+    st, (idv,) = await link.read(A_ID)
+    check(link, "ID at clk/4", idv, ID_VALUE)
+    check(link, "STATUS at clk/4", st, STATUS_RESET)
+    check(link, "HWCFG at clk/4", await link.reg(A_HWCFG), HWCFG_VALUE)
+    await link.write(A_SCRATCH, 0x0F0F_1234)
+    check(link, "SCRATCH at clk/4", await link.reg(A_SCRATCH), 0x0F0F_1234)
+
+
+@chip_test
 async def test_status_one_byte(dut):
     link = await start(dut)
     st = await link.status()
@@ -356,7 +430,7 @@ async def test_status_one_byte(dut):
     check(link, "1-byte frame returns one byte", len(link.last[1]), 1)
 
 
-@cocotb.test()
+@chip_test
 async def test_scratch_write_read(dut):
     link = await start(dut)
     for v in [0x5A5A_5A5A, 0xDEAD_BEEF, 0x0000_0000, 0x0123_4567]:
@@ -370,7 +444,7 @@ async def test_scratch_write_read(dut):
     check(link, "SCRATCH after two words F=1", await link.reg(A_SCRATCH), 0x7777_8888)
 
 
-@cocotb.test()
+@chip_test
 async def test_write_cut_mid_word(dut):
     """A write frame that CS_N ends mid-word has no effect (chip.md 6.4)."""
     link = await start(dut)
@@ -394,9 +468,45 @@ async def test_write_cut_mid_word(dut):
 
 
 # ---------------------------------------------------------------------------
-# 2. Register masks, unmapped addresses, read-only registers
+# 2. Addressing (chip.md 6.3, 8.1)
 # ---------------------------------------------------------------------------
-@cocotb.test()
+@chip_test
+async def test_addressing(dut):
+    link = await start(dut)
+    # F = 0 burst read across registers: ID, HWCFG, CTRL.
+    rx = await link.frame(hdr(0x80, A_ID) + bytes(1 + 12))
+    words = [int.from_bytes(rx[4 + 4 * m : 8 + 4 * m], "big") for m in range(3)]
+    check_list(link, "F=0 burst read of ID, HWCFG, CTRL", words, [ID_VALUE, HWCFG_VALUE, 0])
+    # Address wrap: 0xFFFC is unmapped (reads 0), the next word address is 0x0000 (ID).
+    st, words = await link.read(0xFFFC, n=2)
+    check_list(link, "read at 0xFFFC, n=2 (word 1 wraps to ID)", words, [0, ID_VALUE])
+    # ADDR[1:0] is ignored.
+    for a in [0x001, 0x002, 0x003]:
+        check(link, f"ADDR {a:#05x} reads ID", (await link.read(a))[1][0], ID_VALUE)
+    # CMD[5:0] is ignored: read with CMD = 0xBF (R = 1, F = 0), then write with CMD = 0x3F.
+    rx = await link.frame(hdr(0xBF, A_ID) + bytes(5))  # header, dummy byte, one word
+    check(link, "CMD[5:0] set on a read: ID", int.from_bytes(rx[4:8], "big"), ID_VALUE)
+    await link.frame(hdr(0x3F, A_SCRATCH) + be_words([0x0BAD_C0DE]))
+    check(link, "CMD[5:0] set on a write: SCRATCH", await link.reg(A_SCRATCH), 0x0BAD_C0DE)
+    # F = 0 multi-word write walking three RW registers, then read back each one.
+    await link.write(0x020, 0x0ABC, 0x55, 0x12_3456)
+    check(link, "HOSTIRQ_EN after the walk", await link.reg(0x020), 0x0ABC)
+    check(link, "PAD_OD after the walk", await link.reg(0x024), 0x55)
+    check(link, "SYNC_BYPASS after the walk", await link.reg(0x028), 0x12_3456)
+    for a in [0x020, 0x024, 0x028]:
+        await link.write(a, 0)
+
+
+@chip_test
+async def test_reset_values(dut):
+    link = await start(dut)
+    await check_reset_values(link, full=True)
+
+
+# ---------------------------------------------------------------------------
+# 3. Register masks, unmapped addresses, read-only and write-only registers
+# ---------------------------------------------------------------------------
+@chip_test
 async def test_rw_masks_and_unmapped(dut):
     link = await start(dut)
     # RW registers store only their write mask (chip.md 8.1). Each row: address, write,
@@ -426,27 +536,22 @@ async def test_rw_masks_and_unmapped(dut):
     await link.write(A_FDEBUG, 0xFFFF_FFFF)
     check(link, "FDEBUG after clearing an empty flag set", await link.reg(A_FDEBUG), 0)
 
+    # IMEM is write-only: a write is stored (a program can run from it) and reads 0.
+    await link.write(imem(5), 0xFFFF_FFFF)
+    check(link, "IMEM[5] reads 0 after a write", await link.reg(imem(5)), 0)
+
     # Unmapped and write-only registers: reads 0, writes ignored.
     for addr in [0x0FC, A_DBG_CTRL, sm(0, O_LCU), sm(0, O_LCU + 0x0C), 0x300, 0x3FC]:
         await link.write(addr, 0xFFFF_FFFF)
         check(link, f"unmapped/absent {addr:#05x} reads 0", await link.reg(addr), 0)
-    for addr in [A_IRQ_FORCE, txf(0), rxf(0), imem(0)]:
+    for addr in [A_IRQ_FORCE, txf(0), imem(0)]:
         check(link, f"write-only {addr:#05x} reads 0", await link.reg(addr), 0)
-
-
-# ---------------------------------------------------------------------------
-# 3. Reset values over SPI
-# ---------------------------------------------------------------------------
-@cocotb.test()
-async def test_reset_values(dut):
-    link = await start(dut)
-    await check_reset_values(link, full=True)
 
 
 # ---------------------------------------------------------------------------
 # 4. Forced instructions and debug reads
 # ---------------------------------------------------------------------------
-@cocotb.test()
+@chip_test
 async def test_forced_instructions(dut):
     link = await start(dut)
     # A forced instruction runs even with the SM disabled (engine.md F1).
@@ -457,19 +562,47 @@ async def test_forced_instructions(dut):
     await settle(dut)
     check(link, "DBG_Y after forced set y, 9", await link.reg(sm(0, O_DBG_Y)), 9)
     check(link, "DBG_X unchanged", await link.reg(sm(0, O_DBG_X)), 21)
-    # EXEC_STALLED is 0 when the forced instruction completed.
-    check(link, "EXECCTRL bit 31 after a completed forced instruction",
+    # in x, 5: ISR = X << 27 (shift right, new bits at the top), ISR count 5, OSR count 32.
+    await link.write(sm(0, O_INSTR), IN_X_5)
+    await settle(dut)
+    check(link, "DBG_ISR after in x, 5", await link.reg(sm(0, O_DBG_ISR)), 21 << 27)
+    check(link, "DBG_CNT after in x, 5 (OSR 32, ISR 5)", await link.reg(sm(0, O_DBG_CNT)), 0x2005)
+    # pull block with one TX word: OSR = the word, OSR count 0.
+    await link.write(txf(0), 0x0BAD_F00D)
+    await link.write(sm(0, O_INSTR), PULL_BLOCK)
+    await settle(dut)
+    check(link, "DBG_OSR after pull block", await link.reg(sm(0, O_DBG_OSR)), 0x0BAD_F00D)
+    check(link, "DBG_CNT after pull (OSR 0, ISR 5)", await link.reg(sm(0, O_DBG_CNT)), 0x0005)
+    check(link, "EXECCTRL bit 31 after completed forced instructions",
+          await link.reg(sm(0, O_EXECCTRL)) >> 31, 0)
+
+
+@chip_test
+async def test_exec_stalled(dut):
+    """A forced wait on a pin that is low stalls (EXEC_STALLED = 1, engine.md F4) and
+    completes when the pin goes high."""
+    link = await start(dut)
+    await link.write(sm(0, O_PINCTRL), PINCTRL_IN16_SET8)  # IN_BASE 16: wait pin 0 = ext_ui[0]
+    dut.ext_ui.value = 0
+    await link.write(sm(0, O_INSTR), WAIT_PIN0_HIGH)
+    await ClockCycles(dut.clk, 10)
+    check(link, "EXECCTRL bit 31 while the forced wait stalls",
+          await link.reg(sm(0, O_EXECCTRL)) >> 31, 1)
+    dut.ext_ui.value = 0x01
+    await ClockCycles(dut.clk, 10)
+    check(link, "EXECCTRL bit 31 after the forced wait completes",
           await link.reg(sm(0, O_EXECCTRL)) >> 31, 0)
 
 
 # ---------------------------------------------------------------------------
-# 5. IMEM, SM run, pins
+# 5. Programs: IMEM load, run, pins
 # ---------------------------------------------------------------------------
-@cocotb.test()
+@chip_test
 async def test_program_runs(dut):
     """Load a program through SPI, run it, and see pins on uo_out[4:0]. Then stop it."""
     link = await start(dut)
     pads = Pads(dut)
+    link.edge_fn = lambda: pads.edge
     await link.write(imem(0), *PINSDEMO)  # one frame, F = 0: words 0..2
     await link.write(sm(0, O_CLKDIV), 0x0002_0000)  # INT 2: one tick every 2 cycles
     await link.write(sm(0, O_EXECCTRL), wrap(2))
@@ -483,16 +616,12 @@ async def test_program_runs(dut):
     t = steps(pads, first, 0, 0x1F)
     vals = [v for _, v in t]
     check(link, "pins before the first instruction", vals[0], 0)
-    check_cycle(link, "uo_out[4:0] while running", vals[1:], [1, 30, 21])
+    check_cycle("uo_out[4:0] while running", vals[1:], [1, 30, 21])
     if len(vals) < 10:
         raise AssertionError(f"only {len(vals)} pin steps in 90 cycles")
     # Each instruction takes two ticks (its own and the delay of 1). At INT = 2 that is four
     # cycles between steps.
-    edges = [e for e, _ in t[1:]]
-    gaps = [b - a for a, b in zip(edges, edges[1:])]
-    if any(g != 4 for g in gaps):
-        raise AssertionError(f"gaps between pin steps {gaps}, expected all 4 (INT = 2, delay 1)")
-    # uo_out[5] is not a SET pin here (SET_COUNT 5).
+    check_gaps("uo_out[4:0] while running", [e for e, _ in t[1:]], 4)
     if any(uo & 0x20 for _, uo in pads.samples[first:]):
         raise AssertionError("uo_out[5] changed, but only 5 pins are set")
 
@@ -503,13 +632,19 @@ async def test_program_runs(dut):
     later = steps(pads, hold, 0, 0x1F)
     if len(later) > 1:
         raise AssertionError(f"pins still stepping after SM_ENABLE = 0: {later}")
+    # ADDR is the PC, which is one of the three instructions, and INSTR reads that word.
+    pc = await link.reg(sm(0, O_ADDR))
+    check(link, "ADDR is in 0..2", int(pc <= 2), 1)
+    check(link, "INSTR reads IMEM[ADDR]", await link.reg(sm(0, O_INSTR)), PINSDEMO[pc])
+    pads.stop()
 
 
-@cocotb.test()
+@chip_test
 async def test_program_in_page_1(dut):
     """EXT.PAGE selects IMEM words 32..63 (engine.md 9). Page 0 holds a decoy."""
     link = await start(dut)
     pads = Pads(dut)
+    link.edge_fn = lambda: pads.edge
     # Page 0 decoy: set pins, 31 (E11F) in words 0..2, so any use of page 0 shows as 31.
     await link.write(imem(0), 0xE11F, 0xE11F, 0xE11F)
     await link.write(imem(32), *PINSDEMO)
@@ -522,18 +657,24 @@ async def test_program_in_page_1(dut):
     first = pads.edge
     await link.write(A_CTRL, 0x1)
     await ClockCycles(dut.clk, 60)
-    vals = [v for _, v in steps(pads, first, 0, 0x1F)]
+    t = steps(pads, first, 0, 0x1F)
+    vals = [v for _, v in t]
     check(link, "pins before the first instruction", vals[0], 0)
-    check_cycle(link, "page 1 program pins", vals[1:], [1, 30, 21])
+    check_cycle("page 1 program pins", vals[1:], [1, 30, 21])
     if len(vals) < 9:
         raise AssertionError(f"page 1 program ran only {len(vals) - 1} steps")
+    # INT 1 and delay 1: two cycles between steps.
+    check_gaps("page 1 program pins", [e for e, _ in t[1:]], 2)
+    pads.stop()
 
 
-@cocotb.test()
+@chip_test
 async def test_tx_pull_and_drive(dut):
-    """TX words are pulled by a program and driven on uo_out[5:0]. Checks FIFO flags."""
+    """TX words are pulled by a program and driven on uo_out[5:0]. Checks FIFO flags,
+    STATUS (TX full, 0xE0) and the pad levels after the drain."""
     link = await start(dut)
     pads = Pads(dut)
+    link.edge_fn = lambda: pads.edge
     await link.write(imem(0), *PULLDRIVE)
     await link.write(sm(0, O_CLKDIV), 0x0001_0000)
     await link.write(sm(0, O_EXECCTRL), wrap(1))
@@ -542,7 +683,9 @@ async def test_tx_pull_and_drive(dut):
     # Five words into TX0 with the SM disabled: four fit, the fifth is dropped.
     w = [0x5A5A_5A15, 0xFFFF_FF2A, 0x1234_567F, 0x0000_0041, 0x0000_000B]
     await link.write(txf(0), *w, fixed=True)
-    check(link, "FSTAT after 5 pushes (TX0 full, not empty)", await link.reg(A_FSTAT), 0x0E01_0F00)
+    st, (f,) = await link.read(A_FSTAT)
+    check(link, "FSTAT after 5 pushes (TX0 full, not empty)", f, 0x0E01_0F00)
+    check(link, "STATUS in the FSTAT frame: TX0 full (TXNFULL0 = 0)", st, 0xE0)
     check(link, "FLEVEL: TX0 level 4", await link.reg(A_FLEVEL), 0x4)
     check(link, "FDEBUG: TXOVER0 after the fifth push", await link.reg(A_FDEBUG), 0x0001_0000)
     await link.write(A_FDEBUG, 0x0001_0000)
@@ -556,21 +699,21 @@ async def test_tx_pull_and_drive(dut):
     check(link, "pins before the first pull", vals[0], 0)
     check_list(link, "uo_out[5:0] values, one per pushed word (low 6 bits)", vals[1:],
                [0x15, 0x2A, 0x3F, 0x01])
-    edges = [e for e, _ in t[1:]]
-    gaps = [b - a for a, b in zip(edges, edges[1:])]
-    if any(g != 2 for g in gaps):
-        raise AssertionError(f"gaps between pin steps {gaps}, expected all 2 (pull, out)")
+    check_gaps("uo_out[5:0] while draining", [e for e, _ in t[1:]], 2)
 
     # The program stalls on an empty TX FIFO, and that sets TXSTALL0 (bit 24).
     check(link, "FDEBUG: TXSTALL0 after the drain", await link.reg(A_FDEBUG), 0x0100_0000)
     check(link, "FSTAT after the drain: TX0 empty", await link.reg(A_FSTAT), FSTAT_RESET)
+    check(link, "PAD_OUT after the drain: pins 8..13 = 1", await link.reg(A_PAD_OUT), 0x100)
+    check(link, "PAD_OE: no pin is an output", await link.reg(A_PAD_OE), 0)
     check(link, "pins hold the last word", pads.samples[-1][1] & 0x3F, 0x01)
+    pads.stop()
 
 
-@cocotb.test()
+@chip_test
 async def test_rx_loopback_burst(dut):
-    """A program pushes RX words. A burst read with F = 1 drains them, then FSTAT, FLEVEL
-    and FDEBUG are checked. A burst longer than the FIFO reads 0 and sets RXUNDER0."""
+    """A program pushes RX words. A burst read with F = 1 drains them, then FSTAT, FLEVEL,
+    FDEBUG and STATUS are checked. A burst longer than the FIFO reads 0 and sets RXUNDER0."""
     link = await start(dut)
     await link.write(imem(0), *LOOPBACK)
     await link.write(sm(0, O_CLKDIV), 0x0001_0000)
@@ -582,7 +725,9 @@ async def test_rx_loopback_burst(dut):
     await settle(dut, 40)
 
     # RX0 full with 4 words, TX0 empty, the program stalled on pull (TXSTALL0 set).
-    check(link, "FSTAT with RX0 full", await link.reg(A_FSTAT), 0x0F00_0E01)
+    st, (f,) = await link.read(A_FSTAT)
+    check(link, "FSTAT with RX0 full", f, 0x0F00_0E01)
+    check(link, "STATUS in the FSTAT frame: RXNEMPTY0 with TX not full", st, 0xF1)
     check(link, "FLEVEL: RX0 level 4", await link.reg(A_FLEVEL), 0x40)
     check(link, "FDEBUG: TXSTALL0 only", await link.reg(A_FDEBUG), 0x0100_0000)
     st = await link.status()
@@ -608,9 +753,169 @@ async def test_rx_loopback_burst(dut):
     check(link, "FDEBUG after clearing RXUNDER0", await link.reg(A_FDEBUG), 0x0100_0000)
 
 
-@cocotb.test()
+@chip_test
+async def test_rx_burst_clk4(dut):
+    """The RX loopback burst at clk/4 with CS_N high for 2 cycles between frames. A 2-cycle
+    MISO delay fails here (chip.md 6.5, 6.6)."""
+    link = await start(dut, sck_half=2, cs_high=2)
+    await link.write(imem(0), *LOOPBACK)
+    await link.write(sm(0, O_CLKDIV), 0x0001_0000)
+    await link.write(sm(0, O_EXECCTRL), wrap(2))
+    batch = [0xA1B2_C3D4, 0x0BAD_F00D, 0x1357_9BDF, 0xFEDC_BA98]
+    await link.write(txf(0), *batch, fixed=True)
+    await link.write(A_CTRL, 0x1)
+    await settle(dut, 40)
+    st, words = await link.read(rxf(0), n=4, fixed=True)
+    check(link, "STATUS at the start of the clk/4 burst", st, 0xF1)
+    check_list(link, "clk/4 RX burst of 4 words", words, batch)
+    check(link, "FSTAT after the clk/4 burst: RX0 empty", await link.reg(A_FSTAT), FSTAT_RESET)
+
+
+@chip_test
+async def test_rx_stall_full(dut):
+    """A blocking push into a full RX FIFO stalls and sets RXSTALL0 (bit 0). The stalled
+    push completes after the host pops a word (R7, H2)."""
+    link = await start(dut)
+    await link.write(imem(0), *LOOPBACK)
+    await link.write(sm(0, O_CLKDIV), 0x0001_0000)
+    await link.write(sm(0, O_EXECCTRL), wrap(2))
+    batch = [0x0000_0011, 0x0000_0022, 0x0000_0033, 0x0000_0044]
+    await link.write(txf(0), *batch, fixed=True)
+    await link.write(A_CTRL, 0x1)
+    await settle(dut, 40)
+    check(link, "FDEBUG with RX0 full: TXSTALL0 only", await link.reg(A_FDEBUG), 0x0100_0000)
+    # The fifth word: the program pulls it, and its push finds RX0 full.
+    await link.write(txf(0), 0x5555_AAAA)
+    await settle(dut, 20)
+    st, (f,) = await link.read(A_FSTAT)
+    check(link, "FSTAT with RX0 full and the push stalled", f, 0x0F00_0E01)
+    check(link, "FDEBUG: RXSTALL0 set by the blocked push", await link.reg(A_FDEBUG), 0x0100_0001)
+    # Pop one word: the stalled push then completes, so RX0 holds the fifth word.
+    st, words = await link.read(rxf(0), n=4, fixed=True)
+    check_list(link, "RX burst of the first four words", words, batch)
+    check(link, "FLEVEL after the stalled push completes: RX0 level 1", await link.reg(A_FLEVEL), 0x10)
+    check(link, "FDEBUG: RXSTALL0 stays set (sticky)", await link.reg(A_FDEBUG), 0x0100_0001)
+    st, words = await link.read(rxf(0))
+    check(link, "fifth word", words[0], 0x5555_AAAA)
+
+
+@chip_test
+async def test_sm_each_loopback(dut):
+    """SMs 1 to 3 run the same loopback program with their own TX and RX FIFOs, configuration,
+    CTRL enable bit, FSTAT, FLEVEL, FDEBUG, STATUS and HOST_IRQ source (RXNEMPTY1)."""
+    link = await start(dut)
+    await link.write(imem(0), *LOOPBACK)
+    words = {1: [0x1111_0001, 0x1111_0002, 0x1111_0003, 0x1111_0004],
+             2: [0x2222_0001, 0x2222_0002, 0x2222_0003, 0x2222_0004],
+             3: [0x3333_0001, 0x3333_0002, 0x3333_0003, 0x3333_0004]}
+    for n in (1, 2, 3):
+        await link.write(sm(n, O_CLKDIV), 0x0001_0000)
+        await link.write(sm(n, O_EXECCTRL), wrap(2))
+        await link.write(txf(n), *words[n], fixed=True)
+    await link.write(A_HOSTIRQ_EN, 0x020)  # RXNEMPTY1 only
+    await link.write(A_CTRL, 0x0E)
+    check(link, "CTRL readback: SM1..3 enabled", await link.reg(A_CTRL), 0x0E)
+    await settle(dut, 40)
+
+    st, (f,) = await link.read(A_FSTAT)
+    check(link, "FSTAT: TX empty for SM0..3, RX0 empty, RX1..3 full", f, 0x0F00_010E)
+    check(link, "STATUS: TXNFULL 1111, RXNEMPTY1..3", st, 0xFE)
+    check(link, "FLEVEL: RX level 4 for SM1..3 (TX 0)", await link.reg(A_FLEVEL), 0x4040_4000)
+    check(link, "FDEBUG: TXSTALL1..3", await link.reg(A_FDEBUG), 0x0E00_0000)
+    check(link, "HOST_IRQ = RXNEMPTY1 (uo_out[6] = 1)", await uo_bit(dut, 6), 1)
+
+    for n in (1, 2, 3):
+        st, got = await link.read(rxf(n), n=4, fixed=True)
+        check_list(link, f"SM{n} RX burst of its 4 words", got, words[n])
+    check(link, "FSTAT after the bursts: all RX empty", await link.reg(A_FSTAT), FSTAT_RESET)
+    check(link, "HOST_IRQ after RX1 is empty (uo_out[6] = 0)", await uo_bit(dut, 6), 0)
+    check(link, "CTRL readback before disabling", await link.reg(A_CTRL), 0x0E)
+    await link.write(A_CTRL, 0x0)
+    check(link, "CTRL readback after disabling", await link.reg(A_CTRL), 0)
+
+
+# ---------------------------------------------------------------------------
+# 6. Pads, pins and HOST_IRQ
+# ---------------------------------------------------------------------------
+@chip_test
+async def test_pad_in_pads_out(dut):
+    """PAD_IN is the raw pad levels in the cycle of the read: uio_in, uo_out, ui_in. Here
+    ui_in = {CS_N, MOSI, SCK, ext_ui} with CS_N low and SCK high at the read, MOSI low (the
+    dummy byte), so PAD_IN[23:16] = 0x20 | ext_ui. The read happens in SCK's high phase
+    (clk/8 gives 4 high cycles). PAD_OUT and PAD_OE follow the pins."""
+    link = await start(dut)
+    await link.write(sm(0, O_PINCTRL), PINCTRL_SET_BASE8)
+    await link.write(sm(0, O_INSTR), SET_PINS_21)  # pins 8..12 = 21, SM disabled
+    await settle(dut)
+    dut.ext_ui.value = 0x13
+    dut.ext_uio.value = 0xA5
+    await settle(dut)
+    check(link, "PAD_OUT: pins 8..12 = 21", await link.reg(A_PAD_OUT), 21 << 8)
+    check(link, "PAD_OE: no pin is an output", await link.reg(A_PAD_OE), 0)
+    check(link, "PAD_IN with CS_N low, SCK high, MOSI low",
+          await link.reg(A_PAD_IN), ((0x20 | 0x13) << 16) | (21 << 8) | 0xA5)
+    dut.ext_ui.value = 0
+    dut.ext_uio.value = 0xFF
+
+
+@chip_test
+async def test_in_pins_sync(dut):
+    """A program reads ext_ui through IN_BASE: in pins, 5 gives ISR = pins[4:0] << 27
+    (engine.md 6, datasheet 3.5.4). Synchronised input (INPUT_SYNC_BYPASS = 0)."""
+    await _in_pins_run(dut, bypass=0)
+
+
+@chip_test
+async def test_in_pins_bypass(dut):
+    """The same read with INPUT_SYNC_BYPASS set for pins 16..23: same value."""
+    await _in_pins_run(dut, bypass=0xFF_FFFF)
+
+
+async def _in_pins_run(dut, bypass):
+    link = await start(dut)
+    dut.ext_ui.value = 0x13
+    await link.write(A_SYNC_BYPASS, bypass)
+    await link.write(imem(0), *IN_PINS5)
+    await link.write(sm(0, O_PINCTRL), PINCTRL_IN16_SET8)
+    await link.write(A_CTRL, 0x1)
+    await settle(dut, 30)
+    check(link, "FLEVEL: one word in RX0", await link.reg(A_FLEVEL), 0x10)
+    check(link, "RX0 word = ext_ui[4:0] << 27", (await link.read(rxf(0)))[1][0], 0x13 << 27)
+    await link.write(A_CTRL, 0x0)
+    await link.write(A_SYNC_BYPASS, 0)
+    dut.ext_ui.value = 0
+
+
+@chip_test
+async def test_wait_pin_program(dut):
+    """wait 1 pin 0 on ext_ui[0] (IN_BASE 16): the program waits, then drives pins."""
+    link = await start(dut)
+    pads = Pads(dut)
+    dut.ext_ui.value = 0
+    await link.write(imem(0), *WAIT_PIN)
+    await link.write(sm(0, O_PINCTRL), PINCTRL_IN16_SET8)
+    await link.write(A_CTRL, 0x1)
+    await ClockCycles(dut.clk, 40)
+    # Still waiting: no change on uo_out[4:0] over the next 20 cycles.
+    first = pads.edge
+    await ClockCycles(dut.clk, 20)
+    pending = steps(pads, first, 0, 0x1F)
+    if len(pending) != 1:
+        raise AssertionError(f"uo_out[4:0] changed while wait 1 pin 0 is pending: {pending}")
+    dut.ext_ui.value = 0x01
+    await ClockCycles(dut.clk, 20)
+    vals = [v for _, v in steps(pads, first, 0, 0x1F)]
+    if 0x15 not in vals:
+        raise AssertionError(f"after wait 1 pin 0 passes, uo_out[4:0] steps {vals}, expected 21")
+    pads.stop()
+    await link.write(A_CTRL, 0x0)
+    dut.ext_ui.value = 0
+
+
+@chip_test
 async def test_open_drain(dut):
-    """PAD_OD on uio[0] (engine.md 9.2 and chip.md 9.2)."""
+    """PAD_OD on uio[0] (engine.md 9.2 and chip.md 9.2). PAD_OE and PAD_OUT follow pindirs
+    and pins."""
     link = await start(dut)
     await link.write(sm(0, O_PINCTRL), PINCTRL_SET0_1)  # SET pin 0 only, which is uio[0]
 
@@ -619,7 +924,7 @@ async def test_open_drain(dut):
         return int(dut.uio_out.value), int(dut.uio_oe.value), int(dut.uo_out.value)
 
     async def pad_in_low_byte():
-        return (await link.read(0x02C))[1][0] & 0xFF
+        return (await link.read(A_PAD_IN))[1][0] & 0xFF
 
     # PAD_OD = 0: a driven 1 is a push-pull 1.
     await link.write(sm(0, O_INSTR), SET_PINDIRS_1)
@@ -628,6 +933,8 @@ async def test_open_drain(dut):
     out, oe, _ = await pads_now()
     check(link, "uio_out[0] driven 1, PAD_OD = 0", out & 1, 1)
     check(link, "uio_oe[0] = 1, PAD_OD = 0", oe & 1, 1)
+    check(link, "PAD_OE bit 0 (pindirs output)", await link.reg(A_PAD_OE), 0x01)
+    check(link, "PAD_OUT bit 0 (level 1)", await link.reg(A_PAD_OUT), 0x01)
 
     # PAD_OD = 1: a driven 0 pulls low, and a 1 releases the pad.
     await link.write(A_PAD_OD, 0x01)
@@ -659,10 +966,11 @@ async def test_open_drain(dut):
     out, oe, _ = await pads_now()
     check(link, "uio_oe[0] with pindirs 0", oe & 1, 0)
     check(link, "PAD_IN[0] shows the external 0", await pad_in_low_byte() & 1, 0)
+    check(link, "PAD_IN[7:0] shows the uio input levels", await pad_in_low_byte(), 0xFE)
     dut.ext_uio.value = 0xFF
 
 
-@cocotb.test()
+@chip_test
 async def test_host_irq(dut):
     """HOST_IRQ on uo_out[6]: HOSTIRQ_EN = 0 gives pins_out[14], otherwise the OR of the
     enabled sources (chip.md 9.2 and 9.3)."""
@@ -672,8 +980,7 @@ async def test_host_irq(dut):
     await settle(dut)
 
     async def uo6():
-        await FallingEdge(dut.clk)
-        return (int(dut.uo_out.value) >> 6) & 1
+        return await uo_bit(dut, 6)
 
     check(link, "HOSTIRQ_EN = 0: uo_out[6] is pins_out[14]", await uo6(), 1)
 
@@ -691,6 +998,15 @@ async def test_host_irq(dut):
     check(link, "IRQ after clearing", await link.reg(A_IRQ), 0)
     check(link, "uo_out[6] after the flag clears", await uo6(), 0)
 
+    # irq[3] as the source (not irq[0]).
+    await link.write(A_HOSTIRQ_EN, 0x008)
+    await link.write(A_IRQ_FORCE, 0x08)
+    await settle(dut)
+    check(link, "HOSTIRQ_EN = irq[3], flag set: uo_out[6] = 1", await uo6(), 1)
+    await link.write(A_IRQ, 0x08)
+    await settle(dut)
+    check(link, "HOSTIRQ_EN = irq[3], flag clear: uo_out[6] = 0", await uo6(), 0)
+
     # TXNFULL0 as the source: TX empty gives 1, TX full gives 0.
     await link.write(A_HOSTIRQ_EN, 0x100)
     await settle(dut)
@@ -700,6 +1016,14 @@ async def test_host_irq(dut):
     check(link, "HOSTIRQ_EN = TXNFULL0, TX full: uo_out[6] = 0 (pins_out[14] = 1 is masked)",
           await uo6(), 0)
 
+    # TXNFULL3 as the source (SM3's TX FIFO, not SM0's).
+    await link.write(A_HOSTIRQ_EN, 0x800)
+    await settle(dut)
+    check(link, "HOSTIRQ_EN = TXNFULL3, TX3 empty: uo_out[6] = 1", await uo6(), 1)
+    await link.write(txf(3), 1, 2, 3, 4, fixed=True)
+    await settle(dut)
+    check(link, "HOSTIRQ_EN = TXNFULL3, TX3 full: uo_out[6] = 0", await uo6(), 0)
+
     await link.write(A_HOSTIRQ_EN, 0x000)
     await settle(dut)
     check(link, "HOSTIRQ_EN = 0 again: uo_out[6] = pins_out[14]", await uo6(), 1)
@@ -708,25 +1032,116 @@ async def test_host_irq(dut):
     check(link, "uo_out[7] (MISO) is 0 between frames", (int(dut.uo_out.value) >> 7) & 1, 0)
 
 
+@chip_test
+async def test_sm_restart_and_fjoin(dut):
+    """SM_RESTART sets the OSR count back to 32 (DBG_CNT); a SHIFTCTRL FJOIN change flushes
+    both FIFOs (chip.md 8.2) and the capacities follow FJOIN."""
+    link = await start(dut)
+    await link.write(txf(0), 0x1234_5678)
+    await link.write(sm(0, O_INSTR), PULL_BLOCK)
+    await link.write(sm(0, O_INSTR), OUT_X_5)
+    await settle(dut)
+    check(link, "DBG_CNT after pull and out 5 (OSR count 5)", await link.reg(sm(0, O_DBG_CNT)), 0x0500)
+    await link.write(A_CTRL, 0x10)  # SM_RESTART for SM0, SM disabled
+    await settle(dut)
+    check(link, "DBG_CNT after SM_RESTART (OSR count 32)", await link.reg(sm(0, O_DBG_CNT)), DBG_CNT_RESET)
+
+    # FJOIN_TX: TX capacity 8, RX capacity 0 (both reads full and empty). FIFOs are flushed.
+    await link.write(txf(0), 0xAAAA_0001, 0xAAAA_0002, fixed=True)
+    check(link, "FLEVEL before the FJOIN change: TX0 level 2", await link.reg(A_FLEVEL), 0x2)
+    await link.write(sm(0, O_SHIFTCTRL), SHIFTCTRL_RESET | 0x4000_0000)
+    check(link, "FLEVEL after the FJOIN change: flushed", await link.reg(A_FLEVEL), 0)
+    check(link, "FSTAT after FJOIN_TX: SM0 TX empty, RX0 empty and full",
+          await link.reg(A_FSTAT), 0x0F00_0F01)
+    await link.write(sm(0, O_SHIFTCTRL), SHIFTCTRL_RESET)
+    check(link, "FSTAT after FJOIN back to 0: reset value", await link.reg(A_FSTAT), FSTAT_RESET)
+
+
+@chip_test
+async def test_clkdiv_restart(dut):
+    """CLKDIV_RESTART sets the divider phase to 0 (engine.md R10, H4). The phase is not in
+    the register map, so the effect is read from the pin steps of a program at INT = 3.
+
+    Two runs from reset. Run B has a 1-byte frame before the restart. Both start the
+    divider at the same point, so a restart at edge E puts the tick grid on E mod 3. The
+    grid before the restart is the same in both runs. After the restart, the difference
+    of the grids must equal the difference of the restart edges, mod 3."""
+    results = {}
+    for label, extra in [("A", False), ("B", True)]:
+        link = await start(dut, clock=(label == "A"))
+        pads = Pads(dut)
+        link.edge_fn = lambda p=pads: p.edge
+        link.watch_sck(pads)
+        await link.write(imem(0), *PINSDEMO)
+        await link.write(sm(0, O_CLKDIV), 0x0003_0000)  # INT 3
+        await link.write(sm(0, O_EXECCTRL), wrap(2))
+        await link.write(sm(0, O_PINCTRL), PINCTRL_SET_BASE8)
+        await link.write(A_CTRL, 0x1)  # enable, no restart
+        await ClockCycles(dut.clk, 30)
+        if extra:
+            await link.status()  # 84 edges, a multiple of 3, so one idle cycle as well
+            await ClockCycles(dut.clk, 1)
+        n0 = len(link.rises)
+        await link.write(A_CTRL, 0x101)  # SM0 enabled, CLKDIV_RESTART for SM0
+        restart_edge = link.start_edge
+        await ClockCycles(dut.clk, 60)
+        all_steps = steps(pads, 0, 0, 0x1F)[1:]  # [0] is the reset value, not a step
+        # The restart takes effect in the cycle bit 55 of the CTRL write is clocked
+        # (chip.md 8.2): the RISE is 2 cycles after SCK rises (chip.md 6.5). The
+        # margin of 10 cycles covers the edge numbering.
+        effect = link.rises[n0 + 55] + 2
+        pre = {e % 3 for e, _ in all_steps if e < effect}
+        post = {e % 3 for e, _ in all_steps if e >= effect + 10}
+        if len(pre) != 1 or len(post) != 1:
+            raise AssertionError(f"run {label}: tick grid not one phase: pre {pre}, post {post}; "
+                                 f"restart edge {restart_edge}, steps {all_steps}")
+        results[label] = (restart_edge, pre.pop(), post.pop())
+        pads.stop()
+    ea, pre_a, post_a = results["A"]
+    eb, pre_b, post_b = results["B"]
+    if pre_a != pre_b:
+        raise AssertionError(f"grid before the restart differs: A {pre_a}, B {pre_b}")
+    delta = eb - ea
+    if delta % 3 == 0:
+        raise AssertionError(f"prefix frame is {delta} edges, a multiple of 3: test cannot tell")
+    want = delta % 3
+    got = (post_b - post_a) % 3
+    if got != want:
+        raise AssertionError(
+            f"tick grid after CLKDIV_RESTART: post-restart phase differs by {got} mod 3, "
+            f"expected {want} (restart edges A {ea}, B {eb}, grids pre {pre_a}, "
+            f"post A {post_a}, post B {post_b})")
+
+
 # ---------------------------------------------------------------------------
-# 6. Reset (chip.md 10)
+# 7. Multi-SM: the lanes in SMs 1 to 3 are checked above; SM0 pins are in the tests above.
 # ---------------------------------------------------------------------------
-@cocotb.test()
+
+
+# ---------------------------------------------------------------------------
+# 8. Reset (chip.md 10)
+# ---------------------------------------------------------------------------
+@chip_test
 async def test_reset_mid_frame(dut):
-    """rst_n goes low in the middle of a write frame, and the frame ends during reset.
-    The write must not happen, and the reset state must hold for a clean frame."""
+    """rst_n goes low in the middle of a write frame, after the word's last bit (bit 55) has
+    been clocked, and the frame ends during reset. Reset clears SCRATCH, so the value is 0,
+    neither the frame's word nor the value before the frame."""
     link = await start(dut)
     await link.write(A_SCRATCH, 0x1234_5678)
-
-    tx = hdr(0x00, A_SCRATCH) + be_words([0xDEAD_BEEF])
+    # 3 header bytes, the word, then one extra byte: the frame is still running when reset
+    # falls at bit 60, after bit 55.
+    tx = hdr(0x00, A_SCRATCH) + be_words([0xDEAD_BEEF]) + bytes([0x00])
     await FallingEdge(dut.clk)
     link.bytes_master.write_nowait(tx, burst=True)
-    # The first SCK rise is 12 cycles after CS_N falls, and bits come every 8 cycles.
-    await ClockCycles(dut.clk, 12 + 8 * 40 + 3)
+    # Wait for the SCK rise of bit 60 (rise k delivers bit k). Bit 55 has been clocked, so
+    # the word is complete. Byte boundaries add cycles, so count rises, not cycles.
+    for _ in range(61):
+        await RisingEdge(dut.spi_sck)
     await set_reset(dut, 0)
     await link.bytes_master.wait()
     link.bytes_master.read_nowait()
-    await ClockCycles(dut.clk, 2 * CS_HIGH_CYCLES)
+    link.last = (tx, b"")
+    await ClockCycles(dut.clk, 2 * 4)  # CS_N high for 4 cycles before release (H-RST)
     await set_reset(dut, 1)
     await ClockCycles(dut.clk, 8)
 
@@ -739,7 +1154,7 @@ async def test_reset_mid_frame(dut):
     check(link, "SCRATCH writes work after reset", await link.reg(A_SCRATCH), 0xCAFE_BABE)
 
 
-@cocotb.test()
+@chip_test
 async def test_reset_mid_program(dut):
     """rst_n goes low between clock edges while a program runs. The pins go to 0 at once,
     the SM stops, the reset values hold, and IMEM survives (it is not reset)."""
@@ -751,9 +1166,10 @@ async def test_reset_mid_program(dut):
     await link.write(sm(0, O_PINCTRL), PINCTRL_SET_BASE8)
     await link.write(A_CTRL, 0x1)
     await ClockCycles(dut.clk, 30)
-    if pads.samples[-1][1] & 0x1F == 0:
-        raise AssertionError("no pin steps before the reset, so the test would prove nothing")
+    if len(steps(pads, 0, 0, 0x1F)) < 4:
+        raise AssertionError("the program did not run before the reset")
 
+    # Reset between clock edges, while the program runs.
     await RisingEdge(dut.clk)
     await Timer(3, unit="ns")
     dut.rst_n.value = 0
@@ -767,16 +1183,19 @@ async def test_reset_mid_program(dut):
     await ClockCycles(dut.clk, 40)
     if steps(pads, after, 0, 0x1F)[1:]:
         raise AssertionError("the SM ran after reset, but SM_ENABLE resets to 0")
+    pads.stop()
 
     await check_reset_values(link, full=False)
 
     # IMEM is not reset: reconfigure what reset cleared, enable, and the program runs.
+    pads = Pads(dut)
     await link.write(sm(0, O_EXECCTRL), wrap(2))
     await link.write(sm(0, O_PINCTRL), PINCTRL_SET_BASE8)
     first = pads.edge
     await link.write(A_CTRL, 0x1)
     await ClockCycles(dut.clk, 30)
     vals = [v for _, v in steps(pads, first, 0, 0x1F)]
-    check_cycle(link, "program in IMEM after the reset", vals[1:], [1, 30, 21])
+    check_cycle("program in IMEM after the reset", vals[1:], [1, 30, 21])
     if len(vals) < 6:
         raise AssertionError("IMEM program did not run after reset")
+    pads.stop()

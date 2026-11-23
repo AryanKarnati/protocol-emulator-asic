@@ -4,6 +4,8 @@ The cocotb testbench for the Tiny Tapeout project. `tb.v` instantiates `tt_um_ar
 
 `test.py` tests the block 3 chip as [docs/chip.md](../docs/chip.md) specifies it, through the top-level pins only. The host is a `cocotbext-spi` SPI master (mode 0, MSB first, pinned in `requirements.txt`), so the framing is not written by the project's own code. The PIO programs are assembled with the official pioasm, and their words are in `test.py`. `tb.v` exposes the SPI pins as plain regs, and resolves the uio pads (open-drain and pull-ups).
 
+`GATES=yes make` runs a short subset (`GL_SUBSET` in `test.py`: ID and HWCFG, SCRATCH, one program run, one RX burst at clk/4, and the two reset tests). The full suite runs at RTL only, in CI.
+
 `pio_block_reset/` is a cocotb test of the generated `pio_block`, run on its own (see `.github/workflows/pio_reset.yaml`).
 
 ## Setup
