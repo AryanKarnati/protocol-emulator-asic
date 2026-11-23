@@ -22,10 +22,10 @@ let () =
   | [| _; "decode" |] ->
     Rtl.print Rtl.Language.Verilog (Polyglot_hw.Decode.circuit ())
   | [| _; "pio_block" |] ->
-    let circuit, database = Polyglot_hw.Pio_block.circuit_with_database ~num_sms:4 in
+    let circuit, database = Polyglot_hw.Pio_block.circuit_with_database ~num_sms:4 ~imem_depth:64 in
     Rtl.print ~database Rtl.Language.Verilog circuit
   | [| _; "pio_block1" |] ->
-    let circuit, database = Polyglot_hw.Pio_block.circuit_with_database ~num_sms:1 in
+    let circuit, database = Polyglot_hw.Pio_block.circuit_with_database ~num_sms:1 ~imem_depth:64 in
     Rtl.print ~database Rtl.Language.Verilog circuit
   | _ -> usage ()
 ;;

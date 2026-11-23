@@ -111,6 +111,32 @@ let cmd_replay args file =
     1
 ;;
 
+(* shrink FILE --out PATH: shrink a failing case file to a smaller one that still fails. *)
+let cmd_shrink args file =
+  let dut = dut_name_of (flag args "--dut" "rtl") in
+  let out = flag args "--out" "shrunk.json" in
+  (* "-" as FILE with --seed, --index and --sms: the case the lockstep test generates. *)
+  let case =
+    if file = "-"
+    then (
+      let c = Gen.generate_one ~seed:(int_flag args "--seed" 1) (int_flag args "--index" 0) in
+      { c with Case.num_sms = int_flag args "--sms" c.Case.num_sms })
+    else Case.read_file file
+  in
+  let case = Case.normalise case in
+  match check ~dut case with
+  | Lockstep.Pass _ ->
+    Printf.printf "shrink %s: passes on %s, nothing to shrink\n" file dut;
+    0
+  | Lockstep.Fail f ->
+    let shrunk, sf, steps = Gen.shrink_failing ~check:(check ~dut) ~limit:400 case f in
+    Case.write_file out shrunk;
+    Printf.printf "shrunk %s: %s, port %s, ref=0x%x dut=0x%x, %d shrink steps -> %s\n" file
+      (Lockstep.describe_cycle sf.Lockstep.cycle) sf.Lockstep.port sf.Lockstep.reference
+      sf.Lockstep.dut steps out;
+    1
+;;
+
 let write_cases dir cases =
   List.iter
     (fun (name, c) ->
@@ -286,6 +312,7 @@ let () =
     | _ :: "write-cases" :: dir :: args -> cmd_write_cases args dir
     | _ :: "rtl-probe" :: args -> cmd_rtl_probe args
     | _ :: "triage" :: args -> cmd_triage args
+    | _ :: "shrink" :: file :: args -> cmd_shrink args file
     | _ ->
       prerr_endline
         "usage: lockstep_cli (gen|replay FILE|corpus|mutants|write-cases DIR) [options]";

@@ -10,6 +10,8 @@ type port_dut =
     (** the register outputs of the cycle whose inputs are given. FIFO capacity follows the
         FJOIN input of that cycle (engine.md 3), so the inputs are applied before reading. *)
   ; cycle : Ports.inputs -> int
+    (** clocks one cycle. The returned value is the rxf_data of the cycle, and is not
+        compared (the registers' [regs] carry it). *)
   }
 
 module type PGSIM = module type of Pgsim
@@ -45,8 +47,16 @@ let pgsim (module P : PGSIM) ~name ~pads_from_pins_in ~num_sms : port_dut =
         applied.(sm) <- Some cfg
     done
   in
+  let apply_page (i : Ports.inputs) =
+    for sm = 0 to num_sms - 1 do
+      P.set_page !t_ref sm i.sm_ext.(sm)
+    done
+  in
   let regs (i : Ports.inputs) : Ports.outputs =
-    if i.rst_n then apply_config i;
+    if i.rst_n
+    then (
+      apply_config i;
+      apply_page i);
     let t = !t_ref in
     let per f = Array.init 4 (fun i -> if i < num_sms then f i else 0) in
     let dbg i = P.debug t i in
@@ -65,7 +75,8 @@ let pgsim (module P : PGSIM) ~name ~pads_from_pins_in ~num_sms : port_dut =
     ; cnt = per (fun i -> P.dbg_cnt t i)
     ; exec_stalled = per (fun i -> if (dbg i).P.exec_stalled then 1 else 0)
     ; phase = per (fun i -> (dbg i).P.acc)
-    ; rxf_data = 0
+    ; instr = per (fun i -> (dbg i).P.instr)
+    ; rxf_data = (if i.rxf_sm < num_sms then P.rx_head t i.rxf_sm else 0)
     }
   in
   let host_ops (i : Ports.inputs) =
@@ -94,6 +105,8 @@ let pgsim (module P : PGSIM) ~name ~pads_from_pins_in ~num_sms : port_dut =
     if i.irq_force land 0xFF <> 0 then add (P.Host_op.Irq_force (i.irq_force land 0xFF));
     let fd = i.fdebug_clear land Ports.sm_mask ~num_sms Ports.fdebug_bits in
     if fd <> 0 then add (P.Host_op.Fdebug_clear fd);
+    let fs = i.fdebug_set land Ports.sm_mask ~num_sms Ports.fdebug_bits in
+    if fs <> 0 then add (P.Host_op.Fdebug_set fs);
     List.rev !ops
   in
   let cycle (i : Ports.inputs) : int =
@@ -103,12 +116,9 @@ let pgsim (module P : PGSIM) ~name ~pads_from_pins_in ~num_sms : port_dut =
       0)
     else (
       apply_config i;
+      apply_page i;
       let t = !t_ref in
-      let rx =
-        match i.rxf_pop with
-        | Some sm when sm < num_sms -> P.rx_head t sm
-        | Some _ | None -> 0
-      in
+      let rx = if i.rxf_sm < num_sms then P.rx_head t i.rxf_sm else 0 in
       for sm = 0 to num_sms - 1 do
         P.set_enabled t sm (i.sm_enable lsr sm land 1 = 1)
       done;

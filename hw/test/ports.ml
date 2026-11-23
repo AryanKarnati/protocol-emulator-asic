@@ -21,7 +21,10 @@ type inputs =
   ; txf_push : (int * int) option (** (sm, data), at most one per cycle *)
   ; rxf_pop : int option (** sm, at most one per cycle *)
   ; instr_write : (int * int) option (** (sm, data) *)
-  ; imem_write : (int * int) option (** (addr, data) *)
+  ; imem_write : (int * int) option (** (addr, data), addr 6 bits (engine.md 9) *)
+  ; sm_ext : int array (** 4 x 32, level: SMn_EXT, bit 0 is PAGE (engine.md 9) *)
+  ; rxf_sm : int (** 2 bits, level, every cycle: the RX FIFO whose head rxf_data shows *)
+  ; fdebug_set : int (** 32 bits, pulse, RP2040 FDEBUG layout (engine.md H8) *)
   }
 
 type outputs =
@@ -39,7 +42,8 @@ type outputs =
   ; cnt : int array (** DBG_CNT *)
   ; exec_stalled : int array
   ; phase : int array (** 25 bits: the divider phase in 1/256 cycle *)
-  ; rxf_data : int (** combinational, meaningful in a cycle with [rxf_pop] *)
+  ; instr : int array (** 16 bits each: dbg_instr, the IMEM word at the fetch address *)
+  ; rxf_data : int (** combinational: the head of RX FIFO [rxf_sm], or 0 (engine.md 3) *)
   }
 
 let idle ~rst_n =
@@ -62,6 +66,9 @@ let idle ~rst_n =
   ; rxf_pop = None
   ; instr_write = None
   ; imem_write = None
+  ; sm_ext = Array.make 4 0
+  ; rxf_sm = 0
+  ; fdebug_set = 0
   }
 ;;
 
@@ -82,7 +89,7 @@ let sm_mask ~num_sms f =
   !m
 ;;
 
-(* Every port in the order the reports use. [rxf_data] is compared separately. *)
+(* Every port in the order the reports use. [rxf_data] is compared every cycle (engine.md 7). *)
 let fields (o : outputs) : (string * int) list =
   let per name a = List.init 4 (fun i -> Printf.sprintf "%s%d" name i, a.(i)) in
   [ "pins_out", o.pins_out; "pins_oe", o.pins_oe; "irq", o.irq; "fstat", o.fstat
@@ -96,6 +103,8 @@ let fields (o : outputs) : (string * int) list =
   @ per "dbg_cnt" o.cnt
   @ per "dbg_exec_stalled" o.exec_stalled
   @ per "dbg_phase" o.phase
+  @ per "dbg_instr" o.instr
+  @ [ "rxf_data", o.rxf_data ]
 ;;
 
 let zero_outputs =
@@ -113,6 +122,7 @@ let zero_outputs =
   ; cnt = Array.make 4 0
   ; exec_stalled = Array.make 4 0
   ; phase = Array.make 4 0
+  ; instr = Array.make 4 0
   ; rxf_data = 0
   }
 ;;
