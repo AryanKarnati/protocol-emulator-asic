@@ -178,8 +178,8 @@ invariant uses the incremental register `am` (ADDR[15:2] then +4 after each word
 - The b-form BMC to 72 checks word 0 only. It does not check the address progression, F, or the
   wrap. Those are checked by ADDR and the lemmas, unbounded.
 - The write-side BMC to 115 is the deepest bounded check that ran (it covers the first write word
-  at cycle 114). It is a manual run; no CI job runs it, and the run is not reproducible in less than
-  about 3.5 hours.
+  at cycle 114). It is a manual run; no CI job runs it. It took about 3.5 hours to reach step 115
+  and was stopped there.
 - Deep write-side mutants (`hostlink_deep__*`, 2 of them): no result.
 - Block 4 (PLAN block 4: "Formal on the host link, with all proofs running in CI") covers the
   remaining items: running the deep BMC in CI, the deep mutants, and the cover at depth 184 in CI.
