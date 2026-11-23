@@ -20,12 +20,12 @@
 //     to every property because the word index m only enters through m mod 2^14 (addr_m is mod
 //     2^16 and 4m has bit 0 and 1 clear) and the word phase only through b mod 32. The sticky
 //     flag `big` keeps the "at least 56 bits in this frame" comparisons right after a wrap.
-//   - Reset is treated as asynchronous, as chip.md 10 says for the top: while rst_n is low, every
-//     output is 0 and the monitor is idle. (Question C2 in PROPERTIES.md.)
-//   - MISO is compared with the shift register of chip.md 6.5. The stability property (chip.md
-//     6.5, "MISO never changes in cycles c to c+2") is checked under a precondition, that CS_N
-//     is stable over cycles c-3 to c-1 (question C1 in PROPERTIES.md). With the macro
-//     MISO_UNCOND the precondition is dropped, and that run is expected to fail.
+//   - Reset (chip.md 7, C2 resolved): while rst_n is low every flop holds its reset value, so
+//     miso is 0 and there are no bus pulses. The monitor is reset the same way.
+//   - MISO is compared with the shift register of chip.md 6.5. Two properties: (a) the exact
+//     rule, unconditional; (b) the hold rule for a counted rise, under the host obligations of
+//     chip.md 6.6 (H-SCK, H-CS, H-RST), stated in the MISO section. With MISO_UNCOND (b) is
+//     checked without those obligations and is expected to fail (miso_uncond task).
 
 module hostlink_harness (input clk);
 
@@ -218,53 +218,59 @@ module hostlink_harness (input clk);
   end
 
   // ---------------------------------------------------------------------------
-  // 6.5 MISO stability: the bit that a RISE delivers changes MISO no earlier than cycle c+3.
-  // A rise of SCK in pin cycle c (sck(c) = 1, sck(c-1) = 0) is a RISE at c+2 at the earliest.
-  // Checked for cycles t = c+2: MISO(t) = MISO(t-1) = MISO(t-2).
+  // 6.5 MISO. Two properties, as chip.md 6.5 now states them.
+  //
+  // (a) Exact rule, unconditional. MISO changes only in the cycle right after a START, RISE or
+  //     END, and reset clears it. Stated as: if MISO(t) differs from MISO(t-1), then an event
+  //     happened in cycle t-1, or rst_n is low in cycle t or t-1.
+  //
+  // (b) Hold rule, under the host obligations of chip.md 6.6. For a counted rise of SCK in pin
+  //     cycle c (SCK(c) = 1, SCK(c-1) = 0, CS_N(c-1) = CS_N(c) = 0), MISO is constant over
+  //     cycles c, c+1, c+2 when the host has followed 6.6 around the rise:
+  //       - H-SCK: SCK(c-2) = 0 (the low phase is at least 2 cycles);
+  //       - H-CS: CS_N does not change in cycles c-2 or c-1 (a CS_N fall at c-2 or c-1 is
+  //         fewer than 3 cycles before the rise, and a CS_N rise is not a counted rise);
+  //       - H-RST: rst_n is high in cycles c, c+1, c+2.
+  //     With MISO_UNCOND the three conditions are dropped; that run is expected to fail.
+  //     (The window check uses the pin history from cycle 0, where the pins before cycle 0 are
+  //     taken as idle, as chip.md 6.1 says.)
   // ---------------------------------------------------------------------------
-  reg sck_prev = 0;
-  reg pin_rise_d1 = 0, pin_rise_d2 = 0;
+  wire EVT = START || END_ || (RISE && inframe);   // an update of the MISO register
+  reg evt_d1 = 0;                                  // EVT(t-1)
   reg miso_d1 = 0, miso_d2 = 0;
-
-  wire pin_rise = sck && !sck_prev;
-
-  always @(posedge clk) begin
-    sck_prev <= sck;
-    pin_rise_d1 <= pin_rise;
-    pin_rise_d2 <= pin_rise_d1;
-    miso_d1 <= miso;
-    miso_d2 <= miso_d1;
-  end
-
-  // The only updates of the MISO shift register that can change MISO in cycles c+1 or c+2 are
-  // a START or END at cycle c or c+1, or a RISE at c (from a second SCK rise at c-2). The
-  // precondition excludes all three:
-  //   - no START or END at c or c+1 (evh = the monitor's events, delayed);
-  //   - SCK low in cycles c-2 and c-1 (sk_hist), which is chip.md 6.6 H-SCK. This forbids a
-  //     RISE at c and a RISE at c+1 (which needs SCK(c-1) = 1, excluded by the rise at c).
-  // Trace note: the synchronised CS_N view starts at cycle 0, so the precondition is on the
-  // monitor's events, not on the raw pins, which differ before cycle 0.
-  reg [1:0] evh = 0;           // evh[0] = event(t-1), evh[1] = event(t-2)
   reg [1:0] rh = 2'b11;        // rh[0] = rst_n(t-1), rh[1] = rst_n(t-2)
   reg [6:0] sk_hist = 7'h00;   // sk_hist[k] = SCK(t-1-k)
-  always @(posedge clk) begin
-    evh <= {evh[0], START | END_};
-    rh <= {rh[0], rst_n};
-    sk_hist <= {sk_hist[5:0], sck};
-  end
-  // c = t-2: SCK(c-2) = sk_hist[3], SCK(c-1) = sk_hist[2].
-  wire sck_low2 = !sk_hist[2] && !sk_hist[3];
-  wire no_ev_c_c1 = !evh[0] && !evh[1];
-  // Reset is not asserted in cycles c..t. A reset clears MISO outside the pin rule.
-  wire no_rst_window = rh[0] && rh[1];
+  reg [6:0] cs_hist = 7'h7f;   // cs_hist[k] = CS_N(t-1-k); idle (1) before cycle 0
 
+  always @(posedge clk) begin
+    evt_d1 <= EVT;
+    miso_d1 <= miso;
+    miso_d2 <= miso_d1;
+    rh <= {rh[0], rst_n};
+    // Pins during reset count as idle, as chip.md 6.1 says for the time before cycle 0.
+    sk_hist <= {sk_hist[5:0], rst_n ? sck : 1'b0};
+    cs_hist <= {cs_hist[5:0], rst_n ? cs_n : 1'b1};
+  end
+
+  // (a) every cycle from cycle 1.
+  always @(*) if (started && rst_n && (miso != miso_d1)) begin
+    assert (evt_d1 || !rh[0]);
+  end
+
+  // (b) the window for a rise at c = t-2. Pin history: SCK(c) = sk_hist[1], SCK(c-1) =
+  // sk_hist[2], SCK(c-2) = sk_hist[3]; CS_N(c) = cs_hist[1], CS_N(c-1) = cs_hist[2],
+  // CS_N(c-2) = cs_hist[3], CS_N(c-3) = cs_hist[4].
+  wire counted_c = sk_hist[1] && !sk_hist[2] && !cs_hist[1] && !cs_hist[2];
+  wire hsck_ok = !sk_hist[3];
+  wire hcs_ok  = (cs_hist[3] == cs_hist[4]) && (cs_hist[2] == cs_hist[3]);
+  wire hrst_ok = rst_n && rh[0] && rh[1];
 `ifdef MISO_UNCOND
-  wire miso_pre = 1'b1;
+  wire host_ok = 1'b1;
 `else
-  wire miso_pre = no_ev_c_c1 && sck_low2 && no_rst_window;
+  wire host_ok = hsck_ok && hcs_ok && hrst_ok;
 `endif
 
-  always @(*) if (started && pin_rise_d2 && miso_pre && rst_n) begin
+  always @(*) if (started && counted_c && host_ok) begin
     assert (miso == miso_d1);
     assert (miso_d1 == miso_d2);
   end
