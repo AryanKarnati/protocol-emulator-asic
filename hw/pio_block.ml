@@ -298,7 +298,10 @@ let create ~num_sms ~imem_depth (scope : Scope.t) (i : _ I.t) =
      unconnected in the logic. They still appear in the circuit (so that the port list is
      the same for every num_sms): each is XORed into a term that is always 0, so that the
      outputs of an absent engine stay 0. [x ^: x] is constant 0 for every input value. The
-     ext inputs are also sunk here when they are not used (absent engines, or depth 32). *)
+     ext inputs are also sunk here when they are not used (absent engines, or depth 32).
+     Absent_zero is ORed into [irq] as well, so that the sink reaches an output in every
+     configuration. Without that, a 4-engine depth-32 block would prune ext0..3 (engine.md
+     section 3: every port must survive in Cyclesim). The term is 0 for every input. *)
   let absent_sink =
     let absent =
       List.concat_map
@@ -316,7 +319,7 @@ let create ~num_sms ~imem_depth (scope : Scope.t) (i : _ I.t) =
   let pick_instr k = if k < n then fetch_words.(k) else absent_zero 16 in
   { O.pins_out = pins_out_q
   ; pins_oe = pins_oe_q
-  ; irq = irq_q
+  ; irq = irq_q |: select (absent_zero 32) 7 0
   ; rxf_data
   ; fstat
   ; flevel
