@@ -40,6 +40,7 @@ let pulse_names =
   ; "irq_clear"
   ; "irq_force"
   ; "fdebug_clear"
+  ; "fdebug_set"
   ; "txf_push"
   ; "rxf_pop"
   ; "instr_write"
@@ -66,10 +67,11 @@ let cyc tb ?(f = fun () -> ()) ?(check = fun () -> ()) () =
   tb.now <- tb.now + 1
 ;;
 
-(* Build a block with [num_sms] engines, reset it, and leave every input at 0 except
-   rst_n, which is high from the first cycle after reset (engine.md section 5, cycle 0). *)
-let make ~num_sms =
-  let circuit = Polyglot_hw.Pio_block.circuit ~num_sms in
+(* Build a block with [num_sms] engines and an IMEM of [imem_depth] words, reset it, and
+   leave every input at 0 except rst_n, which is high from the first cycle after reset
+   (engine.md section 5, cycle 0). *)
+let make_depth ~num_sms ~imem_depth =
+  let circuit = Polyglot_hw.Pio_block.circuit_with ~num_sms ~imem_depth in
   let sim = Cyclesim.create circuit in
   let tb = { sim; now = 0 } in
   List.iter (fun (_, r) -> r := Bits.zero (Bits.width !r)) (Cyclesim.in_ports sim);
@@ -83,6 +85,9 @@ let make ~num_sms =
   set tb "rst_n" 1;
   tb
 ;;
+
+(* Block 3 default: 64 words. *)
+let make ~num_sms = make_depth ~num_sms ~imem_depth:64
 
 (* Configuration words, RP2040 layouts (datasheet 3.7). *)
 let clkdiv_1 = 0x0001_0000 (* INT 1, FRAC 0: a tick every cycle *)
@@ -1008,7 +1013,8 @@ let section3_inputs =
   @ [ "sync_bypass", 32; "pins_in", 32; "sm_restart", 4; "clkdiv_restart", 4; "fifo_flush", 4
     ; "irq_clear", 8; "irq_force", 8; "fdebug_clear", 32; "txf_push", 1; "txf_sm", 2
     ; "txf_data", 32; "rxf_pop", 1; "rxf_sm", 2; "instr_write", 1; "instr_sm", 2
-    ; "instr_data", 16; "imem_write", 1; "imem_addr", 5; "imem_data", 16 ]
+    ; "instr_data", 16; "imem_write", 1; "imem_addr", 6; "imem_data", 16
+    ; "ext0", 32; "ext1", 32; "ext2", 32; "ext3", 32; "fdebug_set", 32 ]
 ;;
 
 let section3_outputs =
@@ -1019,6 +1025,7 @@ let section3_outputs =
       [ "dbg_x"; "dbg_y"; "dbg_isr"; "dbg_osr"; "dbg_cnt" ]
   @ List.init 4 (fun k -> Printf.sprintf "dbg_exec_stalled%d" k, 1)
   @ List.init 4 (fun k -> Printf.sprintf "dbg_phase%d" k, 25)
+  @ List.init 4 (fun k -> Printf.sprintf "dbg_instr%d" k, 16)
 ;;
 
 let port_check () =
@@ -1682,6 +1689,170 @@ let zero_count_out_pins () =
     ()
 ;;
 
+(* ---------- 13. Block 3: paging, ext, F7 at both pages, fdebug_set, dbg_instr, rxf_data ---------- *)
+
+(* Paging (engine.md section 9). Page 0 word j is SET X,j and page 1 word j is SET Y,j, so
+   the word and the page can both be read from dbg_instr. ext0 is 0xFFFF_FFFE (page 0) or
+   0xFFFF_FFFF (page 1): only bit 0 counts. Page 1 is selected in cycles 10 to 19. The PC
+   runs 0 to 31 and wraps, whatever the page, so pc = c mod 32. Each SET runs in the cycle
+   its fetch address is presented, so X holds the last page-0 word executed and Y the last
+   page-1 word executed. ext1 to ext3 and dbg_instr1 to 3 are for absent engines. *)
+let paged_fetch () =
+  let tb = make ~num_sms:1 in
+  for j = 0 to 31 do
+    load_imem tb j (0xE020 lor j);
+    load_imem tb (32 + j) (0xE040 lor j)
+  done;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  let page c = c >= 10 && c < 20 in
+  let pc c = c mod 32 in
+  let want_x c = if c = 0 then 0 else if c <= 10 then c - 1 else if c <= 20 then 9 else (c - 1) mod 32 in
+  let want_y c = if c <= 10 then 0 else min (c - 1) 19 in
+  run tb 40
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      set tb "ext0" (if page c then 0xFFFF_FFFF else 0xFFFF_FFFE);
+      set tb "ext1" 0xFFFF_FFFF;
+      set tb "ext2" 1;
+      set tb "ext3" 1)
+    ~check:(fun c () ->
+      expect "paged pc" ~cyc:c (get tb "dbg_pc0") (pc c);
+      expect "paged instr" ~cyc:c (get tb "dbg_instr0") ((if page c then 0xE040 else 0xE020) lor pc c);
+      expect "paged X" ~cyc:c (get tb "dbg_x0") (want_x c);
+      expect "paged Y" ~cyc:c (get tb "dbg_y0") (want_y c);
+      List.iter
+        (fun k ->
+          expect (Printf.sprintf "absent dbg_instr%d" k) ~cyc:c (get tb (Printf.sprintf "dbg_instr%d" k)) 0;
+          expect (Printf.sprintf "absent dbg_pc%d" k) ~cyc:c (get tb (Printf.sprintf "dbg_pc%d" k)) 0)
+        [ 1; 2; 3 ])
+    ()
+;;
+
+(* F7 at both pages (engine.md F7, section 9). Both pages have WAIT 1 GPIO 1 at word 0, so
+   the SM stalls there (pin 1 is low). In cycle 4 the host writes SET Y,3 to address
+   [wr_addr]. It is the fetch address only when wr_addr = 32 * page. Then the stall clears
+   at the end of cycle 4, the new word runs in cycle 5 (Y = 3 from cycle 6), and pc is 1
+   from cycle 6. Otherwise the stall goes on. *)
+let f7_paged ~page ~wr_addr =
+  let tb = make ~num_sms:1 in
+  load_imem tb 0 0x2081;
+  load_imem tb 32 0x2081;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  let hit = wr_addr = 32 * page in
+  let stall_want c = if c >= 1 && (c <= 4 || not hit) then 4 else 0 in
+  let pc_want c = if hit && c >= 6 then 1 else 0 in
+  let y_want c = if hit && c >= 6 then 3 else 0 in
+  let label = Printf.sprintf "f7 page%d addr%d" page wr_addr in
+  run tb 7
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      set tb "ext0" (if page = 1 then 1 else 0);
+      if c = 4
+      then (
+        set tb "imem_write" 1;
+        set tb "imem_addr" wr_addr;
+        set tb "imem_data" 0xE043))
+    ~check:(fun c () ->
+      expect (label ^ " stall") ~cyc:c ((get tb "dbg_cnt0" lsr 24) land 0xF) (stall_want c);
+      expect (label ^ " pc") ~cyc:c (get tb "dbg_pc0") (pc_want c);
+      expect (label ^ " Y") ~cyc:c (get tb "dbg_y0") (y_want c))
+    ()
+;;
+
+let f7_paged_all () =
+  f7_paged ~page:0 ~wr_addr:0;
+  f7_paged ~page:0 ~wr_addr:32;
+  f7_paged ~page:1 ~wr_addr:32;
+  f7_paged ~page:1 ~wr_addr:0
+;;
+
+(* FDEBUG (engine.md H8). Cycle 0 sets RXUNDER0 (bit 8), and the bits for absent engine 1
+   (RXUNDER1, RXSTALL2, TXSTALL1) and the reserved bit 4 are also set, and ignored. Cycle 1
+   sets and clears RXUNDER0 together: the set wins. Cycle 2 clears it. Cycle 3 sets ILLEGAL0
+   (bit 28) and TXSTALL0 (bit 24). *)
+let fdebug_set_clear () =
+  let tb = make ~num_sms:1 in
+  run tb 6
+    ~f:(fun c () ->
+      match c with
+      | 0 -> set tb "fdebug_set" (0x100 lor 0x200 lor 0x4 lor 0x10 lor 0x200_0000)
+      | 1 ->
+        set tb "fdebug_set" 0x100;
+        set tb "fdebug_clear" 0x100
+      | 2 -> set tb "fdebug_clear" 0x100
+      | 3 -> set tb "fdebug_set" (0x1000_0000 lor 0x0100_0000)
+      | _ -> ())
+    ~check:(fun c () ->
+      check_arr "fdebug set/clear" tb ~name:"fdebug" ~mask:0xFFFF_FFFF
+        [| 0; 0x100; 0x100; 0; 0x1100_0000; 0x1100_0000 |] c)
+    ()
+;;
+
+(* IMEM depth 32 (engine.md section 9). Words j = 0..31 are SET X,j, except word 5, which is
+   WAIT 1 GPIO 1 (pin 1 low), so the SM stalls at pc 5 from cycle 5. ext0 is all ones and
+   must be ignored. In cycle 8 the host writes SET Y,5 to address 37. With depth 32 the
+   address is 5 (bit 5 ignored), and it equals the fetch address, so F7 abandons the WAIT
+   (its stall clears at the end of cycle 8). SET Y runs in cycle 9.
+   pc: c for c < 5, 5 for 5 <= c <= 8, c - 4 after. dbg_instr is the word at pc, before
+   the write takes effect (cycle 8 still shows WAIT). Stall: 4 in cycles 6 to 8. *)
+let depth32 () =
+  let tb = make_depth ~num_sms:1 ~imem_depth:32 in
+  for j = 0 to 31 do
+    load_imem tb j (if j = 5 then 0x2081 else 0xE020 lor j)
+  done;
+  configure tb ~sm:0 ~clkdiv:clkdiv_1 ~execctrl:execctrl_default ~shiftctrl:shiftctrl_default
+    ~pinctrl_v:(pinctrl ());
+  let pc c = if c < 5 then c else if c < 9 then 5 else c - 4 in
+  let instr c = if pc c = 5 then (if c < 9 then 0x2081 else 0xE045) else 0xE020 lor pc c in
+  let stall c = if c >= 6 && c <= 8 then 4 else 0 in
+  run tb 12
+    ~f:(fun c () ->
+      if c = 0 then set tb "sm_enable" 1;
+      set tb "ext0" 0xFFFF_FFFF;
+      if c = 8
+      then (
+        set tb "imem_write" 1;
+        set tb "imem_addr" 37;
+        set tb "imem_data" 0xE045))
+    ~check:(fun c () ->
+      expect "depth32 pc" ~cyc:c (get tb "dbg_pc0") (pc c);
+      expect "depth32 instr" ~cyc:c (get tb "dbg_instr0") (instr c);
+      expect "depth32 stall" ~cyc:c ((get tb "dbg_cnt0" lsr 24) land 0xF) (stall c);
+      expect "depth32 Y" ~cyc:c (get tb "dbg_y0") (if c >= 10 then 5 else 0))
+    ()
+;;
+
+(* rxf_data without a pop (engine.md H2, section 3). Forced SET X,5 (cycle 0), IN X,32
+   (cycle 1) and PUSH (cycle 2, no block) put 5 at the head of RX FIFO 0 from cycle 4.
+   rxf_data must show that head in every cycle, with no pop presented (cycles 4 and 5), and
+   with a pop presented (cycle 5, which is the last read before the FIFO empties). rxf_sm is 1
+   in cycle 6, where FIFO 1 is empty. FSTAT RXEMPTY[0] (bit 8) is 1 until cycle 3 and from
+   cycle 6. *)
+let rxf_data_no_pop () =
+  let tb = make ~num_sms:1 in
+  run tb 8
+    ~f:(fun c () ->
+      set tb "rxf_sm" (if c = 6 then 1 else 0);
+      match c with
+      | 0 ->
+        set tb "instr_write" 1;
+        set tb "instr_data" 0xE025
+      | 1 ->
+        set tb "instr_write" 1;
+        set tb "instr_data" 0x4020
+      | 2 ->
+        set tb "instr_write" 1;
+        set tb "instr_data" 0x8000
+      | 5 -> set tb "rxf_pop" 1
+      | _ -> ())
+    ~check:(fun c () ->
+      check_arr "rxf_data" tb ~name:"rxf_data" ~mask:0xFFFF_FFFF [| 0; 0; 0; 0; 5; 5; 0; 0 |] c;
+      check_arr "rxf_empty0" tb ~name:"fstat" ~mask:0x100 [| 0x100; 0x100; 0x100; 0x100; 0; 0; 0x100; 0x100 |] c)
+    ()
+;;
+
 let () =
   zero_count_set_pindirs ();
   zero_count_out_pins ();
@@ -1732,6 +1903,11 @@ let () =
   f6_abandon ();
   pull_r4 ();
   absent_engines ();
+  paged_fetch ();
+  f7_paged_all ();
+  fdebug_set_clear ();
+  depth32 ();
+  rxf_data_no_pop ();
   Printf.printf "smoke: %d checks, %d failures\n%!" !checks !failures;
   if !failures > 0 then exit 1
 ;;

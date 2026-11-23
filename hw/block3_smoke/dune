@@ -1,0 +1,7 @@
+; Cyclesim checks for the block 3 RTL (docs/chip.md). Expected values are worked out by
+; hand from the contract, cycle by cycle, in block3_smoke.ml.
+
+(test
+ (name block3_smoke)
+ (modules block3_smoke)
+ (libraries polyglot_hw hardcaml))
