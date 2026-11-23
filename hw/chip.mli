@@ -73,10 +73,20 @@ end
 
 (** The chip, with pio_block instantiated in the scope. [num_sms] is 1 to 4 and
     [imem_depth] 32 or 64. Used by the top. *)
-val create : num_sms:int -> imem_depth:int -> Scope.t -> Signal.t I.t -> Signal.t O.t
+val create
+  :  num_sms:int
+  -> imem_depth:int
+  -> sram:bool
+  -> Scope.t
+  -> Signal.t I.t
+  -> Signal.t O.t
 
 (** The chip for the Verilog printer, with pio_block as a module of its own. *)
-val circuit_with_database : num_sms:int -> imem_depth:int -> Circuit.t * Circuit_database.t
+val circuit_with_database
+  :  num_sms:int
+  -> imem_depth:int
+  -> sram:bool
+  -> Circuit.t * Circuit_database.t
 
 (** The chip for Cyclesim, with every submodule inlined (section 3). *)
-val circuit : num_sms:int -> imem_depth:int -> Circuit.t
+val circuit : num_sms:int -> imem_depth:int -> sram:bool -> Circuit.t

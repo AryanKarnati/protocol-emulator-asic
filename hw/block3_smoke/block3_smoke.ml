@@ -236,7 +236,7 @@ let test_host_link () =
     "H4 MISO data word"
     (List.init 32 (fun k -> sample (32 + k)))
     (bits_of 0xCAFEF00D 32);
-  (* Section 6.5: MISO never changes in cycles c to c + 2 after a rise in cycle c. *)
+  (* Section 6.6 hold rule: MISO holds in cycles c to c + 2 after a rise in cycle c, for a host that obeys 6.6. *)
   let stable = ref true in
   for j = 0 to 63 do
     let c = 3 + rises.(j) in
@@ -352,7 +352,7 @@ type regs =
   }
 
 let regs_make ~num_sms ~imem_depth =
-  let rsim = Cyclesim.create (Polyglot_hw.Regs.circuit ~num_sms ~imem_depth) in
+  let rsim = Cyclesim.create (Polyglot_hw.Regs.circuit ~num_sms ~imem_depth ~sram:false) in
   List.iter (fun (_, r) -> r := Bits.zero (Bits.width !r)) (Cyclesim.in_ports rsim);
   let rg = { rsim; levels = Hashtbl.create 64 } in
   (Cyclesim.in_port rsim "rst_n") := Bits.of_int ~width:1 0;
@@ -697,7 +697,7 @@ type chip =
   }
 
 let chip_make ?(num_sms = 4) ?(imem_depth = 64) () =
-  let sim = Cyclesim.create (Polyglot_hw.Chip.circuit ~num_sms ~imem_depth) in
+  let sim = Cyclesim.create (Polyglot_hw.Chip.circuit ~num_sms ~imem_depth ~sram:false) in
   List.iter (fun (_, r) -> r := Bits.zero (Bits.width !r)) (Cyclesim.in_ports sim);
   (Cyclesim.in_port sim "rst_n") := Bits.of_int ~width:1 0;
   Cyclesim.reset sim;

@@ -13,14 +13,17 @@
 open Hardcaml
 
 let usage () =
-  prerr_endline "usage: gen_verilog [decode | pio_block | pio_block1 | hostlink | chip]";
+  prerr_endline "usage: gen_verilog [decode | pio_block | pio_block1 | hostlink | chip | top_sram]";
   exit 2
 ;;
 
 let () =
   match Sys.argv with
   | [| _ |] ->
-    let circuit, database = Polyglot_hw.Top.circuit () in
+    let circuit, database = Polyglot_hw.Top.circuit ~sram:false () in
+    Rtl.print ~database Rtl.Language.Verilog circuit
+  | [| _; "top_sram" |] ->
+    let circuit, database = Polyglot_hw.Top.circuit ~sram:true () in
     Rtl.print ~database Rtl.Language.Verilog circuit
   | [| _; "decode" |] ->
     Rtl.print Rtl.Language.Verilog (Polyglot_hw.Decode.circuit ())
@@ -33,7 +36,7 @@ let () =
   | [| _; "hostlink" |] -> Rtl.print Rtl.Language.Verilog (Polyglot_hw.Hostlink.circuit ())
   | [| _; "chip" |] ->
     let circuit, database =
-      Polyglot_hw.Chip.circuit_with_database ~num_sms:4 ~imem_depth:64
+      Polyglot_hw.Chip.circuit_with_database ~num_sms:4 ~imem_depth:64 ~sram:false
     in
     Rtl.print ~database Rtl.Language.Verilog circuit
   | _ -> usage ()

@@ -24,7 +24,7 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create (scope : Scope.t) (i : _ I.t) =
+let create ~sram (scope : Scope.t) (i : _ I.t) =
   (* Reset: rst_n asserts asynchronously and is released through two flops (chip.md 10).
      [core_rst_n] is the chip's reset. *)
   let sync_spec =
@@ -40,6 +40,7 @@ let create (scope : Scope.t) (i : _ I.t) =
     Chip.create
       ~num_sms:4
       ~imem_depth:64
+      ~sram
       scope
       { Chip.I.clock = i.clk; rst_n = core_rst_n; ui_in = i.ui_in; uio_in = i.uio_in }
   in
@@ -49,8 +50,8 @@ let create (scope : Scope.t) (i : _ I.t) =
 module Circuit_io = Circuit.With_interface (I) (O)
 
 (* The top-level circuit, and the database of its submodules. *)
-let circuit () =
+let circuit ~sram () =
   let scope = Scope.create () in
-  let circuit = Circuit_io.create_exn ~name:"polyglot" (create scope) in
+  let circuit = Circuit_io.create_exn ~name:"polyglot" (create ~sram scope) in
   circuit, Scope.circuit_database scope
 ;;
