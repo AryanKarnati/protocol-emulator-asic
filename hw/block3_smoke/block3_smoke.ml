@@ -686,10 +686,154 @@ let test_pins () =
   expect_int "P6 input pad stays an input" (out_of o "uio_oe") 0
 ;;
 
+(* ---------- Whole chip ---------- *)
+
+(* The chip with its pads. [ui_ext] holds ui_in[4:0] and [uio_ext] the external level of
+   each uio pad. SPI pins are set per cycle. *)
+type chip =
+  { csim : Cyclesim.t_port_list
+  ; ui_ext : int
+  ; uio_ext : int
+  }
+
+let chip_make ?(num_sms = 4) ?(imem_depth = 64) () =
+  let sim = Cyclesim.create (Polyglot_hw.Chip.circuit ~num_sms ~imem_depth) in
+  List.iter (fun (_, r) -> r := Bits.zero (Bits.width !r)) (Cyclesim.in_ports sim);
+  (Cyclesim.in_port sim "rst_n") := Bits.of_int ~width:1 0;
+  Cyclesim.reset sim;
+  (Cyclesim.in_port sim "rst_n") := Bits.of_int ~width:1 1;
+  { csim = sim; ui_ext = 0; uio_ext = 0 }
+;;
+
+let set_port c n v =
+  let r = Cyclesim.in_port c.csim n in
+  r := Bits.of_int ~width:(Bits.width !r) v
+;;
+
+(* One cycle. The uio pads follow the testbench rule of engine.md R1: uio_in[i] is
+   uio_out[i] where uio_oe[i] is set, and the external level otherwise. uio_in does not
+   reach an output in the same cycle, so one extra evaluation is enough. *)
+let drive c ?(sck = 0) ?(mosi = 0) ?(cs = 1) () =
+  set_port c "ui_in" (c.ui_ext lor (sck lsl 5) lor (mosi lsl 6) lor (cs lsl 7));
+  set_port c "uio_in" c.uio_ext;
+  Cyclesim.cycle_before_clock_edge c.csim;
+  let oe = to_int (Cyclesim.out_port ~clock_edge:Before c.csim "uio_oe") in
+  let out = to_int (Cyclesim.out_port ~clock_edge:Before c.csim "uio_out") in
+  set_port c "uio_in" ((out land oe) lor (c.uio_ext land lnot oe land 0xFF));
+  Cyclesim.cycle_before_clock_edge c.csim;
+  let outs = read_outs c.csim in
+  Cyclesim.cycle_at_clock_edge c.csim;
+  Cyclesim.cycle_after_clock_edge c.csim;
+  outs
+;;
+
+(* Run pins over SPI, and return the outputs of every cycle. *)
+let spi c (pins : pin list) =
+  Array.of_list (List.map (fun (p : pin) -> drive c ~sck:p.sck ~mosi:p.mosi ~cs:p.cs ()) pins)
+;;
+
+let idle_cycles c n = spi c (gap n)
+let last a = a.(Array.length a - 1)
+let miso_of o = (out_of o "uo_out" lsr 7) land 1
+
+(* The MSB-first 32-bit word whose bits start at frame bit [j0]. *)
+let sample_word outs rises j0 =
+  List.fold_left
+    (fun acc k -> (acc lsl 1) lor miso_of outs.(3 + rises.(j0 + k)))
+    0
+    (List.init 32 Fun.id)
+;;
+
+(* Read [n] words with a read frame. Returns the words. *)
+let chip_read ?(f = 0) c ~addr n =
+  let pins, rises = frame (read_frame ~f ~addr n) in
+  let outs = spi c (gap 3 @ pins @ gap 4) in
+  List.init n (fun m -> sample_word outs rises (32 + (32 * m)))
+;;
+
+let chip_write ?(f = 0) c ~addr words =
+  let pins, _ = frame (write_frame ~f ~addr words) in
+  ignore (spi c (gap 3 @ pins @ gap 4))
+;;
+
+let test_chip () =
+  Printf.printf "chip\n%!";
+  (* C1: ID and SCRATCH over SPI. *)
+  let c = chip_make () in
+  expect_int "C1 ID over SPI" (List.hd (chip_read c ~addr:0x000 1)) 0x504C4754;
+  chip_write c ~addr:0x038 [ 0xCAFE1234 ];
+  expect_int "C1 SCRATCH read back" (List.hd (chip_read c ~addr:0x038 1)) 0xCAFE1234;
+  (* C2: IMEM in both pages. Page 0: set pindirs 31, set pins 21, jmp 2. Page 1: set pins
+     10, jmp 1. The SM runs page 0 first, then page 1 after EXT.PAGE is set. *)
+  let c = chip_make () in
+  chip_write c ~addr:0x100 [ 0xE09F; 0xE015; 0x0002 ];
+  chip_write c ~addr:0x180 [ 0xE00A; 0x0001 ];
+  chip_write c ~addr:0x008 [ 0x1 ];
+  let o = last (idle_cycles c 30) in
+  expect_int "C2 page 0 uio_out[4:0]" (out_of o "uio_out" land 0x1F) 0x15;
+  expect_int "C2 page 0 uio_oe[4:0]" (out_of o "uio_oe" land 0x1F) 0x1F;
+  (* C2: open-drain (PAD_OD) on pins 0 and 1. Pin 0 holds 1 and is released; pin 1 holds
+     0 and is pulled low. *)
+  chip_write c ~addr:0x024 [ 0x3 ];
+  let o = last (idle_cycles c 2) in
+  expect_int "C2 open-drain uio_out[4:0]" (out_of o "uio_out" land 0x1F) 0x14;
+  expect_int "C2 open-drain uio_oe[4:0]" (out_of o "uio_oe" land 0x1F) 0x1E;
+  chip_write c ~addr:0x024 [ 0x0 ];
+  (* C2: page switch. Disable, set EXT.PAGE of SM0, then restart and enable. *)
+  chip_write c ~addr:0x008 [ 0x0 ];
+  chip_write c ~addr:0x218 [ 0x1 ];
+  chip_write c ~addr:0x008 [ 0x11 ];
+  let o = last (idle_cycles c 30) in
+  expect_int "C2 page 1 uio_out[4:0]" (out_of o "uio_out" land 0x1F) 0x0A;
+  (* C3: HOST_IRQ on uo_out[6] (9.3). *)
+  let c = chip_make () in
+  chip_write c ~addr:0x020 [ 0x001 ];
+  chip_write c ~addr:0x01C [ 0x01 ];
+  expect_int "C3 IRQ0 forced: HOST_IRQ on uo_out[6]" ((out_of (last (idle_cycles c 2)) "uo_out" lsr 6) land 1) 1;
+  chip_write c ~addr:0x018 [ 0x01 ];
+  expect_int "C3 IRQ0 cleared: uo_out[6] low" ((out_of (last (idle_cycles c 2)) "uo_out" lsr 6) land 1) 0;
+  (* C4: a TX word is pulled by a program and shows on uio. Program: set pindirs 31,
+     pull block, out pins 5, jmp 1. OUT_COUNT is 5 in PINCTRL. *)
+  let c = chip_make () in
+  chip_write c ~addr:0x100 [ 0xE09F; 0x80A0; 0x6005; 0x0001 ];
+  chip_write c ~addr:0x214 [ 0x14500000 ];
+  chip_write c ~addr:0x008 [ 0x1 ];
+  let o = last (idle_cycles c 30) in
+  expect_int "C4 stalled on an empty TX FIFO" (out_of o "uio_out" land 0x1F) 0;
+  chip_write c ~addr:0x040 [ 0x1B ];
+  let o = last (idle_cycles c 30) in
+  expect_int "C4 pulled TX word reaches uio" (out_of o "uio_out" land 0x1F) 0x1B;
+  (* C5: RX burst. Program: set x 21, in x 32, push block, set x 9, in x 32, push block,
+     jmp 0. The RX FIFO receives 21, 9, 21, 9 and then the program stalls. *)
+  let c = chip_make () in
+  chip_write c ~addr:0x100 [ 0xE035; 0x4020; 0x8020; 0xE029; 0x4020; 0x8020; 0x0000 ];
+  chip_write c ~addr:0x008 [ 0x1 ];
+  ignore (idle_cycles c 200);
+  expect_ints
+    "C5 RX burst read, fixed address"
+    (chip_read ~f:1 c ~addr:0x050 4)
+    [ 21; 9; 21; 9 ];
+  (* C6: a chip with 1 SM and a 32-word IMEM. The host sees 1 SM and 32 words in HWCFG,
+     the absent SMs read 0, and the SM that exists runs its program. *)
+  let c = chip_make ~num_sms:1 ~imem_depth:32 () in
+  expect_int "C6 HWCFG with 1 SM and IMEM 32" (List.hd (chip_read c ~addr:0x004 1)) 0x10200104;
+  expect_int "C6 absent SM1 CLKDIV reads 0" (List.hd (chip_read c ~addr:0x240 1)) 0;
+  chip_write c ~addr:0x100 [ 0xE09F; 0xE015; 0x0002 ];
+  chip_write c ~addr:0x008 [ 0x1 ];
+  let o = last (idle_cycles c 30) in
+  expect_int "C6 1-SM chip runs: uio_out[4:0]" (out_of o "uio_out" land 0x1F) 0x15;
+  (* A 1-byte STATUS poll: TXNFULL0 is bit 4 (the TX FIFO is not full), RXNEMPTY0 is bit 0
+     (the RX FIFO is empty), and every absent SM bit is 0. *)
+  let pins, rises = frame (bits_of 0x80 8) in
+  let outs = spi c (gap 3 @ pins @ gap 4) in
+  expect_int "C6 1-SM STATUS poll" (List.fold_left (fun acc j -> (acc lsl 1) lor miso_of outs.(3 + rises.(j))) 0 (List.init 8 Fun.id)) 0x10;
+;;
+
 let () =
   test_host_link ();
   test_regs ();
   test_pins ();
+  test_chip ();
   Printf.printf "checks: %d, failures: %d\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;

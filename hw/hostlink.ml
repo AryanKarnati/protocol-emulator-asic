@@ -69,11 +69,11 @@ let create (i : _ I.t) =
   (* Command bits (6.3): R is bit 0 and F is bit 1. *)
   let r_q = reg plain ~enable:(rise &: ~:in_body &: (cnt ==:. 0)) mosi2 in
   let f_q = reg plain ~enable:(rise &: ~:in_body &: (cnt ==:. 1)) mosi2 in
-  (* The last 32 MOSI bits. At a write access, the word is these 31 bits and this cycle's
-     bit, so the write data is the next value of the register. *)
-  let rxsr_w = wire 32 in
-  let rx_next = concat_msb [ select rxsr_w 30 0; mosi2 ] in
-  let rxsr = reg plain ~enable:rise rx_next in
+  (* The last 31 MOSI bits before this cycle. At a write access the word is these 31 bits
+     and this cycle's bit, which is [rx_next]. *)
+  let rxsr_w = wire 31 in
+  let rx_next = concat_msb [ rxsr_w; mosi2 ] in
+  let rxsr = reg plain ~enable:rise (select rx_next 30 0) in
   rxsr_w <== rxsr;
   (* Bus address (6.4). It holds ADDR when the header ends, then steps by 4 after each
      word unless F is set. The step lands at the end of the word's last event, so the

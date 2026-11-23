@@ -36,3 +36,25 @@ generator, not the design.
 
 The file holds the `decode` module first, then the others. Nothing depends on the file
 name.
+
+# Verilator lint, chip and hostlink (block 3)
+
+Commands: `verilator --lint-only -Wall --top-module chip chip.v`, with `chip.v` from
+`gen_verilog.exe chip` (4 SMs, IMEM 64, debug ports), and the same with `hostlink` from
+`gen_verilog.exe hostlink`. Verilator 5.055.
+
+| File | Result |
+| --- | --- |
+| `chip` | 45 warnings, 0 errors (28 COMBDLY, 1 DECLFILENAME, 16 UNUSEDSIGNAL). |
+| `hostlink` | 2 warnings, 0 errors (both UNUSEDSIGNAL). |
+
+The `chip` warnings are the `pio_block` ones above (COMBDLY, the `vdd` constants, and the
+unused EXECCTRL, SHIFTCTRL and EXT bits), so nothing new comes from the link, the register
+block or the pins. `hostlink` has two Hardcaml constant or mux artefacts with no logic
+behind them: a 16-bit zero beside the address register's enable, and an unused 31-bit
+value from the MOSI shift register's enable mux. Neither drives an output.
+
+The top `polyglot` (`src/polyglot.v`, the committed file) gives 46 warnings: 28 COMBDLY, 1
+DECLFILENAME and 17 UNUSEDSIGNAL. That is the chip's list plus one unused bit at the top
+level, a Hardcaml constant. The top adds no logic of its own beyond the reset
+synchroniser, and its ports match `src/project.v`.
