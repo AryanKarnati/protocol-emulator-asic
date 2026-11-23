@@ -159,9 +159,10 @@ read-back passing):
 | 6 | 5 | all tried, to (3,3) | none | three cycles each way |
 
 `(dsck, dmiso)`: delay on the pins-to-chip path and on the chip-to-pins path. The default 10 MHz has
-margin. 15 MHz (H = 2) does not: it survives two system cycles on one path (about 17 ns) and not a
-round trip of four. Use it only on a short, direct board path. The sweep did not try an odd
-round trip such as (1,1) at H = 2.
+margin. **15 MHz (H = 2) needs the total board round-trip delay under about 17 ns (two system cycles).**
+The sweep passes two cycles on one path and fails a round trip of four. Scope it on the board before
+relying on it, and use a short, direct path. The sweep did not try an odd round trip such as (1,1)
+at H = 2. **10 MHz (H = 3) is the safe default**: it passes three system cycles each way.
 
 ## API reference
 
@@ -273,9 +274,17 @@ has its own pins.
 - `xfer_on_sm(sm, data, timeout_us, clock=None) -> bytes`: the frame loop the transport uses, usable on
   any object with `put`, `get`, `tx_fifo` and `rx_fifo`. It pops RX whenever RX has a word and refills TX
   only when RX is empty. The RX FIFO is 4 deep and the master's autopush stalls with SCK high when it
-  is full, so popping first keeps MISO correct at any host speed. On a timeout, or if the caller is
-  interrupted, the frame is completed with zero bytes, so CS_N goes high and RX is left empty, and then
-  `OSError` is raised (or the interrupt is re-raised).
+  is full, so popping first keeps MISO correct at any host speed.
+
+  **An aborted frame is not safe.** On a timeout (`OSError`), or if the caller is interrupted, the
+  library completes the frame with zero bytes, for at most `FINISH_LIMIT_US` (10 ms). The header has
+  already fixed the frame's length, so the chip runs the whole frame, and the master cannot raise CS_N
+  mid-frame. The consequences:
+  - **Partial writes land.** An interrupted write of `0xAABBCCDD` after one byte writes `0xAA000000`.
+  - **Bursts write zeros** into the later registers or IMEM slots of the frame.
+  - **RX pops in the frame are made, and their words are lost.**
+  After an `OSError` or an interrupt, call `chip.check()` or `chip.reload()` before relying on the
+  chip, and treat the RX data of that frame as lost.
 - `SimTransport(pgsim="pgsim", num_sms=4, sck_half=3, cs_setup=4, cs_gap=4)` (CPython only). Starts
   `pgsim chip-serve` and speaks chip.md section 12. `xfer`, `run(cycles)`, `ext(ui, uio)`,
   `pads() -> (uo_out, uio_out, uio_oe)`, `cycle()`, `close()`. An `err` reply raises `ChipError`.
