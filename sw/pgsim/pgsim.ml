@@ -253,6 +253,7 @@ type sm =
   ; mutable stall : stall
   ; mutable sticky : pinw (* OUT_STICKY: last OUT/SET/MOV pin write *)
   ; mutable page : int (* SMn_EXT.PAGE, bit 0 (engine.md 9) *)
+  ; mutable prev_page : int (* PAGE of the previous cycle (engine.md F8) *)
   }
 
 type t =
@@ -309,6 +310,7 @@ let create () =
       ; stall = No_stall
       ; sticky = pinw_create ()
       ; page = 0
+      ; prev_page = 0
       })
   in
   { sms
@@ -1009,6 +1011,17 @@ let step_ex ?(host = []) t =
       | Fifo_flush m -> flush := !flush lor (m land 0xF)
       | Imem_write { addr; data } -> imem := (addr land 63, data land 0xFFFF) :: !imem)
     host;
+  (* F8: a change of PAGE since the previous cycle abandons the IMEM instruction in progress. Its
+     side-set flag, IRQ wait and IMEM stall reason are ignored, so a fresh attempt starts from
+     clear. If no IMEM attempt follows in this cycle, they stay clear. *)
+  Array.iter
+    (fun sm ->
+      if sm.page <> sm.prev_page
+      then (
+        sm.side_done <- false;
+        sm.irq_wait <- None;
+        sm.stall <- No_stall))
+    t.sms;
   let setw = ref 0 in
   let clrw = ref 0 in
   let pin_writes = Array.init 4 (fun _ -> pinw_create ()) in
@@ -1098,6 +1111,7 @@ let step_ex ?(host = []) t =
              ; f_illegal = set.f_illegal || hs.f_illegal
              }))
     t.sms;
+  Array.iter (fun sm -> sm.prev_page <- sm.page) t.sms;
   t.cycle <- t.cycle + 1;
   { pads = pad; rx_data = List.rev !rx_data }
 ;;

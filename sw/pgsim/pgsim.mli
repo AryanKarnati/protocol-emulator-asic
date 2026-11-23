@@ -120,6 +120,7 @@ type sm =
   ; mutable stall : stall
   ; mutable sticky : pinw
   ; mutable page : int (** SMn_EXT.PAGE, bit 0 (engine.md 9) *)
+  ; mutable prev_page : int (** PAGE of the previous cycle (engine.md F8) *)
   }
 
 type t =

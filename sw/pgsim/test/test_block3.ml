@@ -74,5 +74,49 @@ let () =
   check "set wins over a clear in the same cycle" (Pgsim.fdebug t land 0x0000_0101 = 0x0000_0001);
   Pgsim.step_ex ~host:[ Pgsim.Host_op.Fdebug_clear 0x0000_0001 ] t |> ignore;
   check "clear alone clears" (Pgsim.fdebug t land 0x0000_0001 = 0);
+  (* F8: a PAGE change abandons the IMEM instruction in progress; the word at the new fetch
+     address is a fresh first attempt in the cycle the change is presented. *)
+  let stalled () =
+    let t = page_words [ wait_pin0_low ] [ set_pins 1 ] in
+    Pgsim.set_config t 0 C.reset;
+    Pgsim.set_enabled t 0 true;
+    run t 2;
+    check "F8 setup: stalled on page 0" ((Pgsim.debug t 0).Pgsim.stall = Pgsim.Stall_wait_pin);
+    t
+  in
+  let t = stalled () in
+  Pgsim.set_page t 0 1;
+  ignore (Pgsim.step t);
+  check "F8: fresh attempt of the page 1 word in the change cycle"
+    ((Pgsim.debug t 0).Pgsim.pc = 1 && t.Pgsim.pin_level land 1 = 1);
+  check "F8: stall cleared by the fresh attempt" ((Pgsim.debug t 0).Pgsim.stall = Pgsim.No_stall);
+  (* F8: no IMEM attempt in the change cycle (disabled SM): the stall reason is cleared. *)
+  let t = stalled () in
+  Pgsim.set_enabled t 0 false;
+  Pgsim.set_page t 0 1;
+  ignore (Pgsim.step t);
+  check "F8: disabled change cycle clears the IMEM stall reason"
+    ((Pgsim.debug t 0).Pgsim.stall = Pgsim.No_stall);
+  (* F8: a forced attempt in the change cycle is not an IMEM attempt, so the IMEM state is cleared. *)
+  let t = stalled () in
+  Pgsim.write_instr t 0 (set_pins 0);
+  Pgsim.set_page t 0 1;
+  ignore (Pgsim.step t);
+  check "F8: forced attempt in the change cycle clears the IMEM stall reason"
+    ((Pgsim.debug t 0).Pgsim.stall = Pgsim.No_stall);
+  check "F8: the forced instruction ran" (t.Pgsim.pin_level land 1 = 0);
+  (* F7 in the same cycle as the PAGE change: the attempt uses the word that was there at the
+     start of the cycle, and the write (at {new PAGE, PC}) then abandons the SM's state. *)
+  let t = stalled () in
+  Pgsim.set_page t 0 1;
+  ignore (Pgsim.step ~host:[ Pgsim.Host_op.Imem_write { addr = 32; data = set_pins 0 } ] t);
+  check "F7 with PAGE change: the page 1 word at the start of the cycle ran"
+    ((Pgsim.debug t 0).Pgsim.pc = 1 && t.Pgsim.pin_level land 1 = 1);
+  (* The write to {old PAGE, PC} does not touch the fetch address of the change cycle. *)
+  let t = stalled () in
+  Pgsim.set_page t 0 1;
+  ignore (Pgsim.step ~host:[ Pgsim.Host_op.Imem_write { addr = 0; data = set_pins 0 } ] t);
+  check "write to {old PAGE, PC} in the change cycle does not change the fresh attempt"
+    ((Pgsim.debug t 0).Pgsim.pc = 1 && t.Pgsim.pin_level land 1 = 1);
   print_endline "block 3 pgsim checks: passed"
 ;;
